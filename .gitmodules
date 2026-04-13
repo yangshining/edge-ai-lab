@@ -1,0 +1,6 @@
+[submodule "sources/oled-ui-astra"]
+	path = sources/oled-ui-astra
+	url = https://github.com/AstraThreshold/oled-ui-astra.git
+[submodule "sources/xiaozhi-esp32"]
+	path = sources/xiaozhi-esp32
+	url = https://github.com/78/xiaozhi-esp32.git
