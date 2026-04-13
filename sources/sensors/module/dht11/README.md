@@ -215,3 +215,17 @@ if (DHT11_Read_Data(&temp, &humi) == 0)
 ```
 
 头文件无需修改任何配置项，引脚固定为 **PA0**。若需迁移到其他引脚，修改 `dht11.h` 中的四个宏（`DHT11_IO_IN`、`DHT11_IO_OUT`、`DHT11_DQ_OUT`、`DHT11_DQ_IN`）即可。
+---
+
+## C. OLED Demo Notes
+
+- The demo now initializes and updates an SSD1306 OLED.
+- OLED wiring used by this project:
+  - `PB1` -> SCL
+  - `PB0` -> SDA
+- The OLED displays temperature, humidity, and a status line.
+- Status text is refreshed as a full line to avoid leftover characters from earlier values.
+- Added OLED project files:
+  - `inc/oled.h`
+  - `inc/oledfont.h`
+  - `src/oled.c`
