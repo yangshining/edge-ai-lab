@@ -1,5 +1,20 @@
-# Keil MDK-ARM build output
-listing/
-output/
+# Keil MDK-ARM user-specific files
 *.uvguix.*
 *.uvoptx
+
+# Keil MDK-ARM build output directories
+listing/
+output/
+
+# Keil MDK-ARM build artifacts
+*.axf
+*.bin
+*.crf
+*.d
+*.dep
+*.hex
+*.htm
+*.lnp
+*.lst
+*.map
+*.o
