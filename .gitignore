@@ -53,3 +53,18 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# Common build output directories
+build/
+dist/
+out/
+target/
+bin/
+obj/
+Debug/
+Release/
+
+# Common generated files
+*.pyc
+*.pyo
+__pycache__/
