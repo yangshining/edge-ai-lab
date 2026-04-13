@@ -1,0 +1,12 @@
+diff --git a/include/configs/xilinx_zynqmp.h b/include/configs/xilinx_zynqmp.h
+index 3d980b9e01..6176c75977 100644
+--- a/include/configs/xilinx_zynqmp.h
++++ b/include/configs/xilinx_zynqmp.h
+@@ -98,6 +98,7 @@
+ 	"scriptaddr=0x2000000\0" \
+ 	"ramdisk_addr_r=0x02100000\0" \
+ 	"script_size_f=0x20000\0" \
++	"ethact=ethernet@ff0d0000\0" \
+ 	"zboot_info=" ZBOOT_INFO "\0" \
+ 	"zboot_ver=" ZBOOT_VERSION "\0" \
+ 	"zboot=1\0" \

@@ -1,0 +1,31 @@
+From aab5b9b002e9dc6c359dc5f8e742cf1a7d576236 Mon Sep 17 00:00:00 2001
+From: Fan Wu <fan.wu@zillnk.com>
+Date: Thu, 29 May 2025 11:39:36 +0800
+Subject: [PATCH 2/2] sup yt phy 10/100/1000m led blink
+
+---
+ drivers/net/phy/motorcomm.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/drivers/net/phy/motorcomm.c b/drivers/net/phy/motorcomm.c
+index aca1404e3dc3..db969d15cc32 100644
+--- a/drivers/net/phy/motorcomm.c
++++ b/drivers/net/phy/motorcomm.c
+@@ -1284,6 +1284,14 @@ static int yt8521_config_init(struct phy_device *phydev)
+ 	if (ret < 0)
+ 		return ret;
+ 
++	ret = ytphy_write_ext(phydev, 0xa00d, 0x1800);
++	if (ret < 0)
++		return ret;
++
++	ret = ytphy_write_ext(phydev, 0xa00e, 0x2600);
++	if (ret < 0)
++		return ret;
++
+ 	/* disable auto sleep */
+ 	val = ytphy_read_ext(phydev, YT8521_EXTREG_SLEEP_CONTROL1);
+ 	if (val < 0)
+-- 
+2.25.1
+

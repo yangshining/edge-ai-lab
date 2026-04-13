@@ -1,0 +1,168 @@
+# This is a boot script for U-Boot
+# Generate boot.scr:
+# mkimage -c none -A arm -T script -d boot.cmd.default boot.scr
+#
+################
+@@PRE_BOOTENV@@
+
+sf probe 0 0 0;
+mw @@FIT_IMAGE_LOAD_ADDRESS@@ 0x0 0x4600000;
+if test "${reset_reason}" = "PMU"; then
+	while test -n "${roll_back}" && test "${roll_back}" != "0"; do
+		setexpr roll_back $roll_back - 1;
+		echo "Update slot${zboot} failed, do roll back action; roll back rest is [${roll_back}]!";
+		setenv bootenv_save true;
+		if test "${zboot}" = "2"; then
+			echo "Boot emmc partition 1.";
+			ext4load mmc 0:5 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+			if test "${runing}" != "1"; then
+				setenv runing 1;
+				setenv bootenv_save true
+			fi
+			if test "${bootenv_save}" = "true"; then
+				setenv bootenv_save false;
+				saveenv;
+			fi
+			zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+		fi
+		if test "${zboot}" = "1"; then
+			echo "Boot emmc partition 2.";
+			ext4load mmc 0:6 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+			if test "${runing}" != "2"; then
+				setenv runing 2;
+				setenv bootenv_save true
+			fi
+			if test "${bootenv_save}" = "true"; then
+				setenv bootenv_save false;
+				saveenv;
+			fi
+			zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+		fi
+	done
+	echo "Boot emmc backup partition 0.";
+	ext4load mmc 0:1 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+	if test "${runing}" != "0" || test "${auappnum}" != "1"; then
+		setenv runing 0;
+		setenv auappnum 1;
+		setenv bootenv_save true;
+	fi
+	if test "${bootenv_save}" = "true"; then
+		setenv bootenv_save false;
+		saveenv;
+	fi
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	echo "Boot emmc backup partition 1.";
+	ext4load mmc 0:2 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+	if test "${runing}" != "0" || test "${auappnum}" != "2"; then
+		setenv runing 0;
+		setenv auappnum 2;
+		setenv bootenv_save true;
+	fi
+	if test "${bootenv_save}" = "true"; then
+		setenv bootenv_save false;
+		saveenv;
+	fi
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	exit;
+fi
+if test "${zboot}" = "1"; then
+	echo "Boot emmc partition 1.";
+	ext4load mmc 0:5 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+	if test "${runing}" != "1"; then
+		setenv runing 1;
+		setenv bootenv_save true
+	fi
+	if test "${bootenv_save}" = "true"; then
+		setenv bootenv_save false;
+		saveenv;
+	fi
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	echo "Boot emmc backup partition 0.";
+	ext4load mmc 0:1 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+	if test "${runing}" != "0" || test "${auappnum}" != "1"; then
+		setenv runing 0;
+		setenv auappnum 1;
+		setenv bootenv_save true;
+	fi
+	if test "${bootenv_save}" = "true"; then
+		setenv bootenv_save false;
+		saveenv;
+	fi
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	echo "Boot emmc backup partition 1.";
+	ext4load mmc 0:2 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+	if test "${runing}" != "0" || test "${auappnum}" != "2"; then
+		setenv runing 0;
+		setenv auappnum 2;
+		setenv bootenv_save true;
+	fi
+	if test "${bootenv_save}" = "true"; then
+		setenv bootenv_save false;
+		saveenv;
+	fi
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	exit;
+fi
+if test "${zboot}" = "2"; then
+	echo "Boot emmc partition 2.";
+	ext4load mmc 0:6 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+	if test "${runing}" != "2"; then
+		setenv runing 2;
+		setenv bootenv_save true
+	fi
+	if test "${bootenv_save}" = "true"; then
+		setenv bootenv_save false;
+		saveenv;
+	fi
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	echo "Boot emmc backup partition 0.";
+	ext4load mmc 0:1 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+	if test "${runing}" != "0" || test "${auappnum}" != "1"; then
+		setenv runing 0;
+		setenv auappnum 1;
+		setenv bootenv_save true;
+	fi
+	if test "${bootenv_save}" = "true"; then
+		setenv bootenv_save false;
+		saveenv;
+	fi
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	echo "Boot emmc backup partition 1.";
+	ext4load mmc 0:2 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+	if test "${runing}" != "0" || test "${auappnum}" != "2"; then
+		setenv runing 0;
+		setenv auappnum 2;
+		setenv bootenv_save true;
+	fi
+	if test "${bootenv_save}" = "true"; then
+		setenv bootenv_save false;
+		saveenv;
+	fi
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	exit;
+fi
+echo "Boot emmc backup partition 0.";
+ext4load mmc 0:1 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+if test "${runing}" != "0" || test "${auappnum}" != "1"; then
+	setenv runing 0;
+	setenv auappnum 1;
+	setenv bootenv_save true;
+fi
+if test "${bootenv_save}" = "true"; then
+	setenv bootenv_save false;
+	saveenv;
+fi
+zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+echo "Boot emmc backup partition 1.";
+ext4load mmc 0:2 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+if test "${runing}" != "0" || test "${auappnum}" != "2"; then
+	setenv runing 0;
+	setenv auappnum 2;
+	setenv bootenv_save true;
+fi
+if test "${bootenv_save}" = "true"; then
+	setenv bootenv_save false;
+	saveenv;
+fi
+zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+exit;

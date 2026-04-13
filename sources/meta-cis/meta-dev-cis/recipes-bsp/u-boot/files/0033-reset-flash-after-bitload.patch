@@ -1,0 +1,22 @@
+diff --git a/cmd/zboot.c b/cmd/zboot.c
+index 7b852254cb..b8565a22e6 100644
+--- a/cmd/zboot.c
++++ b/cmd/zboot.c
+@@ -11,7 +11,7 @@
+ // #define DEFAULT_NMR_HDID2_GPIO 9
+ // #define DEFAULT_NMR_HDID3_GPIO 10
+ #define DEFAULT_NMR_HDID_GPIO(i) (7 + (i))
+-
++#define QSPI_FLASH_RST_GPIO 81
+ /*
+ Low: Limited ZU67
+ High: Std ZU67
+@@ -593,6 +593,8 @@ static int do_zboot(struct cmd_tbl *cmdtp, int flag, int argc, char * const argv
+ 		return CMD_RET_FAILURE;
+ 	}
+ 
++	printf("Zboot reset main fpga flash!!");
++	gpio_request(QSPI_FLASH_RST_GPIO, "nmr_gpio");gpio_direction_output(QSPI_FLASH_RST_GPIO, 1);
+ #ifdef CONFIG_CLU_INIT
+ 	printf("CLU config...\r\n");
+ 	clu_init();

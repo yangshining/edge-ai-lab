@@ -1,0 +1,72 @@
+From 0d86553529d1f814b137f3aa22a279638360dcde Mon Sep 17 00:00:00 2001
+From: Fan Wu <fan.wu@zillnk.com>
+Date: Thu, 13 Mar 2025 16:30:07 +0800
+Subject: [PATCH] optimize dpll mode setting strategy
+
+Change-Id: I8d406180678fe9c3b38fcb0c9c5fec4ac249e221
+---
+ ptp_clockmatrix.c   | 27 ++++++++++++-------
+ 1 file changed, 17 insertions(+), 10 deletions(-)
+
+diff --git a/ptp_clockmatrix.c b/ptp_clockmatrix.c
+index ea47b274..77e6cc56 100755
+--- a/ptp_clockmatrix.c
++++ b/ptp_clockmatrix.c
+@@ -1396,6 +1396,7 @@ static int idtcm_set_pll_mode(struct idtcm_channel *channel,
+ 	struct idtcm *idtcm = channel->idtcm;
+ 	int err;
+ 	u8 dpll_mode;
++	u8 cur_dpll_mode;
+ 	u8 buf[2] = {0};
+ 
+ 	/* Setup WF/WP timer for phase pull-in to work correctly */
+@@ -1417,6 +1418,16 @@ static int idtcm_set_pll_mode(struct idtcm_channel *channel,
+ 	if (err)
+ 		return err;
+ 
++	cur_dpll_mode = (dpll_mode & (PLL_MODE_MASK << PLL_MODE_SHIFT)) >> PLL_MODE_SHIFT;
++
++	if (cur_dpll_mode == mode) {
++		/*dpll mode not changed, do nothing*/
++		return 0;
++	}
++
++	printk(KERN_WARNING "The current pll mode does not match.\n"
++		"cur_dpll_mode:%d, pll_mode:%d\n", cur_dpll_mode, mode);
++
+ 	dpll_mode &= ~(PLL_MODE_MASK << PLL_MODE_SHIFT);
+ 
+ 	dpll_mode |= (mode << PLL_MODE_SHIFT);
+@@ -1733,11 +1744,9 @@ static int _idtcm_adjphase(struct idtcm_channel *channel, s32 delta_ns)
+ 	int err;
+ 	u8 i;
+ 
+-	if (channel->mode != PTP_PLL_MODE_WRITE_PHASE) {
+-		err = channel->configure_write_phase(channel);
+-		if (err)
+-			return err;
+-	}
++	err = idtcm_set_pll_mode(channel, PLL_MODE_WRITE_PHASE);
++	if (err)
++		return err;
+ 
+ 	phase_50ps = div_s64((s64)delta_ns * 1000, 50);
+ 
+@@ -1760,11 +1769,9 @@ static int _idtcm_adjfine(struct idtcm_channel *channel, long scaled_ppm)
+ 	u8 buf[6] = {0};
+ 	s64 fcw;
+ 
+-	if (channel->mode  != PTP_PLL_MODE_WRITE_FREQUENCY) {
+-		err = channel->configure_write_frequency(channel);
+-		if (err)
+-			return err;
+-	}
++	err = idtcm_set_pll_mode(channel, PLL_MODE_WRITE_FREQUENCY);
++	if (err)
++		return err;
+ 
+ 	/*
+ 	 * Frequency Control Word unit is: 1.11 * 10^-10 ppm
+-- 
+2.25.1
+

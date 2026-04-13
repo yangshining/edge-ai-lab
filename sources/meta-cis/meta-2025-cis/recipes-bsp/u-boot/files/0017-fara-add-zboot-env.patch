@@ -1,0 +1,62 @@
+diff --git a/board/xilinx/zynqmp/zynqmp.c b/board/xilinx/zynqmp/zynqmp.c
+index bab33a93c8..511b8ebe47 100644
+--- a/board/xilinx/zynqmp/zynqmp.c
++++ b/board/xilinx/zynqmp/zynqmp.c
+@@ -354,7 +354,13 @@ static int reset_reason(void)
+ 
+ 	puts("\n");
+ 
+-	env_set("reset_reason", reason);
++	const char *current_reason = env_get("reset_reason");
++	if (!current_reason || strcmp(current_reason, reason) != 0 )
++	{
++		printf("Set reset reason: %s, previous: %s.\n", reason, current_reason);
++		env_set("reset_reason", reason);
++		env_set("bootenv_save", "true"); //save env later;
++	}
+ 	ret = zynqmp_mmio_write((ulong)&crlapb_base->reset_reason, ~0, ~0);
+ 	if (ret)
+ 		return -EINVAL;
+diff --git a/cmd/zboot.c b/cmd/zboot.c
+index 7ca6521afa..f31dbe3fbb 100644
+--- a/cmd/zboot.c
++++ b/cmd/zboot.c
+@@ -594,11 +594,7 @@ static int do_zboot(struct cmd_tbl *cmdtp, int flag, int argc, char * const argv
+ 
+ 	image_addr = base_addr + sh->head_size + sh->kernel_offset;
+ 
+-	env_set("zboot_ver", ZBOOT_VERSION);
+-	env_set("zboot_info", ZBOOT_INFO);
+-	env_save();
+ 	/* boot kernel */
+-
+ 	to_bootm(image_addr);
+ 
+ 	return 0;
+diff --git a/include/configs/xilinx_zynqmp.h b/include/configs/xilinx_zynqmp.h
+index 2790472820..b7945a900b 100644
+--- a/include/configs/xilinx_zynqmp.h
++++ b/include/configs/xilinx_zynqmp.h
+@@ -10,6 +10,8 @@
+ #ifndef __XILINX_ZYNQMP_H
+ #define __XILINX_ZYNQMP_H
+ 
++#include <zboot_info.h>
++
+ /* Generic Interrupt Controller Definitions */
+ #define GICD_BASE	0xF9010000
+ #define GICC_BASE	0xF9020000
+@@ -60,9 +62,11 @@
+ 	"kernel_size_r=0x10000000\0" \
+ 	"kernel_comp_addr_r=0x30000000\0" \
+ 	"kernel_comp_size=0x3C00000\0" \
+-	"scriptaddr=0x20000000\0" \
++	"scriptaddr=0x2000000\0" \
+ 	"ramdisk_addr_r=0x02100000\0" \
+-	"script_size_f=0x80000\0" \
++	"script_size_f=0x20000\0" \
++	"zboot_info=" ZBOOT_INFO "\0" \
++	"zboot_ver=" ZBOOT_VERSION "\0" \
+ 	"stdin=serial\0" \
+ 	"stdout=serial,vidconsole\0" \
+ 	"stderr=serial,vidconsole\0" \

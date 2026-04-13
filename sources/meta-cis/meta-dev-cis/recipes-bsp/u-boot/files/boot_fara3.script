@@ -1,0 +1,73 @@
+# This is a boot script for U-Boot
+# Generate boot.scr:
+# mkimage -c none -A arm -T script -d boot.cmd.default boot.scr
+#
+################
+@@PRE_BOOTENV@@
+
+sf probe 0 0 0;
+mw @@FIT_IMAGE_LOAD_ADDRESS@@ 0x0 0x4600000;
+if test "${reset_reason}" = "PMU"; then
+	echo "Boot emmc backup partition 0.";
+	ext4load mmc 0:1 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+	setenv runing 0;
+	setenv zboot 0;
+	setenv auappnum 1;
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	echo "Boot emmc backup partition 1.";
+	ext4load mmc 0:2 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+	setenv runing 0;
+	setenv zboot 0;
+	setenv auappnum 2;
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	exit;
+fi
+if test "${zboot}" = "1"; then
+	echo "Boot emmc partition 1.";
+	ext4load mmc 0:5 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+	setenv runing 1;
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	echo "Boot emmc backup partition 0.";
+	ext4load mmc 0:1 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+	setenv runing 0;
+	setenv zboot 0;
+	setenv auappnum 1;
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	echo "Boot emmc backup partition 1.";
+	ext4load mmc 0:2 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+	setenv runing 0;
+	setenv zboot 0;
+	setenv auappnum 2;
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	exit;
+fi
+if test "${zboot}" = "2"; then
+	echo "Boot emmc partition 2.";
+	ext4load mmc 0:6 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+	setenv runing 2;
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	echo "Boot emmc backup partition 0.";
+	ext4load mmc 0:1 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+	setenv runing 0;
+	setenv zboot 0;
+	setenv auappnum 1;
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	echo "Boot emmc backup partition 1.";
+	ext4load mmc 0:2 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+	setenv runing 0;
+	setenv zboot 0;
+	setenv auappnum 2;
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	exit;
+fi
+echo "Boot emmc backup partition 0.";
+ext4load mmc 0:1 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+setenv runing 0;
+setenv auappnum 1;
+zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+echo "Boot emmc backup partition 1.";
+ext4load mmc 0:2 @@FIT_IMAGE_LOAD_ADDRESS@@ lm.bin;
+setenv runing 0;
+setenv auappnum 2;
+zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+exit;

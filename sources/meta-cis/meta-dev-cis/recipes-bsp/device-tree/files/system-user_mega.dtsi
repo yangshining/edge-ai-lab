@@ -1,0 +1,335 @@
+/include/ "system-conf.dtsi"
+#include <dt-bindings/interrupt-controller/irq.h>
+/ {
+	gpio_keys:@0 {
+		compatible = "gpio-keys";
+		label = "Mega error report buttons";
+
+		gpio_irq0 {
+			label = "EX_ALARM_B";
+			gpios = <&gpio 68 1>;
+			linux,code = <0x100>;
+			gpio-key,level-trigger;
+			debounce-interval = <20>;
+		};
+
+		gpio_irq1 {
+			label = "EX_ALARM_A";
+			gpios = <&gpio 69 1>;
+			linux,code = <0x101>;
+			gpio-key,level-trigger;
+			debounce-interval = <20>;
+		};
+	};
+};
+
+&qspi {
+	status = "okay";
+	is-dual = <0>;
+	num-cs = <1>;
+	flash@0 {
+		compatible ="jedec,spi-nor";
+		reg = <0x0>;
+		spi-tx-bus-width = <1>;
+		spi-rx-bus-width = <4>;
+		spi-max-frequency = <108000000>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+	};
+};
+
+&i2c0 {
+	status = "okay";
+};
+
+&i2c1 {
+	status = "okay";
+};
+
+&spi0 {
+	status = "okay";
+	num-cs = <1>;
+	phc@0 {
+		compatible="idt,8a34000";
+		reg = <0>;
+		spi-max-frequency = <10000000>;
+		reset-gpio = <&gpio 78 1>;//GPIO_ACTIVE_LOW
+	};
+};
+
+&spi1 {
+	status = "okay";
+	num-cs = <1>;
+	tpm@0 {
+		compatible = "infineon,slb9670";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		spi-max-frequency = <32000000>;
+		reg = <0>;
+		status = "okay";
+	};
+};
+
+&axi_quad_spi_0 {
+	status = "okay";
+	num-cs = <8>;
+	u-boot,dm-pre-reloc;
+
+	spidev_0@0 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "rohm,dh2228fv";
+		reg = <0>;
+		spi-max-frequency = <500000>;
+	};
+
+	spidev_1@1 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "rohm,dh2228fv";
+		reg = <1>;
+		spi-max-frequency = <500000>;
+	};
+
+	spidev_2@2 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "rohm,dh2228fv";
+		reg = <2>;
+		spi-max-frequency = <500000>;
+	};
+
+	spidev_3@3 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "rohm,dh2228fv";
+		reg = <3>;
+		spi-max-frequency = <500000>;
+	};
+
+	spidev_4@4 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "rohm,dh2228fv";
+		reg = <4>;
+		spi-max-frequency = <500000>;
+	};
+};
+
+&gem2 {
+	status = "okay";
+	phy-handle = <&phy0>;
+	phy-mode = "sgmii";
+	is-internal-pcspma = <0x1>;
+	phy0: phy@1 {
+		reg = <0x1>;
+	};
+};
+
+&amba_pl {
+	fpga: fpga@a0000000 {
+		compatible = "generic-uio";
+		reg = <0x0 0xA0000000 0x0 0x20000000>;
+	};
+
+	dpd_0_USER: dpd_user@a4000000 {
+		compatible = "generic-uio";
+		reg = <0x0 0xa4000000 0x0 0x20000>;
+	};
+};
+
+// &debug_bridge_0 {
+// 	compatible = "xlnx,xvc";
+// };
+
+&dpd_0{
+	compatible = "generic-uio";
+	reg = <0x0 0xa8000000 0x0 0x4000000>;
+};
+
+&watchdog0 {
+    status = "okay";
+    reset-on-timeout;
+    timeout-sec = <60>;
+};
+
+&support_1588_2step_timer1588_subs_timer_1588_v2_0_0 {
+	compatible = "xlnx,timer-1588-2.0";
+	xlnx,period = <4000000>;
+        pps_in_fifo = <&axi_fifo_mm_s_0>;
+};
+
+&xxv_ethernet_0 {
+	//status = "disabled";
+	axistream-connected = <&eth_axi_dma>;
+	axistream-control-connected = <&eth_axi_dma>;
+	axififo-connected = <&support_1588_2step_tx_ts_fifo_axi_fifo_mm_s_0>;
+	xlnx,rxtsfifo = <&support_1588_2step_rx_ts_fifo_axi_fifo_mm_s_0>;
+	xlnx,num-queues = /bits/ 16 <0x1>;
+	xlnx,channel-ids = "1";
+	xlnx,include-dre;
+	interrupt-names = "mm2s_ch1_introut", "s2mm_ch1_introut";
+	interrupt-parent = <&gic>;
+	interrupts = <0 107 4 0 109 4>;
+	local-mac-address = [00 0A 35 00 1A AE];
+	xlnx,rxmem = <0x3000>;
+};
+
+&xxv_ethernet_1 {
+	axistream-connected = <&eth_axi_dma>;
+	axistream-control-connected = <&eth_axi_dma>;
+	axififo-connected = <&support_1588_2step1_tx_ts_fifo_axi_fifo_mm_s_0>;
+	xlnx,rxtsfifo = <&support_1588_2step1_rx_ts_fifo_axi_fifo_mm_s_0>;
+	xlnx,num-queues = /bits/ 16 <0x1>;
+	xlnx,channel-ids = "2";
+	xlnx,include-dre;
+	interrupt-names = "mm2s_ch2_introut", "s2mm_ch2_introut";
+	interrupt-parent = <&gic>;
+	interrupts = <0 108 4 0 110 4>;
+	local-mac-address = [00 0A 35 00 1A AC];
+	xlnx,rxmem = <0x3000>;
+};
+
+&eth_axi_dma {
+	compatible = "xlnx,eth-dma";
+	xlnx,include-dre;
+};
+
+&gpio_keys {
+
+	pl_irq0{
+		label = "RADIO_CTRL";
+		linux,code = <1>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <0 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq1{
+		label = "PAP";
+		linux,code = <2>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <1 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq2{
+		label = "ETH_IF";
+		linux,code = <3>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <2 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq3{
+		label = "ETH";
+		linux,code = <4>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <3 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq5{
+		label = "RTS";
+		linux,code = <6>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <5 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq6{
+		label = "PWR";
+		linux,code = <7>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <6 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq8{
+		label = "ORAN_IF";
+		linux,code = <9>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <8 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq12{
+		label = "TDD_CTRL";
+		linux,code = <13>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <12 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq14{
+		label = "JESD_PHY";
+		linux,code = <15>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <14 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq15{
+		label = "JESD";
+		linux,code = <16>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <15 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq16{
+		label = "DUC";
+		linux,code = <17>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <16 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq17{
+		label = "DDC";
+		linux,code = <18>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <17 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq18{
+		label = "IFFT";
+		linux,code = <19>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <18 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq19{
+		label = "FFT";
+		linux,code = <20>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <19 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq25{
+		label = "AXI_UART";
+		linux,code = <26>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <25 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq26{
+		label = "AFE_INT_01";
+		linux,code = <27>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <26 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq27{
+		label = "AFE_INT_23";
+		linux,code = <28>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <27 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+};

@@ -1,0 +1,35 @@
+From ff934c482262cb076dbfd29d47f45aeb0f02a323 Mon Sep 17 00:00:00 2001
+From: "fan.wu" <fan.wu@zillnk.com>
+Date: Tue, 6 Aug 2024 06:48:30 +0000
+Subject: [PATCH 5/9] fara supports 3types gd norflash in kernel 2023.2
+
+---
+ drivers/mtd/spi-nor/gigadevice.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/drivers/mtd/spi-nor/gigadevice.c b/drivers/mtd/spi-nor/gigadevice.c
+index 0a2904727237..60532ab58aba 100644
+--- a/drivers/mtd/spi-nor/gigadevice.c
++++ b/drivers/mtd/spi-nor/gigadevice.c
+@@ -249,6 +249,18 @@ static const struct flash_info gigadevice_nor_parts[] = {
+ 		FIXUP_FLAGS(SPI_NOR_4B_OPCODES | SPI_NOR_IO_MODE_EN_VOLATILE)
+ 		MFR_FLAGS(USE_FSR)
+ 		.fixups = &gd25b512_fixups },
++	{ "gd55b02ge",  INFO(0xc8471c, 0, 64 * 1024, 4096)
++		FLAGS(SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
++		NO_SFDP_FLAGS(SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ)
++		FIXUP_FLAGS(SPI_NOR_4B_OPCODES) },
++	{ "gd25b256me", INFO(0xc8471a, 0, 64 * 1024, 1024)
++		FLAGS(SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
++		NO_SFDP_FLAGS(SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ)
++		FIXUP_FLAGS(SPI_NOR_4B_OPCODES) },
++	{ "gd55b01ge", INFO(0xc8471b, 0, 64 * 1024, 2048)
++		FLAGS(SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB)
++		NO_SFDP_FLAGS(SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ)
++		FIXUP_FLAGS(SPI_NOR_4B_OPCODES) },
+ };
+ 
+ const struct spi_nor_manufacturer spi_nor_gigadevice = {
+-- 
+2.25.1
+

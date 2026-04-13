@@ -1,0 +1,19 @@
+# This is a boot script for U-Boot
+# Generate boot.scr:
+# mkimage -c none -A arm -T script -d boot.cmd.default boot.scr
+#
+################
+@@PRE_BOOTENV@@
+
+ipconfig
+if test "${chip}" = "67"; then
+	if test "${reset_reason}" = "EXTERNAL"; then
+		exit;
+	fi
+	for i in $(seq 1 3)
+	do
+		tftpboot @@FIT_IMAGE_LOAD_ADDRESS@@ lm_zu67.bin;
+		zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x6400000;
+	done
+	exit;
+fi

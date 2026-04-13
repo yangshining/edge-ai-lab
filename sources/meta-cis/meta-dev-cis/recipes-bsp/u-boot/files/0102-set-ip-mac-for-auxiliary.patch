@@ -1,0 +1,441 @@
+From c539e55ace3f11ed6a46bdceb546d1f362df6cb2 Mon Sep 17 00:00:00 2001
+From: Fang Chao <chao.fang@zillnk.com>
+Date: Fri, 25 Jul 2025 17:50:43 +0800
+Subject: [PATCH] set ip
+
+---
+ cmd/Kconfig    |   5 +
+ cmd/Makefile   |   1 +
+ cmd/ipconfig.c | 391 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 397 insertions(+)
+ create mode 100755 cmd/ipconfig.c
+
+diff --git a/cmd/Kconfig b/cmd/Kconfig
+index ba1ca42711..46d70f6ed0 100644
+--- a/cmd/Kconfig
++++ b/cmd/Kconfig
+@@ -777,6 +777,11 @@ config CLU_INIT
+ 	help
+ 	  The CLU c is configured through spi
+ 
++config CMD_IPCFG_Z
++	bool "ipconfig"
++	help
++	  ipconfig - automatically configure THE IP address and MAC.
++
+ config LOOP_BACK_ASSERT
+ 	bool "LoopBack assert - zillnk RU ETH loopback check"
+ 	help
+diff --git a/cmd/Makefile b/cmd/Makefile
+index b8cca91559..5fadaea16a 100644
+--- a/cmd/Makefile
++++ b/cmd/Makefile
+@@ -170,6 +170,7 @@ obj-$(CONFIG_CMD_FS_UUID) += fs_uuid.o
+ obj-$(CONFIG_LOOP_BACK_ASSERT) += ethloop.o
+ obj-$(CONFIG_CMD_ZBOOT_Z) += zboot.o
+ obj-$(CONFIG_CMD_CLU_Z) += clu.o
++obj-$(CONFIG_CMD_IPCFG_Z) += ipconfig.o
+ obj-$(CONFIG_CMD_USB_MASS_STORAGE) += usb_mass_storage.o
+ obj-$(CONFIG_CMD_USB_SDP) += usb_gadget_sdp.o
+ obj-$(CONFIG_CMD_THOR_DOWNLOAD) += thordown.o
+diff --git a/cmd/ipconfig.c b/cmd/ipconfig.c
+new file mode 100755
+index 0000000000..5b96dfeba9
+--- /dev/null
++++ b/cmd/ipconfig.c
+@@ -0,0 +1,391 @@
++// SPDX-License-Identifier:
++/*
++ * (C) Copyright 2021
++ * Zillnk Inc.
++ */
++
++#include <common.h>
++#include <command.h>
++#include <search.h>
++#include <env.h>
++#include <asm/gpio.h>
++#include <zynqmp_firmware.h>
++#include <console.h>
++#include <env_internal.h>
++#include <malloc.h>
++
++
++#define ZU19			19
++#define ZU49			49
++#define ZU67            67
++#define ZU19_S			"19"
++#define ZU49_S			"49"
++#define ZU67_S			"67"
++#define STR_PIN_H		"24"
++#define STR_PIN_L		"25"
++#define DEFAULT_NMR_PIN_GPIO(i) (48 + (i))
++#define IPADDR			"10.11.1."
++#define SERVERIP		"10.11.1.100"
++#define ETHADDR			"00:0a:35:00:"
++#define SERVERETHADD	"00:00"
++
++#define CHIP_ENV		"chip"
++#define IPADDR_ENV		"ipaddr"
++#define ETHADDR_ENV		"ethaddr"
++#define ETH1ADDR_ENV	"eth1addr"
++#define SERVERIP_ENV	"serverip"
++
++#define set_bit(num, pos, flag)	do{ \
++									int n = 1; \
++									n = n << (pos - 1); \
++									if (flag == 0) \
++										num = num&(~n); \
++									else\
++										num = num | n; \
++								}while(0)
++
++static const struct {
++	u32 id;
++	u8 device;
++} chip_devices[] = {
++	{.id = 0x04758093,.device = ZU19,},
++	{.id = 0x047FE093,.device = ZU49,},
++	{.id = 0x046d0093,.device = ZU67,},
++};
++
++static int __do_env_set_(int flag, int argc, char * const argv[], int env_flag)
++{
++	int   i, len;
++	char  *name, *value, *s;
++	struct env_entry e, *ep;
++
++	debug("Initial value for argc=%d\n", argc);
++
++#if CONFIG_IS_ENABLED(CMD_NVEDIT_EFI)
++	if (argc > 1 && argv[1][0] == '-' && argv[1][1] == 'e')
++		return do_env_set_efi(NULL, flag, --argc, ++argv);
++#endif
++
++	while (argc > 1 && **(argv + 1) == '-') {
++		char *arg = *++argv;
++
++		--argc;
++		while (*++arg) {
++			switch (*arg) {
++			case 'f':		/* force */
++				env_flag |= H_FORCE;
++				break;
++			default:
++				return CMD_RET_USAGE;
++			}
++		}
++	}
++	debug("Final value for argc=%d\n", argc);
++	name = argv[1];
++
++	if (strchr(name, '=')) {
++		printf("## Error: illegal character '='"
++		       "in variable name \"%s\"\n", name);
++		return 1;
++	}
++
++	/* Delete only ? */
++	if (argc < 3 || argv[2] == NULL) {
++		int rc = hdelete_r(name, &env_htab, env_flag);
++		return !rc;
++	}
++
++	/*
++	 * Insert / replace new value
++	 */
++	for (i = 2, len = 0; i < argc; ++i)
++		len += strlen(argv[i]) + 1;
++
++	value = malloc(len);
++	if (value == NULL) {
++		printf("## Can't malloc %d bytes\n", len);
++		return 1;
++	}
++	for (i = 2, s = value; i < argc; ++i) {
++		char *v = argv[i];
++
++		while ((*s++ = *v++) != '\0')
++			;
++		*(s - 1) = ' ';
++	}
++	if (s != value)
++		*--s = '\0';
++
++	e.key	= name;
++	e.data	= value;
++	hsearch_r(e, ENV_ENTER, &ep, &env_htab, env_flag);
++	free(value);
++	if (!ep) {
++		printf("## Error inserting \"%s\" variable, errno=%d\n",
++			name, errno);
++		return 1;
++	}
++
++	return 0;
++}
++
++static int _env_set_(const char *varname, const char *varvalue)
++{
++	const char * const argv[4] = { "setenv", varname, varvalue, NULL };
++
++	/* before import into hashtable */
++	if (!(gd->flags & GD_FLG_ENV_READY))
++		return 1;
++
++	if (varvalue == NULL || varvalue[0] == '\0')
++		return __do_env_set_(0, 2, (char * const *)argv, H_INTERACTIVE);
++	else
++		return __do_env_set_(0, 3, (char * const *)argv, H_INTERACTIVE);
++}
++
++static int get_chip_id()
++{
++	u32 id, i;
++	u32 payload[PAYLOAD_ARG_CNT];
++	xilinx_pm_request(PM_GET_CHIPID, 0, 0, 0, 0, payload);
++	id = payload[1];
++	for (i = 0; i < ARRAY_SIZE(chip_devices); i++) {
++		if (chip_devices[i].id == (id & 0x0FFFFFFF))
++			break;
++	}
++
++	if (i >= ARRAY_SIZE(chip_devices))
++		return -1;
++
++	return chip_devices[i].device;
++}
++
++__weak int name_to_gpio(const char *name)
++{
++	return simple_strtoul(name, NULL, 10);
++}
++
++static int get_level(char *pin_num)
++{
++	unsigned int gpio;
++	const char *str_gpio = pin_num;
++	int value;
++	int ret;
++
++	/* turn the gpio name into a gpio number */
++	gpio = name_to_gpio(str_gpio);
++	if (gpio < 0)
++		return -1;
++
++	/* grab the pin before we tweak it */
++	ret = gpio_request(gpio, "cmd_gpio");
++	if (ret && ret != -EBUSY) {
++		printf("gpio: requesting pin %u failed\n", gpio);
++		return -1;
++	}
++
++	gpio_direction_input(gpio);//shouldn't make an error running here
++	value = gpio_get_value(gpio);
++
++	return value;
++}
++
++static int get_identity()
++{
++	int h_pin_value;
++	int l_pin_value;
++	int identity = 0;
++
++	h_pin_value = get_level(STR_PIN_H);
++	l_pin_value = get_level(STR_PIN_L);
++
++	if(h_pin_value == -1 || l_pin_value == -1){
++		printf("get level error!\r\n");
++		return -1;
++	}
++
++	set_bit(identity, 1, h_pin_value);
++	set_bit(identity, 2, l_pin_value);
++
++	if(identity > 3)
++		return -1;
++
++	return identity;
++}
++
++//for emimo with 8 auxiliary chipsets
++static int get_identity2()
++{
++    int identity = 0, ret;
++
++    for (int i = 0; i < 4; i++) {
++		ret = gpio_request(DEFAULT_NMR_PIN_GPIO(i), "nmr_gpio");
++		printf("gpio: requesting hdid nmr pin %u\n", DEFAULT_NMR_PIN_GPIO(i));
++		if (ret && ret != -EBUSY) {
++			printf("gpio: requesting hdid nmr pin %u failed\n", DEFAULT_NMR_PIN_GPIO(i));
++			//return -1;
++		}
++		gpio_direction_input(DEFAULT_NMR_PIN_GPIO(i));
++		int pin_val = gpio_get_value(DEFAULT_NMR_PIN_GPIO(i));
++		printf("##pin_val[%d] %d\n", i, pin_val);
++		if (pin_val == 0 || pin_val == 1) {
++			identity |= pin_val << i;
++		} else {
++			printf("gpio: reading nmr pin %u failed = (%d)\n", DEFAULT_NMR_PIN_GPIO(i), pin_val);
++		}
++		printf("End identity %#x\n", identity, gpio_get_value(10));
++    }
++
++	printf("##Final identity %x \n", identity);
++    return (identity <= 9) ? identity : -1;
++}
++
++static int do_ipcfg(struct cmd_tbl *cmdtp, int flag, int argc, char * const argv[])
++{
++	if(argc > 1)
++show_usage:
++		return CMD_RET_USAGE;
++
++	uint8_t random_num = 1;
++	char ipaddr[18];
++	char ethaddr[20];
++	char *ethprime = NULL;
++
++	int chip_id = get_chip_id();
++
++	ethprime = env_get("ethprime");
++
++	if(chip_id == ZU19){
++		if(0 != _env_set_(IPADDR_ENV, SERVERIP)){
++			printf("setenv %s error\r\n", IPADDR_ENV);
++			goto show_usage;
++		}
++
++		if(0 != _env_set_(ETHADDR_ENV, ETHADDR SERVERETHADD)){
++			printf("setenv %s error\r\n", ETHADDR_ENV);
++			goto show_usage;
++		}
++
++		if(0 != _env_set_(ETH1ADDR_ENV, ETHADDR SERVERETHADD)){
++			printf("setenv %s error\r\n", ETH1ADDR_ENV);
++			goto show_usage;
++		}
++
++		if(0 != _env_set_(CHIP_ENV, ZU19_S)){
++			printf("setenv %s error\r\n", CHIP_ENV);
++			goto show_usage;
++		}
++
++		printf("Chip Num: %d\n", ZU19);
++		if(ethprime == NULL)
++			printf("ethdev: %s\n", "auto");
++		else
++			printf("ethdev: %s\n", ethprime);
++		printf("ipaddr: %s\n", SERVERIP);
++		printf("ethaddr: %s\n", ETHADDR SERVERETHADD);
++	}
++	else if(chip_id == ZU49){
++		int chip_num = get_identity();
++
++		if(chip_num == -1 ){
++			printf("get chip id error!\r\n");
++			goto show_usage;
++		}
++
++		sprintf(ipaddr, IPADDR"%d", (101 + chip_num));
++		sprintf(ethaddr, ETHADDR"%02x:%02x", random_num, (uint8_t)(chip_num + 1));
++
++		if(0 != _env_set_(IPADDR_ENV, ipaddr)){
++			printf("setenv %s error\r\n", IPADDR_ENV);
++			goto show_usage;
++		}
++
++		if(0 != _env_set_(ETHADDR_ENV, ethaddr)){
++			printf("setenv %s error\r\n", ETHADDR_ENV);
++			goto show_usage;
++		}
++
++		if(0 != _env_set_(ETH1ADDR_ENV, ethaddr)){
++			printf("setenv %s error\r\n", ETH1ADDR_ENV);
++			goto show_usage;
++		}
++
++		if(0 != _env_set_(SERVERIP_ENV, SERVERIP)){
++			printf("setenv %s error\r\n", SERVERIP_ENV);
++			goto show_usage;
++		}
++
++		if(0 != _env_set_(CHIP_ENV, ZU49_S)){
++			printf("setenv %s error\r\n", CHIP_ENV);
++			goto show_usage;
++		}
++
++		printf("Chip Num: %d%c\n", ZU49, ('A' + chip_num));
++		if(ethprime == NULL)
++			printf("ethdev: %s\n", "auto");
++		else
++			printf("ethdev: %s\n", ethprime);
++		printf("ipaddr: %s\n", ipaddr);
++		printf("serverip: %s\n", SERVERIP);
++		printf("ethaddr: %s\n", ethaddr);
++
++	}
++	else if(chip_id == ZU67){
++		int chip_num = get_identity2();
++
++		if(chip_num == -1 ){
++			printf("get chip id error!\r\n");
++			goto show_usage;
++		}
++
++		sprintf(ipaddr, IPADDR"%d", (101 + chip_num));
++		sprintf(ethaddr, ETHADDR"%02x:%02x", random_num, (uint8_t)(chip_num + 1));
++
++		if(0 != _env_set_(IPADDR_ENV, ipaddr)){
++			printf("setenv %s error\r\n", IPADDR_ENV);
++			goto show_usage;
++		}
++
++		if(0 != _env_set_(ETHADDR_ENV, ethaddr)){
++			printf("setenv %s error\r\n", ETHADDR_ENV);
++			goto show_usage;
++		}
++
++		if(0 != _env_set_(ETH1ADDR_ENV, ethaddr)){
++			printf("setenv %s error\r\n", ETH1ADDR_ENV);
++			goto show_usage;
++		}
++
++		if(0 != _env_set_(SERVERIP_ENV, SERVERIP)){
++			printf("setenv %s error\r\n", SERVERIP_ENV);
++			goto show_usage;
++		}
++
++		if(0 != _env_set_(CHIP_ENV, ZU67_S)){
++			printf("setenv %s error\r\n", CHIP_ENV);
++			goto show_usage;
++		}
++
++		printf("Chip Num: %d%c\n", ZU67, ('A' + chip_num));
++		if(ethprime == NULL)
++			printf("ethdev: %s\n", "auto");
++		else
++			printf("ethdev: %s\n", ethprime);
++		printf("ipaddr: %s\n", ipaddr);
++		printf("serverip: %s\n", SERVERIP);
++		printf("ethaddr: %s\n", ethaddr);
++
++	}	
++	else{
++		printf("unknown chip.\r\n");
++		goto show_usage;
++	}
++
++	return 0;
++}
++
++U_BOOT_CMD(
++	ipconfig, 1, 0, do_ipcfg,
++	"ipconfig: configure the ETH",
++	"ipconfig - automatically configure THE IP address and MAC\n"
++);
+\ No newline at end of file
+-- 
+2.25.1
+

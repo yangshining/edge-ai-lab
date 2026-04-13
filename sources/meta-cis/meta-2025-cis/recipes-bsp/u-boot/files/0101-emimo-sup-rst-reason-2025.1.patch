@@ -1,0 +1,19 @@
+diff --git a/board/xilinx/versal/board.c b/board/xilinx/versal/board.c
+index ef87c5c2238..13c34cdbbc5 100644
+--- a/board/xilinx/versal/board.c
++++ b/board/xilinx/versal/board.c
+@@ -340,12 +340,12 @@ static int boot_targets_setup(void)
+ int board_late_init(void)
+ {
+ 	int ret;
+-
++#if 0
+ 	if (!(gd->flags & GD_FLG_ENV_DEFAULT)) {
+ 		debug("Saved variables - Skipping\n");
+ 		return 0;
+ 	}
+-
++#endif
+ 	if (!IS_ENABLED(CONFIG_ENV_VARS_UBOOT_RUNTIME_CONFIG))
+ 		return 0;
+ 

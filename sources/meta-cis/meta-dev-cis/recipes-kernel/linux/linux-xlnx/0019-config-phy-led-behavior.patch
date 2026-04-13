@@ -1,0 +1,31 @@
+From 8a0f2125c1cf2d19623991015a64886e7f11eee3 Mon Sep 17 00:00:00 2001
+From: "yang.xu" <yang.xu@zillnk.com>
+Date: Tue, 8 Apr 2025 16:05:34 +0800
+Subject: [PATCH] config phy led behavior
+
+---
+ drivers/net/phy/motorcomm.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/drivers/net/phy/motorcomm.c b/drivers/net/phy/motorcomm.c
+index 299a12e66c5f..fb455fde889b 100644
+--- a/drivers/net/phy/motorcomm.c
++++ b/drivers/net/phy/motorcomm.c
+@@ -1284,6 +1284,14 @@ static int yt8521_config_init(struct phy_device *phydev)
+     if (ret < 0)
+         return ret;
+ 
++    ret = ytphy_write_ext(phydev, 0xa00d, 0x1800);
++    if (ret < 0)
++        return ret;
++
++    ret = ytphy_write_ext(phydev, 0xa00e, 0x2600);
++    if (ret < 0)
++        return ret;
++
+     /* disable auto sleep */
+     val = ytphy_read_ext(phydev, YT8521_EXTREG_SLEEP_CONTROL1);
+     if (val < 0)
+-- 
+2.25.1
+

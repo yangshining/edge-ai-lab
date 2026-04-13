@@ -1,0 +1,12 @@
+ZULU patches based on petalinux 2021.1 u-boot-xlnx basement:
+	0002-zulu-support-zboot-cmd.patch
+	0003-zulu-support-ipconfig-cmd.patch
+	0004-zulu-support-driver-for-mv88e6185.patch
+
+FARA patches based on petalinux 2021.2 u-boot-xlnx basement:
+	0001-fara-adapt-bootenv-for-zillnk.patch
+	0002-fara-add-zboot-cmd.patch
+	0003-fara-add-centec-phy-driver-suport.patch
+
+MEGA maint branch 2021.1 uboot baseline extracted in 2025.4.1:
+        0001-mega-maint-br20211-migration.patch

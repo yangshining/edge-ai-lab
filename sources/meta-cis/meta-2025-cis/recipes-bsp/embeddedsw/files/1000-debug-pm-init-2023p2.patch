@@ -1,0 +1,41 @@
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c
+index 3790e6f2a1..ebdb2f1b13 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c
+@@ -1583,7 +1583,7 @@ static u32 XFsbl_SecondaryBootDeviceInit(XFsblPs * FsblInstancePtr)
+ 		break;
+ 
+ 	}
+-
++	goto END;
+ 	/**
+ 	 * Initialize the Secondary Boot Device Driver
+ 	 */
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_main.c b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_main.c
+index abf9b72f8e..df3449719d 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_main.c
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_main.c
+@@ -290,7 +290,7 @@ int main(void )
+ 
+ 		case XFSBL_STAGE_ERR:
+ 			{
+-				XFsbl_Printf(DEBUG_INFO,
++				XFsbl_Printf(DEBUG_PRINT_ALWAYS,
+ 						"================= In Stage Err ============ \n\r");
+ 
+ 				XFsbl_ErrorLockDown(FsblStatus);
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_misc_drivers.c b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_misc_drivers.c
+index d40abf2ac7..82682c9de2 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_misc_drivers.c
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_misc_drivers.c
+@@ -344,8 +344,8 @@ u32 XFsbl_PmInit(void)
+ 	}
+ #endif /** end of IPI related code */
+ #endif /* End of XPAR_XILPM_ENABLED */
+-	XFsbl_Printf(DEBUG_DETAILED,"PM Init Success\r\n");
+-	UStatus = XFSBL_SUCCESS;
++	XFsbl_Printf(DEBUG_PRINT_ALWAYS,"PM Init Failed\r\n");
++	UStatus = XFSBL_ERROR_PM_INIT;
+ END:
+ 	return UStatus;
+ }

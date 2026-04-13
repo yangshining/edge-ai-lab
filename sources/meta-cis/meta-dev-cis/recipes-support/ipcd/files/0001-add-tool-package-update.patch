@@ -1,0 +1,308 @@
+From a89a6af2e70676b97b43066dda48f093549309a3 Mon Sep 17 00:00:00 2001
+From: Fan Wu <fan.wu@zillnk.com>
+Date: Fri, 25 Apr 2025 10:52:23 +0800
+Subject: [PATCH] add tool-package update
+
+Change-Id: I6ae49e0ef5cad62d5153b0a6008300f080d6b368
+---
+ upgrade.c | 166 +++++++++++++++++++++++++++++++++++++++++++++---------
+ 1 file changed, 138 insertions(+), 28 deletions(-)
+
+diff --git a/upgrade.c b/upgrade.c
+index 727d94a..0ff0d21 100755
+--- a/upgrade.c
++++ b/upgrade.c
+@@ -49,12 +49,15 @@ static int flag = -1;
+ #define EVENT_STATUS_FAILED "failed"
+ #define ZU19_IMAGE      "image_19.bin"
+ #define ZU49_IMAGE      "image_49.bin"
+-#define ZUPATH_LEN		150
++#define TOOL_PACKAGE_IMAGE      "lm.bin"			/* Use tool package as first step start up package */
++#define COMM_PACKAGE_IMAGE      "lm_common.bin"		/* Common package named as sencond start up package */
++#define PATH_LEN		150
+ #define FLASHCP_SIZE	(10 * 1024)
+ #define EMPTY           2
+ #define VALID           0
+ #define INVALID         1
+ #define DEV_ZBOOT       "/dev/mtd0"
++#define MMC_OFFSET		4
+ 
+ pthread_t upgrade_image;
+ static char image_head[SLOTHEAD_SIZE];
+@@ -65,6 +68,7 @@ typedef void (*sighandler_t)(int);
+ typedef struct {
+     unsigned int num;
+     char* path;
++    char* tool_path;
+ }Param;
+ 
+ enum {
+@@ -75,7 +79,8 @@ enum {
+ };
+ 
+ enum {
+-	IPC_SLOT_UPGRADE_PATH,
++	IPC_SLOT_UPGRADE_COMM_PATH,
++	IPC_SLOT_UPGRADE_TOOL_PATH,
+ 	IPC_SLOT_UPGRADE_NUM,
+ 	__IPC_SLOT_UPGRADE_MAX,
+ };
+@@ -91,8 +96,15 @@ enum {
+ 	__IPC_STORE_MAX,
+ };
+ 
++enum {
++	IPC_SWAP_SLOT,
++	IPC_SWAP_FILE,
++	__IPC_SWAP_MAX,
++};
++
+ static const struct blobmsg_policy ipc_slot_upgrade_policy[__IPC_SLOT_UPGRADE_MAX] = {
+-	[IPC_SLOT_UPGRADE_PATH] = { .name = "path", .type = BLOBMSG_TYPE_STRING },
++	[IPC_SLOT_UPGRADE_COMM_PATH] = { .name = "path", .type = BLOBMSG_TYPE_STRING },
++	[IPC_SLOT_UPGRADE_TOOL_PATH] = { .name = "tool-path", .type = BLOBMSG_TYPE_STRING },
+ 	[IPC_SLOT_UPGRADE_NUM] = { .name = "num", .type = BLOBMSG_TYPE_INT32 },
+ };
+ 
+@@ -105,6 +117,11 @@ static const struct blobmsg_policy ipc_store_ipv6_policy[__IPC_STORE_MAX] = {
+ 	[IPC_SET_UPGRADE_VALUE] = { .name = "value", .type = BLOBMSG_TYPE_STRING },
+ };
+ 
++static const struct blobmsg_policy ipc_swap_upgrade_policy[__IPC_SWAP_MAX] = {
++	[IPC_SWAP_SLOT] = { .name = "slot", .type = BLOBMSG_TYPE_INT32 },
++	[IPC_SWAP_FILE] = { .name = "file", .type = BLOBMSG_TYPE_STRING },
++};
++
+ static void ipc_slot_upgrade_status(struct ubus_context *ctx, 
+ 	const char *path, int num, const char *status, struct ubus_request_data *req) {
+ 	blob_buf_init(&b, 0);
+@@ -485,20 +502,24 @@ static const char * spiltFilePath(const char* file)
+ 	return file;
+ }
+ 
+-static uint16_t writeImageToBoard(uint16_t slotnumber, char *file) {
++static uint16_t writeImageToBoard(Param *param) {
+     struct head_blob head_data;
+     char command[512];
+ #ifndef ZULU
+ 	char tarcmd[128];
+ 	char buffer[128];
+ #else
+-	char zu19_path[ZUPATH_LEN];
+-	char zu49_path[ZUPATH_LEN];
++	char zu19_path[PATH_LEN];
++	char zu49_path[PATH_LEN];
+ #endif
+ 	char file_bak[128];
+     int file_fd = -1;
+     char identify[4];
+     unsigned int checksum_zboot = 0;
++	uint16_t slotnumber = param->num;
++	char *file = param->path;
++	char *tool_file = param->tool_path;
++
+     checksum_zboot = create_zboot_crc(DEV_ZBOOT);
+ 	memset(command, 0, sizeof(command));
+ 	memset(file_bak, 0, sizeof(file_bak));
+@@ -525,26 +546,31 @@ static uint16_t writeImageToBoard(uint16_t slotnumber, char *file) {
+     }
+     close(file_fd);
+     if(identify[1] == 0X42) {
+-        if(check_file(file, &head_data, image_head, 1))
+-        goto error_out0;
++        if(check_file(file, &head_data, image_head, 1)) {
++        	goto error_out0;
++		}
++		if(tool_file && tool_file[0] != '\0' && check_file(tool_file, &head_data, image_head, 1)) {
++			goto error_out0;
++		}
+     } else {
+ #ifdef ZULU
+-        char *p = strrchr(file, '/');
+-        if (p != NULL) {
+-            if (strlen(++p) > 128)
+-                return 1;
+-        strncpy(unzip_path, file, (p - file));
+-        }
+-        else
+-        memcpy(unzip_path, tmp, strlen(tmp));
+-        if (unpack(file)) {
+-        printf("Failed: to unpack the upgrade pack..\n");
+-        return 1;
+-        }
+-		snprintf(zu19_path, ZUPATH_LEN, "%s/%s", unzip_path, ZU19_IMAGE);
+-		snprintf(zu49_path, ZUPATH_LEN, "%s/%s", unzip_path, ZU49_IMAGE);
++		char *p = strrchr(file, '/');
++		if (p != NULL) {
++			if (strlen(++p) > 128)
++				return 1;
++			strncpy(unzip_path, file, (p - file));
++		}
++		else
++			memcpy(unzip_path, tmp, strlen(tmp));
++
++		if (unpack(file)) {
++			printf("Failed: to unpack the upgrade pack..\n");
++			return 1;
++		}
++		snprintf(zu19_path, PATH_LEN, "%s/%s", unzip_path, ZU19_IMAGE);
++		snprintf(zu49_path, PATH_LEN, "%s/%s", unzip_path, ZU49_IMAGE);
+         if(check_file(zu19_path, &head_data, image_head, 1)||check_file(zu49_path, &head_data, image_head, 1))
+-        goto error_out0;
++        	goto error_out0;
+ #else
+ 		snprintf(tarcmd, sizeof(tarcmd), "/usr/bin/unpack.sh %s", file);
+ 		FILE *fp = popen(tarcmd, "r");
+@@ -614,7 +640,6 @@ static uint16_t writeImageToBoard(uint16_t slotnumber, char *file) {
+ 		}
+ 
+ 		json_object_put(json_obj);
+-
+ #endif
+     }
+     if(setSlotState(slotnumber, INVALID))
+@@ -661,7 +686,11 @@ static uint16_t writeImageToBoard(uint16_t slotnumber, char *file) {
+ #ifdef ZULU
+         sprintf(command,"/usr/bin/slot-upgrade.sh %s %d %s",zu19_path,slotnumber,zu49_path);
+ #elif defined(FARA_V2)
+-        sprintf(command,"/usr/bin/slot-upgrade_fara2.sh %s %d",file,slotnumber);
++		if (tool_file && tool_file[0] != '\0') {
++			sprintf(command,"/usr/bin/slot-upgrade_fara2.sh %s %d %s",tool_file,slotnumber,file);
++		} else {
++        	sprintf(command,"/usr/bin/slot-upgrade_fara2.sh %s %d",file,slotnumber);
++		}
+ #else
+         sprintf(command,"/usr/bin/slot-upgrade.sh %s %d",file,slotnumber);
+ #endif
+@@ -693,7 +722,7 @@ error_out0:
+ 
+ static void* upgrade(void* arg) {
+     Param *tmp = (Param *)arg;
+-    if(writeImageToBoard(tmp->num, tmp->path)) {
++    if(writeImageToBoard(tmp)) {
+         flag = 1;
+         free(tmp);
+ 	} else {
+@@ -740,6 +769,7 @@ ipc_slot_upgrade(struct ubus_context *ctx, struct ubus_object *obj,
+                 struct blob_attr *msg) {
+ 	struct stat buf;
+ 	char *path = NULL;
++	char *tool_path = NULL;
+     Param *param = (Param*)malloc(sizeof(Param));
+ 	unsigned int num = SLOT_APP_ONE;
+     flag = 0;
+@@ -748,8 +778,11 @@ ipc_slot_upgrade(struct ubus_context *ctx, struct ubus_object *obj,
+ 	blobmsg_parse(ipc_slot_upgrade_policy, __IPC_SLOT_UPGRADE_MAX, tb,
+ 	              blob_data(msg), blob_len(msg));
+ 
+-	if (tb[IPC_SLOT_UPGRADE_PATH]){
+-		path = blobmsg_get_string(tb[IPC_SLOT_UPGRADE_PATH]);
++	if (tb[IPC_SLOT_UPGRADE_COMM_PATH]){
++		path = blobmsg_get_string(tb[IPC_SLOT_UPGRADE_COMM_PATH]);
++	}
++	if (tb[IPC_SLOT_UPGRADE_TOOL_PATH]){
++		tool_path = blobmsg_get_string(tb[IPC_SLOT_UPGRADE_TOOL_PATH]);
+ 	}
+ 	if (tb[IPC_SLOT_UPGRADE_NUM]){
+ 		num = blobmsg_get_u32(tb[IPC_SLOT_UPGRADE_NUM]);
+@@ -770,6 +803,7 @@ ipc_slot_upgrade(struct ubus_context *ctx, struct ubus_object *obj,
+ 	}
+     param->num = num;
+     param->path = path;
++    param->tool_path = tool_path;
+     ipc_slot_upgrade_status(ctx, path, num, EVENT_STATUS_STARTING, req);
+     uloop_timeout_set(&count_timer, 1000);
+     if((pthread_create(&upgrade_image, NULL, upgrade, param))!=0) {
+@@ -811,6 +845,81 @@ ipcd_set_upgrade_state(struct ubus_context *ctx, struct ubus_object *obj,
+ 	return UBUS_STATUS_OK;
+ }
+ 
++static int
++ipcd_swap_upgrade(struct ubus_context *ctx, struct ubus_object *obj,
++					struct ubus_request_data *req, const char *method,
++					struct blob_attr *msg) {
++	int slot = -1;
++	char *filename = COMM_PACKAGE_IMAGE;
++	char slotPath[64] = {0};
++	char mountinfo[64];
++	char mmc_path[128];
++	char new_mmc_path[128];
++	struct head_blob head_info;
++	char head_buf[SLOTHEAD_SIZE];
++	int crc = 0;
++	int ret;
++	static struct blob_attr *tb[__IPC_SWAP_MAX];
++	blobmsg_parse(ipc_swap_upgrade_policy, __IPC_SWAP_MAX, tb,
++		blob_data(msg), blob_len(msg));
++	
++	if (tb[IPC_SWAP_SLOT]) {
++		slot = blobmsg_get_u32(tb[IPC_SWAP_SLOT]);
++		if (slot < 0) {
++			ret = UBUS_STATUS_INVALID_ARGUMENT;
++			goto err_out;
++		}
++	}
++	if (tb[IPC_SWAP_FILE]) {
++		filename = blobmsg_get_string(tb[IPC_SWAP_FILE]);
++	}
++
++	ipc_slot_upgrade_status(ctx, filename, slot, EVENT_STATUS_STARTING, req);
++
++	snprintf(slotPath, sizeof(slotPath), "/dev/mmcblk0p%d", slot + MMC_OFFSET);
++	if (get_mount_info(slotPath, mountinfo, NULL, NULL)) {
++		printf("MMC slot[%s] not mounted!\n", slotPath);
++		ret = UBUS_STATUS_INVALID_ARGUMENT;
++		goto err_out;
++	}
++
++	snprintf(new_mmc_path, sizeof(new_mmc_path), "%s/%s", mountinfo, filename);
++	memset(&head_info, 0, sizeof(struct head_blob));
++	if (access(new_mmc_path, F_OK) != 0 || check_file(new_mmc_path, &head_info, head_buf, crc)) {
++		printf("New package[%s] invalid!\n", filename);
++		ret = UBUS_STATUS_NO_DATA;
++		goto err_out;
++	}
++
++	snprintf(mmc_path, sizeof(mmc_path), "%s/%s", mountinfo, TOOL_PACKAGE_IMAGE);
++	if (access(mmc_path, F_OK) == 0) {
++		if (remove(mmc_path) != 0) {
++			printf("Clear obsolete lm.bin failed!\n");
++			ret = UBUS_STATUS_NOT_SUPPORTED;
++			goto err_out;
++		} 
++	} else {
++		printf("No obsolete lm.bin exist!\n");
++		ret = UBUS_STATUS_NOT_SUPPORTED;
++		goto err_out;
++	}
++
++	if (rename(new_mmc_path, mmc_path) == 0) {
++		printf("Slot swap successful!\n");
++	} else {
++		printf("Slot swap failed!\n");
++		ret = UBUS_STATUS_NOT_SUPPORTED;
++		goto err_out;
++	}
++
++    ipc_slot_upgrade_status(ctx, mmc_path, slot, EVENT_STATUS_SUCCESSFUL, req);
++	return UBUS_STATUS_OK;
++
++err_out:
++	ipc_slot_upgrade_status(ctx, mmc_path, slot, EVENT_STATUS_FAILED, req);
++	return ret;
++}
++
+ static int
+ ipcd_get_upgrade_status(struct ubus_context *ctx, struct ubus_object *obj,
+                 struct ubus_request_data *req, const char *method,
+@@ -916,6 +1025,7 @@ ipc_upgrade_api_init(struct ubus_context *ctx) {
+ 		UBUS_METHOD("set",  ipcd_set_upgrade_state, ipc_set_upgrade_policy),
+ 		UBUS_METHOD_NOARG("get",    ipcd_get_upgrade_status),
+ 		UBUS_METHOD("mplane",  ipcd_store_ipv6, ipc_store_ipv6_policy),
++		UBUS_METHOD("swap",  ipcd_swap_upgrade, ipc_swap_upgrade_policy),
+ 	};
+ 
+ 	static struct ubus_object_type upgrade_type =
+-- 
+2.25.1
+

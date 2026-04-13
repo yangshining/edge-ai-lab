@@ -1,0 +1,32 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a65ccbb..f806031 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -9,8 +9,13 @@ IF(CMAKE_C_COMPILER_VERSION VERSION_GREATER 6)
+ ENDIF()
+ ADD_DEFINITIONS(-Os -std=gnu99 -g3 -Wmissing-declarations -Wno-unused-parameter)
+ 
++IF(BUILD_SUPPORT_LUA)
+ OPTION(BUILD_LUA "build Lua plugin" ON)
++ENDIF()
++
++IF(BUILD_SUPPORT_EXAMPLES)
+ OPTION(BUILD_EXAMPLES "build examples" ON)
++ENDIF()
+ 
+ SET(CMAKE_SHARED_LIBRARY_LINK_C_FLAGS "")
+ SET(UBUS_UNIX_SOCKET "/var/run/ubus/ubus.sock")
+@@ -58,8 +63,13 @@ ADD_EXECUTABLE(cli cli.c)
+ SET_TARGET_PROPERTIES(cli PROPERTIES OUTPUT_NAME ubus)
+ TARGET_LINK_LIBRARIES(cli ubus ${ubox_library} ${blob_library} ${json})
+ 
++IF(BUILD_SUPPORT_LUA)
+ ADD_SUBDIRECTORY(lua)
++ENDIF()
++
++IF(BUILD_SUPPORT_EXAMPLES)
+ ADD_SUBDIRECTORY(examples)
++ENDIF()
+ 
+ IF(UNIT_TESTING)
+   ENABLE_TESTING()

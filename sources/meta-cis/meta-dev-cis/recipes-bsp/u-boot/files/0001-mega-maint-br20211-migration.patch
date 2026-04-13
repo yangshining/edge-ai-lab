@@ -1,0 +1,2215 @@
+From ad93eae9a455f7446092a542ab028b129554c496 Mon Sep 17 00:00:00 2001
+From: sbjf0005 <chao.fang@zillnk.com>
+Date: Tue, 1 Apr 2025 17:05:22 +0800
+Subject: [PATCH] mega maint br20211 migration
+
+---
+ board/xilinx/zynqmp/zynqmp.c    |  59 ++---
+ cmd/Kconfig                     |  38 ++++
+ cmd/Makefile                    |   4 +
+ cmd/clu.c                       | 150 +++++++++++++
+ cmd/ethloop.c                   |  32 +++
+ cmd/rsa.c                       |  28 +++
+ cmd/sf.c                        |  82 ++++++-
+ cmd/zboot.c                     | 381 ++++++++++++++++++++++++++++++++
+ cmd/zboot.h                     | 343 ++++++++++++++++++++++++++++
+ drivers/mtd/spi/spi-nor-ids.c   |   5 +
+ drivers/net/phy/Kconfig         |   3 +
+ drivers/net/phy/Makefile        |   1 +
+ drivers/net/phy/mars.c          | 314 ++++++++++++++++++++++++++
+ drivers/net/phy/phy.c           |  12 +-
+ drivers/net/zynq_gem.c          |  80 +++++--
+ include/configs/xilinx_zynqmp.h |   5 +-
+ include/net.h                   |  15 +-
+ include/net/loopback.h          |  22 ++
+ net/Makefile                    |   1 +
+ net/loopback.c                  | 118 ++++++++++
+ net/net.c                       |   9 +-
+ 21 files changed, 1626 insertions(+), 76 deletions(-)
+ create mode 100644 cmd/clu.c
+ create mode 100644 cmd/ethloop.c
+ create mode 100644 cmd/rsa.c
+ create mode 100644 cmd/zboot.c
+ create mode 100644 cmd/zboot.h
+ create mode 100644 drivers/net/phy/mars.c
+ create mode 100644 include/net/loopback.h
+ create mode 100644 net/loopback.c
+
+diff --git a/board/xilinx/zynqmp/zynqmp.c b/board/xilinx/zynqmp/zynqmp.c
+index 94f93325..f4dc0d08 100644
+--- a/board/xilinx/zynqmp/zynqmp.c
++++ b/board/xilinx/zynqmp/zynqmp.c
+@@ -488,6 +488,18 @@ static u8 __maybe_unused zynqmp_get_bootmode(void)
+ 	return bootmode;
+ }
+ 
++static u8 __maybe_unused zynqmp_get_rsa_status(void)
++{
++#ifdef CONFIG_ZBOOT_RSA_BITSTREAM
++	puts("RSA STATUS:  ON\n");
++	env_set("rsa", "on");
++#else
++	puts("RSA STATUS:  OFF\n");
++	env_set("rsa", "off");
++#endif
++	return 0;
++}
++
+ #if defined(CONFIG_BOARD_LATE_INIT)
+ static const struct {
+ 	u32 bit;
+@@ -526,6 +538,10 @@ static int reset_reason(void)
+ 	puts("\n");
+ 
+ 	env_set("reset_reason", reason);
++  
++	ret = zynqmp_mmio_write((ulong)&crlapb_base->reset_reason, ~0, ~0);
++	if (ret)
++		return -EINVAL;
+ 
+ 	return 0;
+ }
+@@ -573,24 +589,12 @@ int board_late_init(void)
+ 	struct udevice *dev;
+ 	int bootseq = -1;
+ 	int bootseq_len = 0;
+-	int env_targets_len = 0;
+-	const char *mode;
+-	char *new_targets;
+-	char *env_targets;
+ 	int ret;
+ 
+ #if defined(CONFIG_USB_ETHER) && !defined(CONFIG_USB_GADGET_DOWNLOAD)
+ 	usb_ether_init();
+ #endif
+ 
+-	if (!(gd->flags & GD_FLG_ENV_DEFAULT)) {
+-		debug("Saved variables - Skipping\n");
+-		return 0;
+-	}
+-
+-	if (!CONFIG_IS_ENABLED(ENV_VARS_UBOOT_RUNTIME_CONFIG))
+-		return 0;
+-
+ 	ret = set_fdtfile();
+ 	if (ret)
+ 		return ret;
+@@ -601,17 +605,14 @@ int board_late_init(void)
+ 	switch (bootmode) {
+ 	case USB_MODE:
+ 		puts("USB_MODE\n");
+-		mode = "usb_dfu0 usb_dfu1";
+ 		env_set("modeboot", "usb_dfu_spl");
+ 		break;
+ 	case JTAG_MODE:
+ 		puts("JTAG_MODE\n");
+-		mode = "jtag pxe dhcp";
+ 		env_set("modeboot", "jtagboot");
+ 		break;
+ 	case QSPI_MODE_24BIT:
+ 	case QSPI_MODE_32BIT:
+-		mode = "qspi0";
+ 		puts("QSPI_MODE\n");
+ 		env_set("modeboot", "qspiboot");
+ 		break;
+@@ -626,7 +627,6 @@ int board_late_init(void)
+ 		}
+ 		debug("mmc0 device found at %p, seq %d\n", dev, dev->seq);
+ 
+-		mode = "mmc";
+ 		bootseq = dev->seq;
+ 		break;
+ 	case SD_MODE:
+@@ -640,7 +640,6 @@ int board_late_init(void)
+ 		}
+ 		debug("mmc0 device found at %p, seq %d\n", dev, dev->seq);
+ 
+-		mode = "mmc";
+ 		bootseq = dev->seq;
+ 		env_set("modeboot", "sdboot");
+ 		break;
+@@ -658,17 +657,14 @@ int board_late_init(void)
+ 		}
+ 		debug("mmc1 device found at %p, seq %d\n", dev, dev->seq);
+ 
+-		mode = "mmc";
+ 		bootseq = dev->seq;
+ 		env_set("modeboot", "sdboot");
+ 		break;
+ 	case NAND_MODE:
+ 		puts("NAND_MODE\n");
+-		mode = "nand0";
+ 		env_set("modeboot", "nandboot");
+ 		break;
+ 	default:
+-		mode = "";
+ 		printf("Invalid Boot Mode:0x%x\n", bootmode);
+ 		break;
+ 	}
+@@ -679,27 +675,7 @@ int board_late_init(void)
+ 		env_set_hex("bootseq", bootseq);
+ 	}
+ 
+-	/*
+-	 * One terminating char + one byte for space between mode
+-	 * and default boot_targets
+-	 */
+-	env_targets = env_get("boot_targets");
+-	if (env_targets)
+-		env_targets_len = strlen(env_targets);
+-
+-	new_targets = calloc(1, strlen(mode) + env_targets_len + 2 +
+-			     bootseq_len);
+-	if (!new_targets)
+-		return -ENOMEM;
+-
+-	if (bootseq >= 0)
+-		sprintf(new_targets, "%s%x %s", mode, bootseq,
+-			env_targets ? env_targets : "");
+-	else
+-		sprintf(new_targets, "%s %s", mode,
+-			env_targets ? env_targets : "");
+-
+-	env_set("boot_targets", new_targets);
++	zynqmp_get_rsa_status();
+ 
+ 	reset_reason();
+ 
+@@ -746,3 +722,4 @@ enum env_location env_get_location(enum env_operation op, int prio)
+ 		return ENVL_NOWHERE;
+ 	}
+ }
++
+diff --git a/cmd/Kconfig b/cmd/Kconfig
+index 1595de99..2a24331c 100644
+--- a/cmd/Kconfig
++++ b/cmd/Kconfig
+@@ -139,6 +139,11 @@ config CMD_REGINFO
+ 	help
+ 	  Register dump
+ 
++config CMD_RSA_STATUS
++	bool "rsainfo"
++	help
++	  Rsa status dump
++
+ config CMD_TLV_EEPROM
+ 	bool "tlv_eeprom"
+ 	depends on I2C_EEPROM
+@@ -753,6 +758,39 @@ config CMD_ZIP
+ 
+ endmenu
+ 
++menu "Zillnk commands"
++
++config CMD_ZBOOT_Z
++	bool "zboot"
++	help
++	  Zillnk boot kernel command.
++
++config CMD_CLU_Z
++	bool "clu"
++	depends on SPI
++	help
++	  clu SPI utility command.
++
++config CLU_INIT
++	bool "clu c"
++	depends on CMD_ZBOOT_Z
++	help
++	  The CLU c is configured through spi
++
++config LOOP_BACK_ASSERT
++	bool "LoopBack assert - zillnk RU ETH loopback check"
++	help
++	  This enables the command "lbcheck" which enables the zillnk RU
++	  ETH LoopBack check for the platform.
++
++config ZBOOT_RSA_BITSTREAM
++	bool "loads rsa bit"
++	depends on CMD_ZBOOT_Z
++	help
++	  Loads rsa bit stream to fpga
++
++endmenu
++
+ menu "Device access commands"
+ 
+ config CMD_ARMFLASH
+diff --git a/cmd/Makefile b/cmd/Makefile
+index dd86675b..b8cca915 100644
+--- a/cmd/Makefile
++++ b/cmd/Makefile
+@@ -130,6 +130,7 @@ obj-$(CONFIG_CMD_REMOTEPROC) += remoteproc.o
+ obj-$(CONFIG_CMD_RNG) += rng.o
+ obj-$(CONFIG_CMD_ROCKUSB) += rockusb.o
+ obj-$(CONFIG_CMD_RTC) += rtc.o
++obj-$(CONFIG_CMD_RSA_STATUS) += rsa.o
+ obj-$(CONFIG_SANDBOX) += host.o
+ obj-$(CONFIG_CMD_SATA) += sata.o
+ obj-$(CONFIG_CMD_NVME) += nvme.o
+@@ -166,6 +167,9 @@ obj-$(CONFIG_CMD_USB) += usb.o disk.o
+ obj-$(CONFIG_CMD_FASTBOOT) += fastboot.o
+ obj-$(CONFIG_CMD_FS_UUID) += fs_uuid.o
+ 
++obj-$(CONFIG_LOOP_BACK_ASSERT) += ethloop.o
++obj-$(CONFIG_CMD_ZBOOT_Z) += zboot.o
++obj-$(CONFIG_CMD_CLU_Z) += clu.o
+ obj-$(CONFIG_CMD_USB_MASS_STORAGE) += usb_mass_storage.o
+ obj-$(CONFIG_CMD_USB_SDP) += usb_gadget_sdp.o
+ obj-$(CONFIG_CMD_THOR_DOWNLOAD) += thordown.o
+diff --git a/cmd/clu.c b/cmd/clu.c
+new file mode 100644
+index 00000000..36895930
+--- /dev/null
++++ b/cmd/clu.c
+@@ -0,0 +1,150 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * (C) Copyright 2020
++ * Zillnk Inc.
++ */
++#include <common.h>
++#include <command.h>
++#include <malloc.h>
++#include <bootm.h>
++#include <errno.h>
++#include <image.h>
++#include <nand.h>
++#include <asm/byteorder.h>
++#include <linux/ctype.h>
++#include <linux/err.h>
++#include <mapmem.h>
++#include <dm.h>
++#include <spi.h>
++#include <time.h>
++#include <timer.h>
++
++#define BUS			1
++#define CS			0
++#define MODE			0
++#define BITLEN			24
++#define READ			0
++#define WRITE			1
++
++#ifndef MAX_SPI_BYTES
++#	define MAX_SPI_BYTES 32	/* Maximum number of bytes we can handle */
++#endif
++
++
++static int do_spi_xfer(uchar *dout, uchar *din, int bitlen)
++{
++	struct spi_slave *slave;
++	int ret = 0;
++
++#ifdef CONFIG_DM_SPI
++	char name[30], *str;
++	struct udevice *dev;
++
++	snprintf(name, sizeof(name), "generic_%d:%d", BUS, CS);
++	str = strdup(name);
++	if (!str)
++		return -ENOMEM;
++	ret = spi_get_bus_and_cs(BUS, CS, 1000000, MODE, "spi_generic_drv",
++				 str, &dev, &slave);
++	if (ret)
++		return ret;
++#else
++	slave = spi_setup_slave(BUS, CS, 1000000, MODE);
++	if (!slave) {
++		printf("Invalid device %d:%d\n", BUS, CS);
++		return -EINVAL;
++	}
++#endif
++
++	ret = spi_claim_bus(slave);
++	if (ret)
++		goto done;
++	ret = spi_xfer(slave, bitlen, dout, din,
++			SPI_XFER_BEGIN | SPI_XFER_END);
++#ifndef CONFIG_DM_SPI
++	/* We don't get an error code in this case */
++	if (ret)
++		ret = -EIO;
++#endif
++	if (ret) {
++		printf("Error %d during SPI transaction\n", ret);
++	}
++
++done:
++	spi_release_bus(slave);
++#ifndef CONFIG_DM_SPI
++	spi_free_slave(slave);
++#endif
++
++	return ret;
++}
++
++static int spi_rw(uint32_t addr, uchar value, uchar r_or_w)
++{
++	uint32_t sig = 0;
++	uchar *re_sig = (uchar *)&sig;
++	uchar din[MAX_SPI_BYTES];
++
++	if(r_or_w == READ){
++		printf("0x%08x=", addr);
++        *re_sig = 0x80 | ((0xffff & addr) >> 8);
++        *(re_sig + 1) = 0xff & (uchar)addr;
++	}
++	else{
++        *re_sig = (0xffff & addr) >> 8;
++        *(re_sig + 1) = 0xff & (uchar)addr;
++        *(re_sig + 2) = 0xff & value;
++	}
++
++	if(do_spi_xfer(re_sig, &din, BITLEN))
++	{
++		return 1;
++	}
++
++	if(r_or_w == READ){
++		printf("%02x\r\n", *(din + (BITLEN / 8 - 1)));
++	}
++	return 0;
++}
++
++static int do_clu_rw(struct cmd_tbl *cmdtp, int flag, int argc, char * const argv[])
++{
++	uchar r_or_w;
++
++	if(argc < 3)
++ show_usage:
++		return CMD_RET_USAGE;
++	if(!strcmp(argv[1], "r")){
++		r_or_w = READ;
++	}else if(!strcmp(argv[1], "w")){
++		r_or_w = WRITE;
++	}
++	else
++		goto show_usage;
++
++	size_t addr, value = 0;
++
++	addr = simple_strtol(argv[2], NULL, 16);
++
++	if(r_or_w == WRITE){
++		value = simple_strtoul(argv[3], NULL, 16);
++	}
++
++	if(addr > 0xffff || value > 0xff){
++		printf("clu:illegal address!\r\n");
++		goto show_usage;
++	}
++
++	return spi_rw(addr, value, r_or_w);
++
++}
++
++U_BOOT_CMD(
++	clu,	4,	0,	do_clu_rw,
++	"SPI utility command",
++	"[<addr>] [<r/w>] [<value>] - Boot kernel parameters\n"
++	"<R>       - Read operation\n"
++	"<W>       - write operations\n"
++	"<addr>    - The register address of the operation\n"
++	"<value>   - Hexadecimal string that gets sent"
++);
+diff --git a/cmd/ethloop.c b/cmd/ethloop.c
+new file mode 100644
+index 00000000..35cfe18b
+--- /dev/null
++++ b/cmd/ethloop.c
+@@ -0,0 +1,32 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * (C) Copyright 2022 Zillnk, Ltd.
++ * Author: Chun Ma <chun.ma@zillnk.com>
++ *
++ */
++#include <common.h>
++#include <command.h>
++#include <search.h>
++#include <console.h>
++#include <net.h>
++
++static int do_loopback_assert(int argc, char *const argv[])
++{
++	loopback_state_set(1);
++	net_loop(LOOPBACK);
++	loopback_state_set(0);
++
++	return CMD_RET_SUCCESS;
++}
++
++static int do_ethloop(struct cmd_tbl *cmdtp, int flag, int argc,
++		       char *const argv[])
++{
++	return do_loopback_assert(argc, argv);
++}
++
++U_BOOT_CMD(
++	ethloop, 1, 0, do_ethloop,
++	"network loopback check",
++	"<NULL>\n"
++);
+diff --git a/cmd/rsa.c b/cmd/rsa.c
+new file mode 100644
+index 00000000..9df6b92d
+--- /dev/null
++++ b/cmd/rsa.c
+@@ -0,0 +1,28 @@
++/*
++ * Get zboot rsa status
++ *
++ * Copyright (c) 2022 xi.he@zillnk.com.
++ *
++ * Licensed under the GPL-2 or later.
++ */
++
++#include <common.h>
++#include <command.h>
++#include <linux/compiler.h>
++
++static int do_rsa(struct cmd_tbl *cmdtp, int flag, int argc,
++		   char *const argv[])
++{
++#ifdef CONFIG_ZBOOT_RSA_BITSTREAM
++	printf("RSA STATUS:  ON\n");
++#else
++	printf("RSA STATUS:  OFF\n");
++#endif
++	return 0;
++}
++
++U_BOOT_CMD(
++	rsa,	2,		2,	do_rsa,
++	"Get rsa status\n",
++	""
++);
+diff --git a/cmd/sf.c b/cmd/sf.c
+index c0d6a8f8..38439d07 100644
+--- a/cmd/sf.c
++++ b/cmd/sf.c
+@@ -423,7 +423,7 @@ static void show_time(struct test_info *test, int stage)
+ static void spi_test_next_stage(struct test_info *test)
+ {
+ 	test->time_ms[test->stage] = get_timer(test->base_ms);
+-	show_time(test, test->stage);
++	/* show_time(test, test->stage); */
+ 	test->base_ms = get_timer(0);
+ 	test->stage++;
+ }
+@@ -444,7 +444,7 @@ static int spi_flash_test(struct spi_flash *flash, uint8_t *buf, ulong len,
+ 	struct test_info test;
+ 	int i;
+ 
+-	printf("SPI flash test:\n");
++	/* printf("SPI flash test:\n"); */
+ 	memset(&test, '\0', sizeof(test));
+ 	test.base_ms = get_timer(0);
+ 	test.bytes = len;
+@@ -492,10 +492,11 @@ static int spi_flash_test(struct spi_flash *flash, uint8_t *buf, ulong len,
+ 			return -1;
+ 		}
+ 	}
++/*
+ 	printf("Test passed\n");
+ 	for (i = 0; i < STAGE_COUNT; i++)
+ 		show_time(&test, i);
+-
++*/
+ 	return 0;
+ }
+ 
+@@ -618,3 +619,78 @@ U_BOOT_CMD(
+ 	"					  at address 'sector'\n"
+ 	SF_TEST_HELP
+ );
++
++static int do_sftest(struct cmd_tbl *cmdtp, int flag, int argc,
++			char * const argv[])
++{
++	char *endp;
++	int ret;
++	u8 *buf, *from, *vbuf;
++	unsigned base_ms, time_ms;
++	ulong start, end, count, len, i;
++
++	if (argc < 2)
++		return -1;
++
++	start = simple_strtoul(argv[1], &endp, 16);
++	if (*argv[1] == 0 || *endp != 0)
++		return -1;
++
++	len = simple_strtoul(argv[2], &endp, 16);
++	if (*argv[2] == 0 || *endp != 0)
++		return -1;
++
++	count = simple_strtoul(argv[3], &endp, 16);
++	if (*argv[3] == 0 || *endp != 0)
++		return -1;
++
++	end = start + len;
++	vbuf = memalign(ARCH_DMA_MINALIGN, len);
++	if (!vbuf) {
++		printf("Cannot allocate memory (%lu bytes)\n", len);
++		return 1;
++	}
++
++	buf = memalign(ARCH_DMA_MINALIGN, len);
++	if (!buf) {
++		free(vbuf);
++		printf("Cannot allocate memory (%lu bytes)\n", len);
++		return 1;
++	}
++
++	from = map_sysmem(CONFIG_SYS_TEXT_BASE, 0);
++	memcpy(buf, from, len);
++
++	/* The remaining commands require a selected device */
++	if (!flash) {
++		puts("No SPI flash selected. Please run `sf probe'\n");
++		return 1;
++	}
++
++	base_ms = get_timer(0);
++	printf("SPI flash test:\n");
++	for (i = 1; i <= count; i++) {
++		if (i % 100 == 0) {
++			time_ms = get_timer(base_ms);
++			printf("Testing 0x%08lx - 0x%08lx %u ticks count: %ld\n", start, end, time_ms, i);
++			base_ms = get_timer(0);
++		}
++
++		ret = spi_flash_test(flash, buf, len, start, vbuf);
++		if (ret)
++			goto err;
++	}
++
++err:
++	printf("\n");
++	printf("Tested %ld count(s), Test %s .\n", i - 1, ret ? "failed" : "passed");
++	free(vbuf);
++	free(buf);
++	return ret;
++}
++
++U_BOOT_CMD(
++	sftest,	4,	1,	do_sftest,
++	"spi flash read/write test",
++	"offset  len  count"
++);
+diff --git a/cmd/zboot.c b/cmd/zboot.c
+new file mode 100644
+index 00000000..9854a101
+--- /dev/null
++++ b/cmd/zboot.c
+@@ -0,0 +1,381 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * (C) Copyright 2020
++ * Ma Chun <chun.ma@zillnk.com>, Zillnk Inc.
++ */
++#include "zboot.h"
++
++static int do_spi_xfer(uchar *dout, uchar *din, int bitlen)
++{
++	struct spi_slave *slave;
++	int ret = 0;
++
++#ifdef CONFIG_DM_SPI
++	char name[30], *str;
++	struct udevice *dev;
++
++	snprintf(name, sizeof(name), "generic_%d:%d", BUS, CS);
++	str = strdup(name);
++	if (!str)
++		return -ENOMEM;
++	ret = spi_get_bus_and_cs(BUS, CS, 1000000, MODE, "spi_generic_drv",
++				 str, &dev, &slave);
++	if (ret)
++		return ret;
++#else
++	slave = spi_setup_slave(BUS, CS, 1000000, MODE);
++	if (!slave) {
++		printf("Invalid device %d:%d\n", BUS, CS);
++		return -EINVAL;
++	}
++#endif
++
++	ret = spi_claim_bus(slave);
++	if (ret)
++		goto done;
++	ret = spi_xfer(slave, bitlen, dout, din,
++			SPI_XFER_BEGIN | SPI_XFER_END);
++#ifndef CONFIG_DM_SPI
++	/* We don't get an error code in this case */
++	if (ret)
++		ret = -EIO;
++#endif
++	if (ret) {
++		printf("Error %d during SPI transaction\n", ret);
++	}
++
++done:
++	spi_release_bus(slave);
++#ifndef CONFIG_DM_SPI
++	spi_free_slave(slave);
++#endif
++
++	return ret;
++}
++
++static int spi_read(uint32_t addr, uint16_t *value)
++{
++	uint32_t sig = 0;
++	uchar *re_sig = (uchar *)&sig;
++	uchar din[MAX_SPI_BYTES];
++
++	re_sig[0] = 0x80 | ((0xffff & addr) >> 8);
++	re_sig[1] = 0xff & (uchar)addr;
++
++	do_spi_xfer(re_sig, &din, BITLEN);
++	*value = *(din + (BITLEN / 8 - 1));
++	return 0;
++}
++
++static int spi_write(uchar *dout)
++{
++	uchar din[MAX_SPI_BYTES];
++	return do_spi_xfer(dout, &din, BITLEN);
++}
++
++static int clu_init()
++{
++	int i, ret;
++	uint8_t value = 0;
++
++	for(i = 0; i < (sizeof(reg_data) / sizeof(reg_data[0])); i++){
++		spi_write(&reg_data[i]);
++		udelay(5000);
++	}
++
++	udelay(500000);
++
++	/* check SYCCLK and PLL status*/
++	ret = spi_read(0x3001, &value);
++	if (ret) {
++		printf("read reg[0x3001] faild %d\n", ret);
++		return ret;
++	}
++
++	if ((value & SYSCLK_PLL_MASK) != SYSCLK_PLL_OK) {
++		printf("SYSCLK PLL status [0x%x]not OK\n", value);
++		return 1;
++	}
++
++	spi_write("\x21\x00\x00");
++	spi_write("\x00\x0F\x01");
++	spi_write("\x21\x00\x02");
++	spi_write("\x00\x0F\x01");
++
++	udelay(500000);
++
++	/* check PLL0 status*/
++	value = 0;
++	ret = spi_read(0x3100, &value);
++	if (ret) {
++		printf("read reg[0x3100] faild %d\n", ret);
++		return ret;
++	}
++
++	if ((value & PLL0_LOCK_MASK) != PLL0_LOCK_OK) {
++		printf("PLL0 Lock status [0x%x]not OK\n", value);
++		return 1;
++	}
++
++	spi_write("\x22\x00\x00");
++	spi_write("\x00\x0F\x01");
++	spi_write("\x22\x00\x02");
++	spi_write("\x00\x0F\x01");
++
++	udelay(500000);
++
++	/* check PLL1 status*/
++	value = 0;
++	ret = spi_read(0x3200, &value);
++	if (ret) {
++		printf("read reg[0x3200] faild %d\n", ret);
++		return ret;
++	}
++
++	if ((value & PLL1_LOCK_MASK) != PLL1_LOCK_OK) {
++		printf("PLL1 Lock status [0x%x]not OK\n", value);
++		return 1;
++	}
++
++	spi_write("\x02\x84\x02");
++	spi_write("\x00\x0F\x01");
++
++	printf("CLU OK!\n");
++	return 0;
++
++}
++
++static long get_fpga_device(char *arg)
++{
++	long dev = FPGA_INVALID_DEVICE;
++	char *devstr = env_get("fpga");
++
++	if (devstr)
++		/* Should be strtol to handle -1 cases */
++		dev = simple_strtol(devstr, NULL, 16);
++
++	if (dev == FPGA_INVALID_DEVICE && arg)
++		dev = simple_strtol(arg, NULL, 16);
++
++	printf("%s: device = %ld\n", __func__, dev);
++
++	return dev;
++}
++
++static int do_fpga_loads_rsa_bitstream(int devnum, uint32_t fpga_data, uint32_t data_size)
++{
++	struct fpga_secure_info fpga_sec_info;
++	
++	memset(&fpga_sec_info, 0, sizeof(fpga_sec_info));
++	/*
++	*	auth_loc :
++	*
++	*	location of image to be authenticated is located
++	*
++	*	0 = On-Chip Memory (OCM)
++	*
++	*	1 = DDR
++	*
++	*	2 = no authentication
++	*/
++	fpga_sec_info.authflag = 1; //DDR
++	/*
++	* enc_key_sel :
++	*
++	* selection of the encryption key
++	*
++	* 0 = device key
++	*
++	* 1 = user key - KUP
++	*
++	* 2 = no encryption
++	*/
++	fpga_sec_info.encflag = 2;
++	printf("fpga load rsa bitstream.\n");
++	return fpga_loads(devnum, (void *)fpga_data, data_size, &fpga_sec_info);
++}
++
++static int do_fpga_loadb(uint32_t fpgadata, uint32_t datasize)
++{
++	long dev;
++
++	/* use device zero */
++	dev = get_fpga_device("0");
++	if (dev < 0) {
++		printf("ERROR git fpga device failed!\n");
++		return -1;
++	}
++#ifdef CONFIG_ZBOOT_RSA_BITSTREAM
++	return do_fpga_loads_rsa_bitstream(dev, fpgadata, datasize);
++#else
++	return fpga_loadbitstream(dev, (void *)fpgadata, datasize, BIT_FULL);
++#endif
++}
++
++static int to_bootm(uint32_t image_addr)
++{
++	int ret = 0;
++	char *bootm_argv[2];
++	char boot_addr[16];
++	/* create paramter array */
++	bootm_argv[0] = "bootm";
++	bootm_argv[1] = boot_addr;
++
++
++	snprintf(boot_addr, sizeof(boot_addr), "0x%lx", image_addr);
++
++	ret = do_bootm(find_cmd("do_bootm"), 0, 2,
++			bootm_argv);
++
++	if (ret) {
++		printf("ERROR prep subcommand failed!\n");
++		return -1;
++	}
++	return 0;
++}
++
++static int do_zboot(struct cmd_tbl *cmdtp, int flag, int argc, char * const argv[])
++{
++	slot_head *sh;
++	uint32_t base_addr, image_addr, fpga_data_addr, unzip_data_addr, local_data_size;
++	uint32_t fpga_data_size = 0, unzip_data_size = ~0UL;
++	uint32_t *checksum, *crc_len;
++	uint8_t *dataptr, *crc_data;
++	uint8_t length;
++
++	base_addr = simple_strtol(argv[1], NULL, 16);
++	if (!base_addr) {
++		printf("%s: zero zboot_data address\n", __func__);
++		return CMD_RET_USAGE;
++	}
++
++	local_data_size = simple_strtoul(argv[2], NULL, 16);
++	if (!local_data_size) {
++		printf("%s: zero size\n", __func__);
++		return CMD_RET_USAGE;
++	}
++
++	if (*((uint32_t *)base_addr) != FILE_HEAD) {
++		printf("%s: unrecognized file type!\n", __func__);
++		return CMD_RET_FAILURE;
++	}
++
++	dataptr = (uint8_t*)base_addr;
++	length = (*dataptr << 8) + *(dataptr + 4);
++	dataptr += length;
++	dataptr += 4;
++
++	LEGAL_ADDR(base_addr, dataptr);
++
++	checksum = (uint32_t *)(dataptr);
++	crc_data = (uint8_t *)(dataptr);
++	dataptr += 4;
++
++	crc_len = (uint32_t *)(dataptr);
++	dataptr += 4;
++
++	if (*((uint32_t *)dataptr) > local_data_size) {
++		printf("%s: CRC parameter error!\n", __func__);
++		return CMD_RET_FAILURE;
++	}
++
++	crc_data = crc_data + *((uint32_t *)(dataptr));
++
++	if (*checksum != crc32(0, crc_data, *crc_len)){
++		printf("%s: CRC check error!\n", __func__);
++		return CMD_RET_FAILURE;
++	}
++
++	/* skip the first bytes, their meaning is unknown */
++	length = (*dataptr << 8) + *(dataptr + 4);
++	dataptr += 4;
++	dataptr += length;
++
++	LEGAL_ADDR(base_addr, dataptr);
++
++	if (*dataptr++ != 0x5A) {
++		printf("%s: Design data id not recognized\n", __func__);
++		return CMD_RET_FAILURE;
++	}
++
++	length = (*dataptr << 8) + *(dataptr + 1);
++	dataptr += 2;
++
++	printf("  version information = \"%s\"\n", dataptr);
++	dataptr += length;
++
++	LEGAL_ADDR(base_addr, dataptr);
++
++	/* get part version */
++	if (*dataptr++ != 0X4C) {
++		printf("%s: Part version id not recognized\n", __func__);
++		return CMD_RET_FAILURE;
++	}
++
++	length = (*dataptr << 8) + *(dataptr + 1);
++	dataptr += 2;
++	printf("  version = %s\n", dataptr);
++
++	dataptr += length;
++	dataptr++;
++
++	LEGAL_ADDR(base_addr, dataptr);
++
++	sh = (slot_head *)dataptr;
++
++	fpga_data_addr = base_addr + sh->bit_offset + sh->head_size;
++	fpga_data_size = sh->bit_size;
++
++	/* Reserved 10M, */
++	unzip_data_addr = fpga_data_addr + fpga_data_size + SZ_10M;
++
++	/* 8 byte align */
++	BYTES_ALIGN(unzip_data_addr);
++
++	/**
++	 * gunzip() - Decompress gzipped data
++	 *
++	 * @dst: Destination for uncompressed data
++	 * @dstlen: Size of destination buffer
++	 * @src: Source data to decompress
++	 * @lenp: Returns length of uncompressed data
++	 * @return 0 if OK, -1 on error
++	 */
++	if (gunzip((void *)unzip_data_addr, ~0UL, (void *)fpga_data_addr, &unzip_data_size) != 0) {
++		printf("%s: Failure to decompress!\n", __func__);
++		return CMD_RET_FAILURE;
++	}
++
++	/* load fpga */
++	if(0 != do_fpga_loadb(unzip_data_addr, unzip_data_size))
++	{
++		printf("%s: FPGA configuration error!\n", __func__);
++		return CMD_RET_FAILURE;
++	}
++
++#ifdef CONFIG_CLU_INIT
++	printf("CLU config...\r\n");
++	clu_init();
++#endif
++
++	image_addr = base_addr + sh->head_size + sh->kernel_offset;
++
++	env_set("zboot_ver", ZBOOT_VERSION);
++	env_set("zboot_info", ZBOOT_INFO);
++	env_save();
++	/* boot kernel */
++
++	to_bootm(image_addr);
++
++	return 0;
++}
++
++U_BOOT_CMD(
++	zboot,	3,	0,	do_zboot,
++	"zboot starts the system",
++	"[<addr>] [<size> <CRU>] - Boot kernel parameters\n"
++	"<addr>     - memory address of the boot\n"
++	"<size>     - Size of mirror image\n"
++	"Version: " ZBOOT_VERSION "\n"
++	"Info: " ZBOOT_INFO "\n"
++);
+diff --git a/cmd/zboot.h b/cmd/zboot.h
+new file mode 100644
+index 00000000..ade91b2d
+--- /dev/null
++++ b/cmd/zboot.h
+@@ -0,0 +1,343 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * (C) Copyright 2020
++ * Zillnk Inc.
++ */
++
++#ifndef __ZBOOT_H
++#define __ZBOOT_H
++
++
++#include <common.h>
++#include <command.h>
++#include <env.h>
++#include <fpga.h>
++#include <fs.h>
++#include <gzip.h>
++#include <malloc.h>
++#include <bootm.h>
++#include <errno.h>
++#include <image.h>
++#include <nand.h>
++#include <asm/byteorder.h>
++#include <linux/ctype.h>
++#include <linux/err.h>
++#include <u-boot/zlib.h>
++#include <mapmem.h>
++#include <u-boot/crc.h>
++#include <dm.h>
++#include <spi.h>
++#include <time.h>
++#include <timer.h>
++
++#define ZBOOT_VERSION "R1.0"
++#define ZBOOT_INFO "ORU1229_ZBOOT"
++
++#define BUS			1
++#define CS			0
++#define MODE			0
++#define BITLEN			24
++
++#define HEAD_SIZE	256
++#define SZ_10M	(10*1024*1024)
++#define FILE_HEAD	0x3F425A
++
++#define PLL1_LOCK (0x1<<5)
++#define PLL0_LOCK (0x1<<4)
++#define SYSCLK_CALI_BUSY (0x1<<2)
++#define SYSCLK_STABLE (0x1<<1)
++#define SYSCLK_LOCK (0x1<<0)
++#define SYSCLK_PLL_MASK (PLL1_LOCK |PLL0_LOCK | SYSCLK_CALI_BUSY |SYSCLK_STABLE |SYSCLK_LOCK)
++#define SYSCLK_PLL_OK (PLL1_LOCK |PLL0_LOCK |SYSCLK_STABLE |SYSCLK_LOCK)
++
++
++#define CHANNEL0_ALL_LOCK (0x1<<0)
++#define PLL0_PHASE_LOCK (0x1<<1)
++#define PLL0_FREQUENCY_LOCK (0x1<<2)
++#define APLL0_LOCK (0x1<<3)
++#define APLL0_CALI_BUSY (0x1<<4)
++#define APLL0_CALI_DONE (0x1<<5)
++#define PLL0_LOCK_MASK (CHANNEL0_ALL_LOCK |PLL0_PHASE_LOCK | PLL0_FREQUENCY_LOCK \
++					 | APLL0_LOCK | APLL0_CALI_BUSY |APLL0_CALI_DONE)
++ #define PLL0_LOCK_OK (CHANNEL0_ALL_LOCK |PLL0_PHASE_LOCK | PLL0_FREQUENCY_LOCK \
++					 | APLL0_LOCK |APLL0_CALI_DONE)
++
++#define CHANNEL1_ALL_LOCK (0x1<<0)
++#define PLL1_PHASE_LOCK (0x1<<1)
++#define PLL1_FREQUENCY_LOCK (0x1<<2)
++#define APLL1_LOCK (0x1<<3)
++#define APLL1_CALI_BUSY (0x1<<4)
++#define APLL1_CALI_DONE (0x1<<5)
++#define PLL1_LOCK_MASK (CHANNEL1_ALL_LOCK |PLL1_PHASE_LOCK | PLL1_FREQUENCY_LOCK \
++						| APLL1_LOCK | APLL1_CALI_BUSY |APLL1_CALI_DONE)
++#define PLL1_LOCK_OK (CHANNEL1_ALL_LOCK |PLL1_PHASE_LOCK | PLL1_FREQUENCY_LOCK \
++						| APLL1_LOCK |APLL1_CALI_DONE)
++
++#ifndef MAX_SPI_BYTES
++	#define MAX_SPI_BYTES 32	/* Maximum number of bytes we can handle */
++#endif
++
++#define LEGAL_ADDR(slot_head, addr)	do{ \
++						if(((addr) - (slot_head)) > HEAD_SIZE){ \
++							printf("data error\r\n"); \
++							return 1; \
++						} \
++					}while(0)
++#define BYTES_ALIGN(addr)	(addr = (addr + 7) & (~7));
++
++typedef struct _lm_head_ {
++	unsigned int bit_offset;
++	unsigned int kernel_offset;
++	unsigned int bit_size;
++	unsigned int head_size;
++}slot_head;
++
++
++static uchar reg_data[][3] = {
++	{0x00, 0x00, 0x18}, {0x00, 0x0F, 0x01}, {0x01, 0x00, 0x00},
++	{0x01, 0x01, 0x00}, {0x01, 0x02, 0x5B}, {0x01, 0x03, 0xB2},
++	{0x01, 0x04, 0xD2}, {0x01, 0x05, 0x87}, {0x01, 0x06, 0x00},
++	{0x01, 0x07, 0x00}, {0x01, 0x08, 0x00}, {0x01, 0x09, 0x00},
++	{0x01, 0x0A, 0x00}, {0x01, 0x0B, 0x00}, {0x02, 0x00, 0x17},
++	{0x02, 0x01, 0x09}, {0x02, 0x02, 0x00}, {0x02, 0x03, 0x08},
++	{0x02, 0x04, 0x71}, {0x02, 0x05, 0x1B}, {0x02, 0x06, 0x0C},
++	{0x02, 0x07, 0x32}, {0x02, 0x08, 0x00}, {0x02, 0x09, 0x00},
++	{0x02, 0x80, 0x04}, {0x02, 0x81, 0x44}, {0x02, 0x82, 0x44},
++	{0x02, 0x83, 0x05}, {0x02, 0x84, 0x00}, {0x02, 0x85, 0x64},
++	{0x02, 0x86, 0x00}, {0x02, 0x87, 0x00}, {0x02, 0x88, 0x00},
++	{0x02, 0x89, 0x00}, {0x02, 0x8A, 0x00}, {0x02, 0x8B, 0x00},
++	{0x02, 0x8C, 0x00}, {0x02, 0x8D, 0x00}, {0x02, 0x8E, 0x00},
++	{0x02, 0x8F, 0x00}, {0x02, 0x90, 0x00}, {0x02, 0x91, 0x00},
++	{0x02, 0x92, 0x00}, {0x02, 0x93, 0x00}, {0x02, 0x94, 0x00},
++	{0x02, 0x95, 0x00}, {0x02, 0x96, 0x00}, {0x02, 0x97, 0x00},
++	{0x02, 0x98, 0x00}, {0x02, 0x99, 0x00}, {0x02, 0x9A, 0x00},
++	{0x02, 0x9B, 0x00}, {0x02, 0x9C, 0x00}, {0x03, 0x00, 0x21},
++	{0x03, 0x01, 0x01}, {0x03, 0x02, 0x40}, {0x03, 0x03, 0x40},
++	{0x03, 0x04, 0x00}, {0x03, 0x05, 0x01}, {0x03, 0x06, 0x40},
++	{0x03, 0x07, 0x40}, {0x04, 0x00, 0x70}, {0x04, 0x01, 0x02},
++	{0x04, 0x02, 0x00}, {0x04, 0x03, 0x00}, {0x04, 0x04, 0x00},
++	{0x04, 0x05, 0x50}, {0x04, 0x06, 0xD6}, {0x04, 0x07, 0xDC},
++	{0x04, 0x08, 0x01}, {0x04, 0x09, 0x00}, {0x04, 0x0A, 0x00},
++	{0x04, 0x0B, 0x00}, {0x04, 0x0C, 0xA0}, {0x04, 0x0D, 0x86},
++	{0x04, 0x0E, 0x01}, {0x04, 0x0F, 0x03}, {0x04, 0x10, 0x0A},
++	{0x04, 0x11, 0x00}, {0x04, 0x12, 0x00}, {0x04, 0x13, 0x00},
++	{0x04, 0x14, 0x00}, {0x04, 0x20, 0x31}, {0x04, 0x21, 0x00},
++	{0x04, 0x22, 0x00}, {0x04, 0x23, 0x00}, {0x04, 0x24, 0x00},
++	{0x04, 0x25, 0xE8}, {0x04, 0x26, 0x76}, {0x04, 0x27, 0x48},
++	{0x04, 0x28, 0x17}, {0x04, 0x29, 0x00}, {0x04, 0x2A, 0x00},
++	{0x04, 0x2B, 0x00}, {0x04, 0x2C, 0xA0}, {0x04, 0x2D, 0x86},
++	{0x04, 0x2E, 0x01}, {0x04, 0x2F, 0x03}, {0x04, 0x30, 0x0A},
++	{0x04, 0x31, 0x00}, {0x04, 0x32, 0x00}, {0x04, 0x33, 0x00},
++	{0x04, 0x34, 0x00}, {0x04, 0x40, 0x7C}, {0x04, 0x41, 0x00},
++	{0x04, 0x42, 0x00}, {0x04, 0x43, 0x00}, {0x04, 0x44, 0x00},
++	{0x04, 0x45, 0x90}, {0x04, 0x46, 0x2F}, {0x04, 0x47, 0x50},
++	{0x04, 0x48, 0x09}, {0x04, 0x49, 0x00}, {0x04, 0x4A, 0x00},
++	{0x04, 0x4B, 0x00}, {0x04, 0x4C, 0xA0}, {0x04, 0x4D, 0x86},
++	{0x04, 0x4E, 0x01}, {0x04, 0x4F, 0x03}, {0x04, 0x50, 0x0A},
++	{0x04, 0x51, 0x00}, {0x04, 0x52, 0x00}, {0x04, 0x53, 0x00},
++	{0x04, 0x54, 0x00}, {0x04, 0x60, 0xF9}, {0x04, 0x61, 0x00},
++	{0x04, 0x62, 0x00}, {0x04, 0x63, 0x00}, {0x04, 0x64, 0x00},
++	{0x04, 0x65, 0xC8}, {0x04, 0x66, 0x17}, {0x04, 0x67, 0xA8},
++	{0x04, 0x68, 0x04}, {0x04, 0x69, 0x00}, {0x04, 0x6A, 0x00},
++	{0x04, 0x6B, 0x00}, {0x04, 0x6C, 0xA0}, {0x04, 0x6D, 0x86},
++	{0x04, 0x6E, 0x01}, {0x04, 0x6F, 0x03}, {0x04, 0x70, 0x0A},
++	{0x04, 0x71, 0x00}, {0x04, 0x72, 0x00}, {0x04, 0x73, 0x00},
++	{0x04, 0x74, 0x00}, {0x10, 0x00, 0x51}, {0x10, 0x01, 0x18},
++	{0x10, 0x02, 0xDE}, {0x10, 0x03, 0xA9}, {0x10, 0x04, 0xE0},
++	{0x10, 0x05, 0x20}, {0x10, 0x06, 0xFF}, {0x10, 0x07, 0xFF},
++	{0x10, 0x08, 0xFF}, {0x10, 0x09, 0x00}, {0x10, 0x0A, 0x0A},
++	{0x10, 0x0B, 0x00}, {0x10, 0x0C, 0x00}, {0x10, 0x0D, 0x00},
++	{0x10, 0x0E, 0x38}, {0x10, 0x0F, 0x00}, {0x10, 0x10, 0x00},
++	{0x10, 0x11, 0x00}, {0x10, 0x12, 0x00}, {0x10, 0x13, 0x00},
++	{0x10, 0x14, 0x06}, {0x10, 0x15, 0x00}, {0x10, 0x16, 0x00},
++	{0x10, 0x17, 0x00}, {0x10, 0x18, 0x00}, {0x10, 0x19, 0x00},
++	{0x10, 0x1A, 0x00}, {0x10, 0x1B, 0x00}, {0x10, 0x1C, 0x00},
++	{0x10, 0x1D, 0x00}, {0x10, 0x1E, 0x00}, {0x10, 0x1F, 0x00},
++	{0x10, 0x20, 0x00}, {0x10, 0x21, 0x00}, {0x10, 0x22, 0x00},
++	{0x10, 0x23, 0x00}, {0x10, 0x24, 0x00}, {0x10, 0x25, 0x00},
++	{0x10, 0x26, 0x00}, {0x10, 0x27, 0x00}, {0x10, 0x28, 0x00},
++	{0x10, 0x2A, 0x00}, {0x10, 0x2B, 0x00}, {0x10, 0x80, 0x94},
++	{0x10, 0x81, 0x08}, {0x10, 0x82, 0xE0}, {0x10, 0x83, 0x03},
++	{0x10, 0xC0, 0x00}, {0x10, 0xC1, 0x00}, {0x10, 0xC2, 0x00},
++	{0x10, 0xC3, 0x30}, {0x10, 0xC4, 0x75}, {0x10, 0xC5, 0x00},
++	{0x10, 0xC6, 0x00}, {0x10, 0xC7, 0x00}, {0x10, 0xC8, 0x00},
++	{0x10, 0xC9, 0x00}, {0x10, 0xCA, 0x00}, {0x10, 0xCB, 0x00},
++	{0x10, 0xCC, 0x00}, {0x10, 0xCD, 0x00}, {0x10, 0xCE, 0x00},
++	{0x10, 0xCF, 0x00}, {0x10, 0xD0, 0x00}, {0x10, 0xD1, 0x00},
++	{0x10, 0xD2, 0xC8}, {0x10, 0xD3, 0x03}, {0x10, 0xD4, 0x05},
++	{0x10, 0xD5, 0x00}, {0x10, 0xD6, 0x00}, {0x10, 0xD7, 0x04},
++	{0x10, 0xD8, 0x05}, {0x10, 0xD9, 0x01}, {0x10, 0xDA, 0x00},
++	{0x10, 0xDB, 0x01}, {0x10, 0xDC, 0x00}, {0x11, 0x00, 0xA0},
++	{0x11, 0x01, 0x00}, {0x11, 0x02, 0x00}, {0x11, 0x03, 0x00},
++	{0x11, 0x04, 0x00}, {0x11, 0x05, 0x00}, {0x11, 0x06, 0x00},
++	{0x11, 0x07, 0x00}, {0x11, 0x08, 0x07}, {0x11, 0x09, 0x00},
++	{0x11, 0x0A, 0x00}, {0x11, 0x0B, 0x00}, {0x11, 0x0C, 0x00},
++	{0x11, 0x0D, 0x00}, {0x11, 0x0E, 0x00}, {0x11, 0x0F, 0x00},
++	{0x11, 0x10, 0x00}, {0x11, 0x11, 0x07}, {0x11, 0x12, 0x05},
++	{0x11, 0x13, 0x00}, {0x11, 0x14, 0x00}, {0x11, 0x15, 0x00},
++	{0x11, 0x16, 0x00}, {0x11, 0x17, 0x00}, {0x11, 0x18, 0x00},
++	{0x11, 0x19, 0x00}, {0x11, 0x1A, 0x07}, {0x11, 0x1B, 0x00},
++	{0x11, 0x1C, 0x00}, {0x11, 0x1D, 0x00}, {0x11, 0x1E, 0x00},
++	{0x11, 0x1F, 0x00}, {0x11, 0x20, 0x00}, {0x11, 0x21, 0x00},
++	{0x11, 0x22, 0x00}, {0x11, 0x23, 0x07}, {0x11, 0x24, 0x0A},
++	{0x11, 0x25, 0x00}, {0x11, 0x26, 0x00}, {0x11, 0x27, 0x00},
++	{0x11, 0x28, 0x14}, {0x11, 0x29, 0x00}, {0x11, 0x2A, 0x00},
++	{0x11, 0x2B, 0x00}, {0x11, 0x2C, 0x07}, {0x11, 0x2D, 0x00},
++	{0x11, 0x2E, 0x00}, {0x11, 0x2F, 0x00}, {0x11, 0x30, 0x00},
++	{0x11, 0x31, 0x00}, {0x11, 0x32, 0x00}, {0x11, 0x33, 0x00},
++	{0x11, 0x34, 0x00}, {0x11, 0x35, 0x07}, {0x12, 0x00, 0x01},
++	{0x12, 0x01, 0x08}, {0x12, 0x02, 0x00}, {0x12, 0x03, 0x00},
++	{0x12, 0x04, 0xC0}, {0x12, 0x05, 0xE1}, {0x12, 0x06, 0xE4},
++	{0x12, 0x07, 0x00}, {0x12, 0x08, 0xA0}, {0x12, 0x09, 0x0F},
++	{0x12, 0x0A, 0x00}, {0x12, 0x0B, 0x00}, {0x12, 0x0C, 0xFF},
++	{0x12, 0x0D, 0x77}, {0x12, 0x0E, 0x00}, {0x12, 0x0F, 0x00},
++	{0x12, 0x10, 0x00}, {0x12, 0x11, 0x00}, {0x12, 0x12, 0x00},
++	{0x12, 0x13, 0x00}, {0x12, 0x14, 0x00}, {0x12, 0x15, 0x00},
++	{0x12, 0x16, 0x00}, {0x12, 0x17, 0x00}, {0x12, 0x20, 0x10},
++	{0x12, 0x21, 0x00}, {0x12, 0x22, 0x00}, {0x12, 0x23, 0x00},
++	{0x12, 0x24, 0x00}, {0x12, 0x25, 0xCA}, {0x12, 0x26, 0x9A},
++	{0x12, 0x27, 0x3B}, {0x12, 0x28, 0xA0}, {0x12, 0x29, 0x0F},
++	{0x12, 0x2A, 0x00}, {0x12, 0x2B, 0x00}, {0x12, 0x2C, 0xFF},
++	{0x12, 0x2D, 0x05}, {0x12, 0x2E, 0x00}, {0x12, 0x2F, 0x00},
++	{0x12, 0x30, 0x00}, {0x12, 0x31, 0x00}, {0x12, 0x32, 0x00},
++	{0x12, 0x33, 0x01}, {0x12, 0x34, 0x00}, {0x12, 0x35, 0x00},
++	{0x12, 0x36, 0x00}, {0x12, 0x37, 0x00}, {0x12, 0x40, 0x00},
++	{0x12, 0x41, 0x00}, {0x12, 0x42, 0x00}, {0x12, 0x43, 0x00},
++	{0x12, 0x44, 0x00}, {0x12, 0x45, 0x00}, {0x12, 0x46, 0x00},
++	{0x12, 0x47, 0x00}, {0x12, 0x48, 0xA0}, {0x12, 0x49, 0x0F},
++	{0x12, 0x4A, 0x00}, {0x12, 0x4B, 0x00}, {0x12, 0x4C, 0xA0},
++	{0x12, 0x4D, 0x0F}, {0x12, 0x4E, 0x00}, {0x12, 0x4F, 0x00},
++	{0x12, 0x50, 0x00}, {0x12, 0x51, 0x00}, {0x12, 0x52, 0x00},
++	{0x12, 0x53, 0x00}, {0x12, 0x54, 0x00}, {0x12, 0x55, 0x00},
++	{0x12, 0x56, 0x00}, {0x12, 0x57, 0x00}, {0x12, 0x60, 0x00},
++	{0x12, 0x61, 0x00}, {0x12, 0x62, 0x00}, {0x12, 0x63, 0x00},
++	{0x12, 0x64, 0x00}, {0x12, 0x65, 0x00}, {0x12, 0x66, 0x00},
++	{0x12, 0x67, 0x00}, {0x12, 0x68, 0xA0}, {0x12, 0x69, 0x0F},
++	{0x12, 0x6A, 0x00}, {0x12, 0x6B, 0x00}, {0x12, 0x6C, 0xA0},
++	{0x12, 0x6D, 0x0F}, {0x12, 0x6E, 0x00}, {0x12, 0x6F, 0x00},
++	{0x12, 0x70, 0x00}, {0x12, 0x71, 0x00}, {0x12, 0x72, 0x00},
++	{0x12, 0x73, 0x00}, {0x12, 0x74, 0x00}, {0x12, 0x75, 0x00},
++	{0x12, 0x76, 0x00}, {0x12, 0x77, 0x00}, {0x12, 0x80, 0x00},
++	{0x12, 0x81, 0x00}, {0x12, 0x82, 0x00}, {0x12, 0x83, 0x00},
++	{0x12, 0x84, 0x00}, {0x12, 0x85, 0x00}, {0x12, 0x86, 0x00},
++	{0x12, 0x87, 0x00}, {0x12, 0x88, 0xA0}, {0x12, 0x89, 0x0F},
++	{0x12, 0x8A, 0x00}, {0x12, 0x8B, 0x00}, {0x12, 0x8C, 0xA0},
++	{0x12, 0x8D, 0x0F}, {0x12, 0x8E, 0x00}, {0x12, 0x8F, 0x00},
++	{0x12, 0x90, 0x00}, {0x12, 0x91, 0x00}, {0x12, 0x92, 0x00},
++	{0x12, 0x93, 0x00}, {0x12, 0x94, 0x00}, {0x12, 0x95, 0x00},
++	{0x12, 0x96, 0x00}, {0x12, 0x97, 0x00}, {0x12, 0xA0, 0x00},
++	{0x12, 0xA1, 0x00}, {0x12, 0xA2, 0x00}, {0x12, 0xA3, 0x00},
++	{0x12, 0xA4, 0x00}, {0x12, 0xA5, 0x00}, {0x12, 0xA6, 0x00},
++	{0x12, 0xA7, 0x00}, {0x12, 0xA8, 0xA0}, {0x12, 0xA9, 0x0F},
++	{0x12, 0xAA, 0x00}, {0x12, 0xAB, 0x00}, {0x12, 0xAC, 0xA0},
++	{0x12, 0xAD, 0x0F}, {0x12, 0xAE, 0x00}, {0x12, 0xAF, 0x00},
++	{0x12, 0xB0, 0x00}, {0x12, 0xB1, 0x00}, {0x12, 0xB2, 0x00},
++	{0x12, 0xB3, 0x00}, {0x12, 0xB4, 0x00}, {0x12, 0xB5, 0x00},
++	{0x12, 0xB6, 0x00}, {0x12, 0xB7, 0x00}, {0x14, 0x00, 0x19},
++	{0x14, 0x01, 0x29}, {0x14, 0x02, 0x70}, {0x14, 0x03, 0xF7},
++	{0x14, 0x04, 0x1D}, {0x14, 0x05, 0x23}, {0x14, 0x06, 0xFF},
++	{0x14, 0x07, 0xFF}, {0x14, 0x08, 0xFF}, {0x14, 0x09, 0x00},
++	{0x14, 0x0A, 0x0A}, {0x14, 0x0B, 0x00}, {0x14, 0x0C, 0x00},
++	{0x14, 0x0D, 0x00}, {0x14, 0x0E, 0x38}, {0x14, 0x0F, 0x00},
++	{0x14, 0x10, 0x00}, {0x14, 0x11, 0x00}, {0x14, 0x12, 0x00},
++	{0x14, 0x13, 0x00}, {0x14, 0x14, 0x06}, {0x14, 0x15, 0x00},
++	{0x14, 0x16, 0x00}, {0x14, 0x17, 0x00}, {0x14, 0x18, 0x00},
++	{0x14, 0x19, 0x00}, {0x14, 0x1A, 0x00}, {0x14, 0x1B, 0x00},
++	{0x14, 0x1C, 0x00}, {0x14, 0x1D, 0x00}, {0x14, 0x1E, 0x00},
++	{0x14, 0x1F, 0x00}, {0x14, 0x20, 0x00}, {0x14, 0x21, 0x00},
++	{0x14, 0x22, 0x00}, {0x14, 0x23, 0x00}, {0x14, 0x24, 0x00},
++	{0x14, 0x25, 0x00}, {0x14, 0x26, 0x00}, {0x14, 0x27, 0x00},
++	{0x14, 0x28, 0x00}, {0x14, 0x2A, 0x00}, {0x14, 0x2B, 0x00},
++	{0x14, 0x80, 0x90}, {0x14, 0x81, 0x0A}, {0x14, 0x82, 0xE0},
++	{0x14, 0x83, 0x03}, {0x14, 0xC0, 0x00}, {0x14, 0xC1, 0x00},
++	{0x14, 0xC2, 0x00}, {0x14, 0xC3, 0x00}, {0x14, 0xC4, 0x00},
++	{0x14, 0xC5, 0x00}, {0x14, 0xC6, 0x00}, {0x14, 0xC7, 0x00},
++	{0x14, 0xC8, 0x00}, {0x14, 0xC9, 0x00}, {0x14, 0xCE, 0x00},
++	{0x14, 0xCF, 0x00}, {0x14, 0xD0, 0x00}, {0x14, 0xD2, 0x00},
++	{0x14, 0xD3, 0x00}, {0x14, 0xD4, 0x00}, {0x14, 0xD6, 0x00},
++	{0x14, 0xD7, 0x04}, {0x14, 0xD8, 0x04}, {0x14, 0xDA, 0x00},
++	{0x14, 0xDB, 0x01}, {0x14, 0xDC, 0x00}, {0x15, 0x00, 0x0A},
++	{0x15, 0x01, 0x00}, {0x15, 0x02, 0x00}, {0x15, 0x03, 0x00},
++	{0x15, 0x04, 0x00}, {0x15, 0x05, 0x00}, {0x15, 0x06, 0x00},
++	{0x15, 0x07, 0x00}, {0x15, 0x08, 0x27}, {0x15, 0x09, 0x00},
++	{0x15, 0x0A, 0x00}, {0x15, 0x0B, 0x00}, {0x15, 0x0C, 0x00},
++	{0x15, 0x0D, 0x00}, {0x15, 0x0E, 0x00}, {0x15, 0x0F, 0x00},
++	{0x15, 0x10, 0x00}, {0x15, 0x11, 0x07}, {0x15, 0x12, 0x0A},
++	{0x15, 0x13, 0x00}, {0x15, 0x14, 0x00}, {0x15, 0x15, 0x00},
++	{0x15, 0x16, 0x00}, {0x15, 0x17, 0x00}, {0x15, 0x18, 0x00},
++	{0x15, 0x19, 0x00}, {0x15, 0x1A, 0x27}, {0x15, 0x1B, 0x00},
++	{0x15, 0x1C, 0x00}, {0x15, 0x1D, 0x00}, {0x15, 0x1E, 0x00},
++	{0x15, 0x1F, 0x00}, {0x15, 0x20, 0x00}, {0x15, 0x21, 0x00},
++	{0x15, 0x22, 0x00}, {0x15, 0x23, 0x07}, {0x16, 0x00, 0x01},
++	{0x16, 0x01, 0x08}, {0x16, 0x02, 0x00}, {0x16, 0x03, 0x00},
++	{0x16, 0x04, 0xC0}, {0x16, 0x05, 0xE1}, {0x16, 0x06, 0xE4},
++	{0x16, 0x07, 0x00}, {0x16, 0x08, 0xA0}, {0x16, 0x09, 0x0F},
++	{0x16, 0x0A, 0x00}, {0x16, 0x0B, 0x00}, {0x16, 0x0C, 0x2B},
++	{0x16, 0x0D, 0x80}, {0x16, 0x0E, 0x00}, {0x16, 0x0F, 0x00},
++	{0x16, 0x10, 0x01}, {0x16, 0x11, 0x00}, {0x16, 0x12, 0x00},
++	{0x16, 0x13, 0x02}, {0x16, 0x14, 0x00}, {0x16, 0x15, 0x00},
++	{0x16, 0x16, 0x00}, {0x16, 0x17, 0x00}, {0x16, 0x20, 0x10},
++	{0x16, 0x21, 0x00}, {0x16, 0x22, 0x00}, {0x16, 0x23, 0x00},
++	{0x16, 0x24, 0x00}, {0x16, 0x25, 0xCA}, {0x16, 0x26, 0x9A},
++	{0x16, 0x27, 0x3B}, {0x16, 0x28, 0xA0}, {0x16, 0x29, 0x0F},
++	{0x16, 0x2A, 0x00}, {0x16, 0x2B, 0x00}, {0x16, 0x2C, 0x19},
++	{0x16, 0x2D, 0x06}, {0x16, 0x2E, 0x00}, {0x16, 0x2F, 0x00},
++	{0x16, 0x30, 0x01}, {0x16, 0x31, 0x00}, {0x16, 0x32, 0x00},
++	{0x16, 0x33, 0x02}, {0x16, 0x34, 0x00}, {0x16, 0x35, 0x00},
++	{0x16, 0x36, 0x00}, {0x16, 0x37, 0x00}, {0x16, 0x40, 0x00},
++	{0x16, 0x41, 0x00}, {0x16, 0x42, 0x00}, {0x16, 0x43, 0x00},
++	{0x16, 0x44, 0x00}, {0x16, 0x45, 0x00}, {0x16, 0x46, 0x00},
++	{0x16, 0x47, 0x00}, {0x16, 0x48, 0xA0}, {0x16, 0x49, 0x0F},
++	{0x16, 0x4A, 0x00}, {0x16, 0x4B, 0x00}, {0x16, 0x4C, 0xA0},
++	{0x16, 0x4D, 0x0F}, {0x16, 0x4E, 0x00}, {0x16, 0x4F, 0x00},
++	{0x16, 0x50, 0x00}, {0x16, 0x51, 0x00}, {0x16, 0x52, 0x00},
++	{0x16, 0x53, 0x00}, {0x16, 0x54, 0x00}, {0x16, 0x55, 0x00},
++	{0x16, 0x56, 0x00}, {0x16, 0x57, 0x00}, {0x16, 0x60, 0x00},
++	{0x16, 0x61, 0x00}, {0x16, 0x62, 0x00}, {0x16, 0x63, 0x00},
++	{0x16, 0x64, 0x00}, {0x16, 0x65, 0x00}, {0x16, 0x66, 0x00},
++	{0x16, 0x67, 0x00}, {0x16, 0x68, 0xA0}, {0x16, 0x69, 0x0F},
++	{0x16, 0x6A, 0x00}, {0x16, 0x6B, 0x00}, {0x16, 0x6C, 0xA0},
++	{0x16, 0x6D, 0x0F}, {0x16, 0x6E, 0x00}, {0x16, 0x6F, 0x00},
++	{0x16, 0x70, 0x00}, {0x16, 0x71, 0x00}, {0x16, 0x72, 0x00},
++	{0x16, 0x73, 0x00}, {0x16, 0x74, 0x00}, {0x16, 0x75, 0x00},
++	{0x16, 0x76, 0x00}, {0x16, 0x77, 0x00}, {0x16, 0x80, 0x00},
++	{0x16, 0x81, 0x00}, {0x16, 0x82, 0x00}, {0x16, 0x83, 0x00},
++	{0x16, 0x84, 0x00}, {0x16, 0x85, 0x00}, {0x16, 0x86, 0x00},
++	{0x16, 0x87, 0x00}, {0x16, 0x88, 0xA0}, {0x16, 0x89, 0x0F},
++	{0x16, 0x8A, 0x00}, {0x16, 0x8B, 0x00}, {0x16, 0x8C, 0xA0},
++	{0x16, 0x8D, 0x0F}, {0x16, 0x8E, 0x00}, {0x16, 0x8F, 0x00},
++	{0x16, 0x90, 0x00}, {0x16, 0x91, 0x00}, {0x16, 0x92, 0x00},
++	{0x16, 0x93, 0x00}, {0x16, 0x94, 0x00}, {0x16, 0x95, 0x00},
++	{0x16, 0x96, 0x00}, {0x16, 0x97, 0x00}, {0x16, 0xA0, 0x00},
++	{0x16, 0xA1, 0x00}, {0x16, 0xA2, 0x00}, {0x16, 0xA3, 0x00},
++	{0x16, 0xA4, 0x00}, {0x16, 0xA5, 0x00}, {0x16, 0xA6, 0x00},
++	{0x16, 0xA7, 0x00}, {0x16, 0xA8, 0xA0}, {0x16, 0xA9, 0x0F},
++	{0x16, 0xAA, 0x00}, {0x16, 0xAB, 0x00}, {0x16, 0xAC, 0xA0},
++	{0x16, 0xAD, 0x0F}, {0x16, 0xAE, 0x00}, {0x16, 0xAF, 0x00},
++	{0x16, 0xB0, 0x00}, {0x16, 0xB1, 0x00}, {0x16, 0xB2, 0x00},
++	{0x16, 0xB3, 0x00}, {0x16, 0xB4, 0x00}, {0x16, 0xB5, 0x00},
++	{0x16, 0xB6, 0x00}, {0x16, 0xB7, 0x00}, {0x20, 0x00, 0x00},
++	{0x20, 0x01, 0x0A}, {0x20, 0x02, 0x00}, {0x20, 0x03, 0x00},
++	{0x20, 0x04, 0x00}, {0x20, 0x05, 0x00}, {0x21, 0x00, 0x00},
++	{0x21, 0x01, 0x00}, {0x21, 0x02, 0x00}, {0x21, 0x03, 0x00},
++	{0x21, 0x04, 0x10}, {0x21, 0x05, 0x00}, {0x21, 0x06, 0x00},
++	{0x21, 0x07, 0x00}, {0x22, 0x00, 0x00}, {0x22, 0x01, 0x00},
++	{0x22, 0x02, 0x00}, {0x22, 0x03, 0x00}, {0x22, 0x05, 0x00},
++	{0x22, 0x06, 0x00}, {0x22, 0x07, 0x00}, {0x28, 0x00, 0x00},
++	{0x28, 0x01, 0x00}, {0x28, 0x02, 0x00}, {0x28, 0x03, 0x00},
++	{0x28, 0x04, 0x00}, {0x28, 0x05, 0x90}, {0x28, 0x06, 0x26},
++	{0x28, 0x07, 0x00}, {0x28, 0x08, 0x00}, {0x28, 0x09, 0x00},
++	{0x28, 0x0A, 0x80}, {0x28, 0x0B, 0x00}, {0x28, 0x0C, 0x00},
++	{0x28, 0x0D, 0x00}, {0x28, 0x0E, 0x00}, {0x28, 0x0F, 0x00},
++	{0x28, 0x10, 0x00}, {0x28, 0x11, 0x00}, {0x28, 0x12, 0x00},
++	{0x28, 0x13, 0x00}, {0x28, 0x14, 0x00}, {0x28, 0x15, 0x00},
++	{0x28, 0x16, 0x00}, {0x28, 0x17, 0x00}, {0x28, 0x18, 0x00},
++	{0x28, 0x19, 0x00}, {0x28, 0x1A, 0x00}, {0x28, 0x1B, 0x00},
++	{0x28, 0x1C, 0x00}, {0x28, 0x1D, 0x00}, {0x28, 0x1E, 0xA0},
++	{0x00, 0x0F, 0x01}, {0x20, 0x00, 0x00}, {0x00, 0x0F, 0x01},
++	{0x20, 0x00, 0x02}, {0x00, 0x0F, 0x01},
++};
++
++
++
++#endif /* __ZBOOT_H */
+diff --git a/drivers/mtd/spi/spi-nor-ids.c b/drivers/mtd/spi/spi-nor-ids.c
+index 948a8e3c..2477b2fa 100644
+--- a/drivers/mtd/spi/spi-nor-ids.c
++++ b/drivers/mtd/spi/spi-nor-ids.c
+@@ -122,6 +122,11 @@ const struct flash_info spi_nor_ids[] = {
+ 		INFO("gd25lx256e", 0xc86819, 0, 64 * 1024, 512,
+ 		     SECT_4K | SPI_NOR_OCTAL_READ | SPI_NOR_4B_OPCODES)
+ 	},
++	{
++		INFO("gd55b02ge", 0xc8471c, 0, 64 * 1024, 4096,
++		     SECT_4K | SPI_NOR_QUAD_READ | SPI_NOR_4B_OPCODES |
++			 SPI_NOR_HAS_LOCK | SPI_NOR_DUAL_READ | SPI_NOR_HAS_TB)
++	},
+ #endif
+ #ifdef CONFIG_SPI_FLASH_ISSI		/* ISSI */
+ 	/* ISSI */
+diff --git a/drivers/net/phy/Kconfig b/drivers/net/phy/Kconfig
+index 51733dd1..2f7ed04b 100644
+--- a/drivers/net/phy/Kconfig
++++ b/drivers/net/phy/Kconfig
+@@ -304,4 +304,7 @@ config PHY_NCSI
+ 	bool "NC-SI based PHY"
+ 	depends on DM_ETH
+ 
++config PHY_CTC
++	bool "Centec Ethernet PHYs support"
++
+ endif #PHYLIB
+diff --git a/drivers/net/phy/Makefile b/drivers/net/phy/Makefile
+index 6e722331..e5d7c831 100644
+--- a/drivers/net/phy/Makefile
++++ b/drivers/net/phy/Makefile
+@@ -33,3 +33,4 @@ obj-$(CONFIG_PHY_VITESSE) += vitesse.o
+ obj-$(CONFIG_PHY_MSCC) += mscc.o
+ obj-$(CONFIG_PHY_FIXED) += fixed.o
+ obj-$(CONFIG_PHY_NCSI) += ncsi.o
++obj-$(CONFIG_PHY_CTC) += mars.o
+diff --git a/drivers/net/phy/mars.c b/drivers/net/phy/mars.c
+new file mode 100644
+index 00000000..64c3f6e6
+--- /dev/null
++++ b/drivers/net/phy/mars.c
+@@ -0,0 +1,314 @@
++/*
++ * drivers/net/phy/mars.c
++ *
++ * Driver for Centec PHYs
++ *
++ * Author: liuht
++ *
++ * Copyright 2002-2018, Centec Networks (Suzhou) Co., Ltd.
++ *
++ *
++ * This program is free software; you can redistribute  it and/or modify it
++ * under  the terms of  the GNU General  Public License as published by the
++ * Free Software Foundation;  either version 2 of the  License, or (at your
++ * option) any later version.
++ *
++ */
++
++#include <config.h>
++#include <common.h>
++#include <errno.h>
++#include <phy.h>
++#include <net/loopback.h>
++#include <linux/delay.h>
++
++#define CTC_PHY_REG_SPACE  0
++#define CTC_SDS_REG_SPACE 1
++
++ /* Mask used for ID comparisons */
++#define CTC_PHY_ID_MASK		0xffffffff
++
++/* Known PHY IDs */
++#define CTC_PHY_ID_MARS1S_V1        0x00782013
++#define CTC_PHY_ID_MARS1S           0x01E04013
++#define CTC_PHY_ID_MARS1P_V1        0x00782011
++#define CTC_PHY_ID_MARS1P           0x01E04011
++
++#define SLEEP_MODE		BIT(15)
++#define EXT_REG_BIT4	BIT(4)
++
++static int mars_ext_read(struct phy_device *phydev, u32 regnum)
++{
++	int ret;
++
++	ret = phy_write(phydev, MDIO_DEVAD_NONE, 0x1e, regnum);
++	if(ret<0)
++		return ret;
++
++	return phy_read(phydev, MDIO_DEVAD_NONE, 0x1f);
++}
++
++static int mars_ext_write(struct phy_device *phydev, u32 regnum, u16 val)
++{
++	int ret;
++
++	ret = phy_write(phydev, MDIO_DEVAD_NONE, 0x1e, regnum);
++	if(ret<0)
++		return ret;
++
++	return phy_write(phydev, MDIO_DEVAD_NONE, 0x1f, val);
++}
++
++void mars_loopback(struct phy_device *phydev)
++{
++	int val;
++
++	val = mars_ext_read(phydev, 0x27);
++	val &= ~(SLEEP_MODE);
++	mars_ext_write(phydev, 0x27, val);
++
++	val = mars_ext_read(phydev, 0xa);
++	val |= EXT_REG_BIT4;
++	mars_ext_write(phydev, 0xa, val);
++
++	val = phy_read(phydev, MDIO_DEVAD_NONE, MII_BMCR);
++	val &= ~(BMCR_CTST | BMCR_ANRESTART | BMCR_ANENABLE | BMCR_SPEED100);
++	val |= (BMCR_FULLDPLX | BMCR_SPEED1000 | BMCR_RESET);
++
++	phy_write(phydev, MDIO_DEVAD_NONE, MII_BMCR, val);
++}
++
++void mars_loopback_off(struct phy_device *phydev)
++{
++	int val;
++
++	val = mars_ext_read(phydev, 0x27);
++	val |= SLEEP_MODE;
++	mars_ext_write(phydev, 0x27, val);
++
++	val = mars_ext_read(phydev, 0xa);
++	val &= ~(EXT_REG_BIT4);
++	mars_ext_write(phydev, 0xa, val);
++
++	val = phy_read(phydev, MDIO_DEVAD_NONE, MII_BMCR);
++	val |= (BMCR_ANENABLE | BMCR_ANRESTART | BMCR_RESET);
++	val &= ~(BMCR_ISOLATE);
++
++	phy_write(phydev, MDIO_DEVAD_NONE, MII_BMCR, val);
++}
++
++static int mars_select_reg_space(struct phy_device *phydev, int space)
++{
++	int ret;
++
++	if (space == CTC_PHY_REG_SPACE){
++		ret = mars_ext_write(phydev, 0xa000, 0x0);
++	}else{
++		ret = mars_ext_write(phydev, 0xa000, 0x2);
++	}
++
++	return ret;
++}
++
++static int mars_set_link_timer_2_6ms(struct phy_device *phydev)
++{
++	int ret=0;
++
++	ret = mars_select_reg_space(phydev, CTC_SDS_REG_SPACE);
++	if(!ret)
++		mars_ext_write(phydev, 0xa5, 0x5);
++	mars_select_reg_space(phydev, CTC_PHY_REG_SPACE);
++
++	return 0;
++}
++
++static void led_setup(struct phy_device *phydev)
++{
++	mars_ext_write(phydev, 0xa00d, 0xde00);
++	mars_ext_write(phydev, 0xa00e, 0xd800);
++
++	return;
++}
++
++#if 0
++static int mars_set_link_timer_6_3ms(struct phy_device *phydev)
++{
++	int ret=0;
++
++	printf("mars_set_link_timer_6_3ms\n");
++	ret = mars_select_reg_space(phydev, CTC_SDS_REG_SPACE);
++	if(!ret)
++		mars_ext_write(phydev, 0xa5, 0xc);
++	mars_select_reg_space(phydev, CTC_PHY_REG_SPACE);
++
++	return 0;
++}
++#endif
++
++int mars_config(struct phy_device *phydev)
++{
++	int val;
++	u32 features;
++
++	mars_set_link_timer_2_6ms(phydev);
++	features = (SUPPORTED_TP | SUPPORTED_MII
++			| SUPPORTED_AUI | SUPPORTED_FIBRE |
++			SUPPORTED_BNC);
++
++	led_setup(phydev);
++	/* Do we support autonegotiation? */
++	val = phy_read(phydev, MDIO_DEVAD_NONE, MII_BMSR);
++
++	if (val < 0)
++		return val;
++
++	if (val & BMSR_ANEGCAPABLE)
++		features |= SUPPORTED_Autoneg;
++
++	if (val & BMSR_100FULL)
++		features |= SUPPORTED_100baseT_Full;
++	if (val & BMSR_100HALF)
++		features |= SUPPORTED_100baseT_Half;
++	if (val & BMSR_10FULL)
++		features |= SUPPORTED_10baseT_Full;
++	if (val & BMSR_10HALF)
++		features |= SUPPORTED_10baseT_Half;
++
++	if (val & BMSR_ESTATEN) {
++		val = phy_read(phydev, MDIO_DEVAD_NONE, MII_ESTATUS);
++
++		if (val < 0)
++			return val;
++
++		if (val & ESTATUS_1000_TFULL)
++			features |= SUPPORTED_1000baseT_Full;
++		if (val & ESTATUS_1000_THALF)
++			features |= SUPPORTED_1000baseT_Half;
++		if (val & ESTATUS_1000_XFULL)
++			features |= SUPPORTED_1000baseX_Full;
++		if (val & ESTATUS_1000_XHALF)
++			features |= SUPPORTED_1000baseX_Half;
++	}
++
++	phydev->supported &= features;
++	phydev->advertising &= features;
++
++	genphy_config_aneg(phydev);
++
++	return 0;
++}
++
++int mars1p_config(struct phy_device *phydev)
++{
++	/*RGMII clock 2.5M when link down, bit12:1->0*/
++	mars_ext_write(phydev, 0xc, 0x8051);
++	/*Disable sleep mode, bit15:1->0*/
++	mars_ext_write(phydev, 0x27, 0x2029);
++	/* disable PHY to respond to MDIO access with PHYAD0 */
++    /* MMD7 8001h: bit6: 0, change value: 0x7f --> 0x3f */
++	phy_write(phydev, MDIO_DEVAD_NONE, 0xd, 0x7);
++	phy_write(phydev, MDIO_DEVAD_NONE, 0xe, 0x8001);
++	phy_write(phydev, MDIO_DEVAD_NONE, 0xd, 0x4007);
++	phy_write(phydev, MDIO_DEVAD_NONE, 0xe, 0x3f);
++
++	return mars_config(phydev);
++}
++
++int mars_startup(struct phy_device *phydev)
++{
++	unsigned int mii_reg;
++	int i = 0;
++
++	mars_select_reg_space(phydev, CTC_SDS_REG_SPACE);
++	mars_ext_write(phydev, 0x3, 0x670);
++	mars_select_reg_space(phydev, CTC_PHY_REG_SPACE);
++
++	if (loopback_mode()) {
++		mars_loopback(phydev);
++
++		phydev->asym_pause = 0;
++		phydev->pause = 0;
++		phydev->duplex =DUPLEX_FULL;
++		phydev->speed = SPEED_1000;
++		phydev->link = 1;
++
++		/* fixed link must not be reset by core phy code */
++		phydev->flags |= PHY_FLAG_BROKEN_RESET;
++
++		mii_reg = phy_read(phydev, MDIO_DEVAD_NONE, MII_BMSR);
++		/*
++		 * If we already saw the link up, and it hasn't gone down, then
++		 * we don't need to wait for autoneg again
++		 */
++		if (phydev->link && mii_reg & BMSR_LSTATUS)
++			return 0;
++
++			while (!(mii_reg & BMSR_LSTATUS)) {
++				/*
++				 * Timeout reached ?
++				 */
++				if (i > 50) {
++					phydev->link = 0;
++					return -ETIMEDOUT;
++				}
++				i++;
++				mii_reg = phy_read(phydev, MDIO_DEVAD_NONE, MII_BMSR);
++				mdelay(50);
++			}
++
++		return 0;
++	}
++	else {
++		mars_loopback_off(phydev);
++		return genphy_startup(phydev);
++	}
++}
++
++static struct phy_driver mars1s_driver = {
++	.name = "CTC MARS1S",
++	.uid = CTC_PHY_ID_MARS1S,
++	.mask = CTC_PHY_ID_MASK,
++	.features = PHY_GBIT_FEATURES,
++	.config = &mars_config,
++	.startup = &mars_startup,
++	.shutdown = &genphy_shutdown,
++};
++static struct phy_driver mars1s_v1_driver = {
++	.name = "CTC MARS1S_V1",
++	.uid = CTC_PHY_ID_MARS1S_V1,
++	.mask = CTC_PHY_ID_MASK,
++	.features = PHY_GBIT_FEATURES,
++	.config = &mars_config,
++	.startup = &mars_startup,
++	.shutdown = &genphy_shutdown,
++};
++
++static struct phy_driver mars1p_driver = {
++	.name = "CTC MARS1P",
++	.uid = CTC_PHY_ID_MARS1P,
++	.mask = CTC_PHY_ID_MASK,
++	.features = PHY_GBIT_FEATURES,
++	.config = &mars1p_config,
++	.startup = &mars_startup,
++	.shutdown = &genphy_shutdown,
++};
++
++static struct phy_driver mars1p_v1_driver = {
++	.name = "CTC MARS1P_V1",
++	.uid = CTC_PHY_ID_MARS1P_V1,
++	.mask = CTC_PHY_ID_MASK,
++	.features = PHY_GBIT_FEATURES,
++	.config = &mars1p_config,
++	.startup = &mars_startup,
++	.shutdown = &genphy_shutdown,
++};
++
++int phy_mars_init(void)
++{
++	phy_register(&mars1s_driver);
++	phy_register(&mars1s_v1_driver);
++	phy_register(&mars1p_driver);
++	phy_register(&mars1p_v1_driver);
++
++	return 0;
++}
+diff --git a/drivers/net/phy/phy.c b/drivers/net/phy/phy.c
+index 9587e6b9..cd20bd9e 100644
+--- a/drivers/net/phy/phy.c
++++ b/drivers/net/phy/phy.c
+@@ -223,24 +223,20 @@ int genphy_config_aneg(struct phy_device *phydev)
+ int genphy_update_link(struct phy_device *phydev)
+ {
+ 	unsigned int mii_reg;
+-
+ 	/*
+ 	 * Wait if the link is up, and autonegotiation is in progress
+ 	 * (ie - we're capable and it's not done)
+ 	 */
+ 	mii_reg = phy_read(phydev, MDIO_DEVAD_NONE, MII_BMSR);
+-
+ 	/*
+ 	 * If we already saw the link up, and it hasn't gone down, then
+ 	 * we don't need to wait for autoneg again
+ 	 */
+ 	if (phydev->link && mii_reg & BMSR_LSTATUS)
+ 		return 0;
+-
+ 	if ((phydev->autoneg == AUTONEG_ENABLE) &&
+ 	    !(mii_reg & BMSR_ANEGCOMPLETE)) {
+ 		int i = 0;
+-
+ 		printf("%s Waiting for PHY auto negotiation to complete",
+ 		       phydev->dev->name);
+ 		while (!(mii_reg & BMSR_ANEGCOMPLETE)) {
+@@ -252,16 +248,13 @@ int genphy_update_link(struct phy_device *phydev)
+ 				phydev->link = 0;
+ 				return -ETIMEDOUT;
+ 			}
+-
+ 			if (ctrlc()) {
+ 				puts("user interrupt!\n");
+ 				phydev->link = 0;
+ 				return -EINTR;
+ 			}
+-
+ 			if ((i++ % 10) == 0)
+ 				printf(".");
+-
+ 			mii_reg = phy_read(phydev, MDIO_DEVAD_NONE, MII_BMSR);
+ 			mdelay(50);	/* 50 ms */
+ 		}
+@@ -270,13 +263,11 @@ int genphy_update_link(struct phy_device *phydev)
+ 	} else {
+ 		/* Read the link a second time to clear the latched state */
+ 		mii_reg = phy_read(phydev, MDIO_DEVAD_NONE, MII_BMSR);
+-
+ 		if (mii_reg & BMSR_LSTATUS)
+ 			phydev->link = 1;
+ 		else
+ 			phydev->link = 0;
+ 	}
+-
+ 	return 0;
+ }
+ 
+@@ -553,6 +544,9 @@ int phy_init(void)
+ #endif
+ #ifdef CONFIG_PHY_XILINX_GMII2RGMII
+ 	phy_xilinx_gmii2rgmii_init();
++#endif
++#ifdef CONFIG_PHY_CTC
++	phy_mars_init();
+ #endif
+ 	genphy_init();
+ 
+diff --git a/drivers/net/zynq_gem.c b/drivers/net/zynq_gem.c
+index 2e92cb57..ffabe9fd 100644
+--- a/drivers/net/zynq_gem.c
++++ b/drivers/net/zynq_gem.c
+@@ -12,6 +12,7 @@
+ #include <common.h>
+ #include <cpu_func.h>
+ #include <dm.h>
++#include <generic-phy.h>
+ #include <log.h>
+ #include <net.h>
+ #include <netdev.h>
+@@ -21,6 +22,7 @@
+ #include <asm/cache.h>
+ #include <asm/io.h>
+ #include <phy.h>
++#include <reset.h>
+ #include <miiphy.h>
+ #include <wait_bit.h>
+ #include <watchdog.h>
+@@ -108,6 +110,8 @@
+ 
+ #define ZYNQ_GEM_DCFG_DBG6_DMA_64B	BIT(23)
+ 
++#define MDIO_IDLE_TIMEOUT_MS		100
++
+ /* Use MII register 1 (MII status register) to detect PHY */
+ #define PHY_DETECT_REG  1
+ 
+@@ -213,6 +217,7 @@ struct zynq_gem_priv {
+ 	bool int_pcs;
+ 	bool dma_64bit;
+ 	u32 clk_en_info;
++	struct reset_ctl_bulk resets;
+ };
+ 
+ static int phy_setup_op(struct zynq_gem_priv *priv, u32 phy_addr, u32 regnum,
+@@ -223,7 +228,7 @@ static int phy_setup_op(struct zynq_gem_priv *priv, u32 phy_addr, u32 regnum,
+ 	int err;
+ 
+ 	err = wait_for_bit_le32(&regs->nwsr, ZYNQ_GEM_NWSR_MDIOIDLE_MASK,
+-				true, 20000, false);
++				true, MDIO_IDLE_TIMEOUT_MS, false);
+ 	if (err)
+ 		return err;
+ 
+@@ -236,7 +241,7 @@ static int phy_setup_op(struct zynq_gem_priv *priv, u32 phy_addr, u32 regnum,
+ 	writel(mgtcr, &regs->phymntnc);
+ 
+ 	err = wait_for_bit_le32(&regs->nwsr, ZYNQ_GEM_NWSR_MDIOIDLE_MASK,
+-				true, 20000, false);
++				true, MDIO_IDLE_TIMEOUT_MS, false);
+ 	if (err)
+ 		return err;
+ 
+@@ -331,7 +336,8 @@ static int zynq_phy_init(struct udevice *dev)
+ 				  ADVERTISED_Asym_Pause;
+ 
+ 	priv->phydev->advertising = priv->phydev->supported;
+-	priv->phydev->node = priv->phy_of_node;
++	if (!ofnode_valid(priv->phydev->node))
++		priv->phydev->node = priv->phy_of_node;
+ 
+ 	return phy_config(priv->phydev);
+ }
+@@ -684,11 +690,48 @@ static int zynq_gem_miiphy_write(struct mii_dev *bus, int addr, int devad,
+ 	return phywrite(priv, addr, reg, value);
+ }
+ 
++static int zynq_gem_reset_init(struct udevice *dev)
++{
++	struct zynq_gem_priv *priv = dev_get_priv(dev);
++	int ret;
++
++	ret = reset_get_bulk(dev, &priv->resets);
++	if (ret == -ENOTSUPP || ret == -ENOENT)
++		return 0;
++	else if (ret)
++		return ret;
++
++	ret = reset_deassert_bulk(&priv->resets);
++	if (ret) {
++		reset_release_bulk(&priv->resets);
++		return ret;
++	}
++
++	return 0;
++}
++
+ static int zynq_gem_probe(struct udevice *dev)
+ {
+ 	void *bd_space;
+ 	struct zynq_gem_priv *priv = dev_get_priv(dev);
+ 	int ret;
++	struct phy phy;
++
++	if (priv->interface == PHY_INTERFACE_MODE_SGMII) {
++		ret = generic_phy_get_by_index(dev, 0, &phy);
++		if (!ret) {
++			ret = generic_phy_init(&phy);
++			if (ret)
++				return ret;
++		} else if (ret != -ENOENT) {
++			debug("could not get phy (err %d)\n", ret);
++			return ret;
++		}
++	}
++
++	ret = zynq_gem_reset_init(dev);
++	if (ret)
++		return ret;
+ 
+ 	/* Align rxbuffers to ARCH_DMA_MINALIGN */
+ 	priv->rxbuffers = memalign(ARCH_DMA_MINALIGN, RX_BUF * PKTSIZE_ALIGN);
+@@ -717,14 +760,14 @@ static int zynq_gem_probe(struct udevice *dev)
+ 	ret = clk_get_by_name(dev, "tx_clk", &priv->tx_clk);
+ 	if (ret < 0) {
+ 		dev_err(dev, "failed to get tx_clock\n");
+-		goto err1;
++		goto err2;
+ 	}
+ 
+ 	if (priv->clk_en_info & RXCLK_EN) {
+ 		ret = clk_get_by_name(dev, "rx_clk", &priv->rx_clk);
+ 		if (ret < 0) {
+ 			dev_err(dev, "failed to get rx_clock\n");
+-			goto err1;
++			goto err2;
+ 		}
+ 	}
+ 
+@@ -741,14 +784,20 @@ static int zynq_gem_probe(struct udevice *dev)
+ 	if (ret)
+ 		goto err3;
+ 
++	if (priv->interface == PHY_INTERFACE_MODE_SGMII && phy.dev) {
++		ret = generic_phy_power_on(&phy);
++		if (ret)
++			return ret;
++	}
++
+ 	return ret;
+ 
+ err3:
+ 	mdio_unregister(priv->bus);
+ err2:
+-	free(priv->rxbuffers);
+-err1:
+ 	free(priv->tx_bd);
++err1:
++	free(priv->rxbuffers);
+ 	return ret;
+ }
+ 
+@@ -773,7 +822,7 @@ static const struct eth_ops zynq_gem_ops = {
+ 	.read_rom_hwaddr	= zynq_gem_read_rom_mac,
+ };
+ 
+-static int zynq_gem_ofdata_to_platdata(struct udevice *dev)
++static int zynq_gem_of_to_plat(struct udevice *dev)
+ {
+ 	struct eth_pdata *pdata = dev_get_platdata(dev);
+ 	struct zynq_gem_priv *priv = dev_get_priv(dev);
+@@ -798,13 +847,6 @@ static int zynq_gem_ofdata_to_platdata(struct udevice *dev)
+ 		priv->max_speed = ofnode_read_u32_default(phandle_args.node,
+ 							  "max-speed",
+ 							  SPEED_1000);
+-
+-		parent = ofnode_get_parent(phandle_args.node);
+-		addr = ofnode_get_addr(parent);
+-		if (addr != FDT_ADDR_T_NONE) {
+-			debug("MDIO bus not found %s\n", dev->name);
+-			priv->mdiobase = (struct zynq_gem_regs *)addr;
+-		}
+ 	}
+ 
+ 	phy_mode = dev_read_prop(dev, "phy-mode", NULL);
+@@ -839,10 +881,10 @@ U_BOOT_DRIVER(zynq_gem) = {
+ 	.name	= "zynq_gem",
+ 	.id	= UCLASS_ETH,
+ 	.of_match = zynq_gem_ids,
+-	.ofdata_to_platdata = zynq_gem_ofdata_to_platdata,
++	.ofdata_to_platdata = zynq_gem_of_to_plat,
+ 	.probe	= zynq_gem_probe,
+ 	.remove	= zynq_gem_remove,
+ 	.ops	= &zynq_gem_ops,
+-	.priv_auto_alloc_size = sizeof(struct zynq_gem_priv),
+-	.platdata_auto_alloc_size = sizeof(struct eth_pdata),
+-};
++	.priv_auto_alloc_size	= sizeof(struct zynq_gem_priv),
++	.platdata_auto_alloc_size	= sizeof(struct eth_pdata),
++};
+\ No newline at end of file
+diff --git a/include/configs/xilinx_zynqmp.h b/include/configs/xilinx_zynqmp.h
+index 36f3d962..77a77cd6 100644
+--- a/include/configs/xilinx_zynqmp.h
++++ b/include/configs/xilinx_zynqmp.h
+@@ -90,9 +90,10 @@
+ 	"pxefile_addr_r=0x10000000\0" \
+ 	"kernel_addr_r=0x18000000\0" \
+ 	"kernel_size_r=0x10000000\0" \
+-	"scriptaddr=0x20000000\0" \
++	"scriptaddr=0x2000000\0" \
+ 	"ramdisk_addr_r=0x02100000\0" \
+-	"script_size_f=0x80000\0" \
++	"script_size_f=0x20000\0" \
++	"zboot=1\0" \
+ 
+ #if defined(CONFIG_MMC_SDHCI_ZYNQ)
+ # define BOOT_TARGET_DEVICES_MMC(func)	func(MMC, mmc, 0) func(MMC, mmc, 1)
+diff --git a/include/net.h b/include/net.h
+index aff6674b..6c534303 100644
+--- a/include/net.h
++++ b/include/net.h
+@@ -554,7 +554,7 @@ extern int		net_restart_wrap;	/* Tried all network devices */
+ 
+ enum proto_t {
+ 	BOOTP, RARP, ARP, TFTPGET, DHCP, PING, DNS, NFS, CDP, NETCONS, SNTP,
+-	TFTPSRV, TFTPPUT, LINKLOCAL, FASTBOOT, WOL, UDP
++	TFTPSRV, TFTPPUT, LINKLOCAL, FASTBOOT, WOL, UDP, LOOPBACK
+ };
+ 
+ extern char	net_boot_file_name[1024];/* Boot File name */
+@@ -933,4 +933,17 @@ static inline struct in_addr env_get_ip(char *var)
+  */
+ void reset_phy(void);
+ 
++
++/**
++ * loopback_mode() - Check if it is loop back mode
++ *
++ */
++int loopback_mode(void);
++
++/**
++ * loopback_state_set() - set loopback state
++ *
++ */
++void loopback_state_set(int state);
++
+ #endif /* __NET_H__ */
+diff --git a/include/net/loopback.h b/include/net/loopback.h
+new file mode 100644
+index 00000000..72de8079
+--- /dev/null
++++ b/include/net/loopback.h
+@@ -0,0 +1,22 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * (C) Copyright 2022 Zillnk, Ltd.
++ * Author: Chun Ma <chun.ma@zillnk.com>
++ *
++ */
++#ifndef __NET_LOOPBACK_H__
++#define __NET_LOOPBACK_H__
++
++/**********************************************************************/
++/*
++ *	Global functions and variables.
++ */
++
++/**
++ * Wait for incoming loopback comands.
++ */
++void loopback_start_server(void);
++
++/**********************************************************************/
++
++#endif /* __NET_LOOPBACK_H__ */
+diff --git a/net/Makefile b/net/Makefile
+index 76527f70..88363281 100644
+--- a/net/Makefile
++++ b/net/Makefile
+@@ -28,6 +28,7 @@ obj-$(CONFIG_CMD_TFTPBOOT) += tftp.o
+ obj-$(CONFIG_UDP_FUNCTION_FASTBOOT)  += fastboot.o
+ obj-$(CONFIG_CMD_WOL)  += wol.o
+ obj-$(CONFIG_PROT_UDP) += udp.o
++obj-$(CONFIG_LOOP_BACK_ASSERT) += loopback.o
+ 
+ # Disable this warning as it is triggered by:
+ # sprintf(buf, index ? "foo%d" : "foo", index)
+diff --git a/net/loopback.c b/net/loopback.c
+new file mode 100644
+index 00000000..f18199bb
+--- /dev/null
++++ b/net/loopback.c
+@@ -0,0 +1,118 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * (C) Copyright 2022 Zillnk, Ltd.
++ * Author: Chun Ma <chun.ma@zillnk.com>
++ *
++ */
++#include <common.h>
++#include <net.h>
++#include <net/loopback.h>
++#include <malloc.h>
++#include <linux/delay.h>
++
++/* wait timeout */
++#define WAIT_TIMEOUT 1500
++/* loopback port # defined in spec */
++#define WELL_PORT 1133
++
++#define PACK_SIZE	8
++
++static int loopback_state = 0;
++char *str_r;
++
++static void loopback_timeout_handler(void)
++{
++	loopback_state_set(0);
++	net_set_udp_handler(NULL);
++	net_set_arp_handler(NULL);
++	net_set_timeout_handler(0, NULL);
++	eth_halt();
++	/* Invalidate the last protocol */
++	eth_set_last_protocol(BOOTP);
++	net_start_again();
++}
++
++static inline void random_str(uchar *addr, u8 len)
++{
++	int i;
++	unsigned int seed = get_ticks();
++
++	for (i = 0; i < len; i++)
++		addr[i] = rand_r(&seed);
++}
++
++/**
++ * loopback_handler() - Incoming UDP packet handler.
++ *
++ * @packet: Pointer to incoming UDP packet
++ * @dport: Destination UDP port
++ * @sip: Source IP address
++ * @sport: Source UDP port
++ * @len: Packet length
++ */
++static void loopback_handler(uchar *packet, unsigned int dport,
++			     struct in_addr sip, unsigned int sport,
++			     unsigned int len)
++{
++	if ((dport != WELL_PORT) || (sport != WELL_PORT) ||
++			(len != PACK_SIZE))
++		return;
++
++	if (memcmp(str_r, packet, PACK_SIZE) == 0) {
++		env_set("Loopback", "yes");
++		printf("Loopback detected!\n");
++	}
++	else{
++		env_set("Loopback", "no");
++		printf("Loopback NOT detected!\n");
++	}
++
++	loopback_timeout_handler();
++}
++
++int loopback_mode(void)
++{
++	return loopback_state;
++}
++
++void loopback_state_set(int state)
++{
++	loopback_state = state;
++}
++
++void loopback_start_server(void)
++{
++	int i = 10;
++	int send_len = 0;
++	struct in_addr local_ip;
++	uchar *send_packet;
++	uchar *send_packet_base;
++
++	net_set_timeout_handler(WAIT_TIMEOUT, loopback_timeout_handler);
++	net_set_udp_handler(loopback_handler);
++
++	local_ip.s_addr = 0;
++	send_packet = net_tx_packet + net_eth_hdr_size() + IP_UDP_HDR_SIZE;
++	send_packet_base = send_packet;
++
++	str_r = malloc(PACK_SIZE);
++	if (!str_r) {
++		printf("Can't allocate memory to decrypt\n");
++		return -ENOMEM;
++	}
++	random_str(str_r, PACK_SIZE);
++
++	memcpy(send_packet, str_r, PACK_SIZE);
++	send_packet += PACK_SIZE;
++	send_len = send_packet - send_packet_base;
++
++	/* zero out server ether in case the server ip has changed */
++	memset(net_server_ethaddr, 0, 6);
++
++	while (i--) {
++		net_send_udp_packet(net_server_ethaddr, local_ip,
++							WELL_PORT, WELL_PORT,
++							send_len);
++		mdelay(50);
++	}
++}
+\ No newline at end of file
+diff --git a/net/net.c b/net/net.c
+index ad7e3b3c..010fbb7e 100644
+--- a/net/net.c
++++ b/net/net.c
+@@ -93,6 +93,7 @@
+ #include <net.h>
+ #include <net/fastboot.h>
+ #include <net/tftp.h>
++#include <net/loopback.h>
+ #if defined(CONFIG_CMD_PCAP)
+ #include <net/pcap.h>
+ #endif
+@@ -417,6 +418,8 @@ int net_loop(enum proto_t protocol)
+ 		eth_set_current();
+ 		ret = eth_init();
+ 		if (ret < 0) {
++			env_set("Loopback", "no");
++			printf("Loopback NOT detected!\n");
+ 			eth_halt();
+ 			return ret;
+ 		}
+@@ -436,7 +439,6 @@ restart:
+ 	 */
+ 	debug_cond(DEBUG_INT_STATE, "--- net_loop Init\n");
+ 	net_init_loop();
+-
+ 	switch (net_check_prereq(protocol)) {
+ 	case 1:
+ 		/* network not configured */
+@@ -471,6 +473,11 @@ restart:
+ 			fastboot_start_server();
+ 			break;
+ #endif
++#ifdef CONFIG_LOOP_BACK_ASSERT
++		case LOOPBACK:
++			loopback_start_server();
++			break;
++#endif
+ #if defined(CONFIG_CMD_DHCP)
+ 		case DHCP:
+ 			bootp_reset();
+-- 
+2.27.0
+

@@ -1,0 +1,5354 @@
+From 1fd13a71c1d856d201364c9e395b8554391b3d47 Mon Sep 17 00:00:00 2001
+From: Fan Wu <fan.wu@zillnk.com>
+Date: Tue, 2 Jul 2024 19:13:53 +0800
+Subject: [PATCH 2/4] add rsmu driver and adjust ptp timer
+
+---
+ drivers/mfd/Kconfig              |   27 +
+ drivers/mfd/Makefile             |    2 +
+ drivers/mfd/rsmu_i2c.c           |  344 +++++++
+ drivers/mfd/rsmu_private.h       |   32 +
+ drivers/mfd/rsmu_spi.c           |  370 +++++++
+ drivers/misc/Kconfig             |    8 +
+ drivers/misc/Makefile            |    2 +
+ drivers/misc/rsmu_cdev.c         |  373 +++++++
+ drivers/misc/rsmu_cdev.h         |   74 ++
+ drivers/misc/rsmu_cm.c           |  190 ++++
+ drivers/misc/rsmu_sabre.c        |  146 +++
+ drivers/ptp/Makefile             |    3 +-
+ drivers/ptp/ptp_clockmatrix.c    | 1551 ++++++++++++++----------------
+ drivers/ptp/ptp_clockmatrix.h    |   96 +-
+ include/linux/mfd/idt82p33_reg.h |  116 +++
+ include/linux/mfd/idt8a340_reg.h |  876 +++++++++++++++++
+ include/linux/mfd/rsmu.h         |   42 +
+ include/uapi/linux/rsmu.h        |   88 ++
+ 18 files changed, 3473 insertions(+), 867 deletions(-)
+ create mode 100644 drivers/mfd/rsmu_i2c.c
+ create mode 100644 drivers/mfd/rsmu_private.h
+ create mode 100644 drivers/mfd/rsmu_spi.c
+ create mode 100644 drivers/misc/rsmu_cdev.c
+ create mode 100644 drivers/misc/rsmu_cdev.h
+ create mode 100644 drivers/misc/rsmu_cm.c
+ create mode 100644 drivers/misc/rsmu_sabre.c
+ create mode 100644 include/linux/mfd/idt82p33_reg.h
+ create mode 100644 include/linux/mfd/idt8a340_reg.h
+ create mode 100644 include/linux/mfd/rsmu.h
+ create mode 100644 include/uapi/linux/rsmu.h
+
+diff --git a/drivers/mfd/Kconfig b/drivers/mfd/Kconfig
+index 8b99a13669bf..1e4e752a0e3a 100644
+--- a/drivers/mfd/Kconfig
++++ b/drivers/mfd/Kconfig
+@@ -2097,6 +2097,33 @@ config MFD_KHADAS_MCU
+ 	  additional drivers must be enabled in order to use the functionality
+ 	  of the device.
+ 
++config MFD_RSMU_SPI
++	tristate "Renesas Synchronization Management Unit with SPI"
++	depends on SPI && OF
++	select MFD_CORE
++	help
++	  Support for the Renesas synchronization management unit, such as
++	  Clockmatrix and 82P33XXX series. This option supports SPI as
++	  the control interface.
++
++	  This driver provides common support for accessing the device,
++	  additional drivers must be enabled in order to use the functionality
++	  of the device.
++
++config MFD_RSMU_I2C
++	tristate "Renesas Synchronization Management Unit with I2C"
++	depends on I2C && OF
++	depends on MFD_RSMU_SPI=n
++	select MFD_CORE
++	help
++	  Support for the Renesas synchronization management unit, such as
++	  Clockmatrix and 82P33XXX series. This option supports I2C as
++	  the control interface.
++
++	  This driver provides common support for accessing the device,
++	  additional drivers must be enabled in order to use the functionality
++	  of the device.
++
+ menu "Multimedia Capabilities Port drivers"
+ 	depends on ARCH_SA1100
+ 
+diff --git a/drivers/mfd/Makefile b/drivers/mfd/Makefile
+index 1780019d2474..d4497e9518ff 100644
+--- a/drivers/mfd/Makefile
++++ b/drivers/mfd/Makefile
+@@ -237,6 +237,8 @@ obj-$(CONFIG_MFD_HI655X_PMIC)   += hi655x-pmic.o
+ obj-$(CONFIG_MFD_DLN2)		+= dln2.o
+ obj-$(CONFIG_MFD_RT5033)	+= rt5033.o
+ obj-$(CONFIG_MFD_SKY81452)	+= sky81452.o
++obj-$(CONFIG_MFD_RSMU_I2C)	+= rsmu_i2c.o
++obj-$(CONFIG_MFD_RSMU_SPI)	+= rsmu_spi.o
+ 
+ intel-soc-pmic-objs		:= intel_soc_pmic_core.o intel_soc_pmic_crc.o
+ obj-$(CONFIG_INTEL_SOC_PMIC)	+= intel-soc-pmic.o
+diff --git a/drivers/mfd/rsmu_i2c.c b/drivers/mfd/rsmu_i2c.c
+new file mode 100644
+index 000000000000..06f582b096bf
+--- /dev/null
++++ b/drivers/mfd/rsmu_i2c.c
+@@ -0,0 +1,344 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Multi-function driver for the IDT ClockMatrix(TM) and 82P33xxx families of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/slab.h>
++#include <linux/i2c.h>
++#include <linux/regmap.h>
++#include <linux/of.h>
++#include <linux/mfd/core.h>
++#include <linux/mfd/rsmu.h>
++#include "rsmu_private.h"
++
++/*
++ * 16-bit register address: the lower 8 bits of the register address come
++ * from the offset addr byte and the upper 8 bits come from the page register.
++ */
++#define	RSMU_CM_PAGE_ADDR		0xFD
++#define	RSMU_CM_PAGE_WINDOW		256
++
++/*
++ * 15-bit register address: the lower 7 bits of the register address come
++ * from the offset addr byte and the upper 8 bits come from the page register.
++ */
++#define	RSMU_SABRE_PAGE_ADDR		0x7F
++#define	RSMU_SABRE_PAGE_WINDOW		128
++
++static bool rsmu_cm_volatile_reg(struct device *dev, unsigned int reg);
++static bool rsmu_sabre_volatile_reg(struct device *dev, unsigned int reg);
++
++/* Current mfd device index */
++static atomic_t rsmu_ndevs = ATOMIC_INIT(0);
++
++/* Platform data */
++static struct rsmu_pdata rsmu_pdata[RSMU_MAX_MFD_DEV];
++
++/* clockmatrix phc devices */
++static struct mfd_cell rsmu_cm_pdev[RSMU_MAX_MFD_DEV] = {
++	[0] = {
++		.name = "idtcm-ptp0",
++		.of_compatible	= "renesas,idtcm-ptp0",
++	},
++	[1] = {
++		.name = "idtcm-ptp1",
++		.of_compatible	= "renesas,idtcm-ptp1",
++	},
++	[2] = {
++		.name = "idtcm-ptp2",
++		.of_compatible	= "renesas,idtcm-ptp2",
++	},
++	[3] = {
++		.name = "idtcm-ptp3",
++		.of_compatible	= "renesas,idtcm-ptp3",
++	},
++};
++
++/* sabre phc devices */
++static struct mfd_cell rsmu_sabre_pdev[RSMU_MAX_MFD_DEV] = {
++	[0] = {
++		.name = "idt82p33-ptp0",
++		.of_compatible	= "renesas,idt82p33-ptp0",
++	},
++	[1] = {
++		.name = "idt82p33-ptp1",
++		.of_compatible	= "renesas,idt82p33-ptp1",
++	},
++	[2] = {
++		.name = "idt82p33-ptp2",
++		.of_compatible	= "renesas,idt82p33-ptp2",
++	},
++	[3] = {
++		.name = "idt82p33-ptp3",
++		.of_compatible	= "renesas,idt82p33-ptp3",
++	},
++};
++
++/* rsmu character devices */
++static struct mfd_cell rsmu_cdev[RSMU_MAX_MFD_DEV] = {
++	[0] = {
++		.name = "rsmu-cdev0",
++		.of_compatible	= "renesas,rsmu-cdev0",
++	},
++	[1] = {
++		.name = "rsmu-cdev1",
++		.of_compatible	= "renesas,rsmu-cdev1",
++	},
++	[2] = {
++		.name = "rsmu-cdev2",
++		.of_compatible	= "renesas,rsmu-cdev2",
++	},
++	[3] = {
++		.name = "rsmu-cdev3",
++		.of_compatible	= "renesas,rsmu-cdev3",
++	},
++};
++
++static const struct regmap_range_cfg rsmu_cm_range_cfg[] = {
++	{
++		.range_min = 0,
++		.range_max = 0xD000,
++		.selector_reg = RSMU_CM_PAGE_ADDR,
++		.selector_mask = 0xFF,
++		.selector_shift = 0,
++		.window_start = 0,
++		.window_len = RSMU_CM_PAGE_WINDOW,
++	}
++};
++
++static const struct regmap_range_cfg rsmu_sabre_range_cfg[] = {
++	{
++		.range_min = 0,
++		.range_max = 0x400,
++		.selector_reg = RSMU_SABRE_PAGE_ADDR,
++		.selector_mask = 0xFF,
++		.selector_shift = 0,
++		.window_start = 0,
++		.window_len = RSMU_SABRE_PAGE_WINDOW,
++	}
++};
++
++static const struct regmap_config rsmu_regmap_configs[] = {
++	[RSMU_CM] = {
++		.reg_bits = 8,
++		.val_bits = 8,
++		.max_register = 0xD000,
++		.ranges = rsmu_cm_range_cfg,
++		.num_ranges = ARRAY_SIZE(rsmu_cm_range_cfg),
++		.volatile_reg = rsmu_cm_volatile_reg,
++		.cache_type = REGCACHE_RBTREE,
++		.can_multi_write = true,
++	},
++	[RSMU_SABRE] = {
++		.reg_bits = 8,
++		.val_bits = 8,
++		.max_register = 0x400,
++		.ranges = rsmu_sabre_range_cfg,
++		.num_ranges = ARRAY_SIZE(rsmu_sabre_range_cfg),
++		.volatile_reg = rsmu_sabre_volatile_reg,
++		.cache_type = REGCACHE_RBTREE,
++		.can_multi_write = true,
++	},
++};
++
++static bool rsmu_cm_volatile_reg(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case RSMU_CM_PAGE_ADDR:
++		return false;
++	default:
++		return true;
++	}
++}
++
++static bool rsmu_sabre_volatile_reg(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case RSMU_SABRE_PAGE_ADDR:
++		return false;
++	default:
++		return true;
++	}
++}
++
++int rsmu_read(struct device *dev, u16 reg, u8 *buf, u16 size)
++{
++	struct rsmu_dev *rsmu = dev_get_drvdata(dev);
++
++	return regmap_bulk_read(rsmu->regmap, reg, buf, size);
++}
++EXPORT_SYMBOL_GPL(rsmu_read);
++
++int rsmu_write(struct device *dev, u16 reg, u8 *buf, u16 size)
++{
++	struct rsmu_dev *rsmu = dev_get_drvdata(dev);
++
++	return regmap_bulk_write(rsmu->regmap, reg, buf, size);
++}
++EXPORT_SYMBOL_GPL(rsmu_write);
++
++static int rsmu_mfd_init(struct rsmu_dev *rsmu, struct mfd_cell *mfd,
++			 struct rsmu_pdata *pdata)
++{
++	int ret;
++
++	mfd->platform_data = pdata;
++	mfd->pdata_size = sizeof(struct rsmu_pdata);
++
++	ret = mfd_add_devices(rsmu->dev, -1, mfd, 1, NULL, 0, NULL);
++	if (ret < 0) {
++		dev_err(rsmu->dev, "mfd_add_devices failed with %s\n",
++			mfd->name);
++		return ret;
++	}
++
++	return ret;
++}
++
++static int rsmu_dev_init(struct rsmu_dev *rsmu)
++{
++	struct rsmu_pdata *pdata;
++	struct mfd_cell *pmfd;
++	struct mfd_cell *cmfd;
++	int ret;
++
++	/* Initialize regmap */
++	rsmu->regmap = devm_regmap_init_i2c(rsmu->client,
++					    &rsmu_regmap_configs[rsmu->type]);
++	if (IS_ERR(rsmu->regmap)) {
++		ret = PTR_ERR(rsmu->regmap);
++		dev_err(rsmu->dev, "Failed to allocate register map: %d\n",
++			ret);
++		return ret;
++	}
++
++	/* Initialize device index */
++	rsmu->index = atomic_read(&rsmu_ndevs);
++	if (rsmu->index >= RSMU_MAX_MFD_DEV)
++		return -ENODEV;
++
++	/* Initialize platform data */
++	pdata = &rsmu_pdata[rsmu->index];
++	pdata->lock = &rsmu->lock;
++	pdata->type = rsmu->type;
++	pdata->index = rsmu->index;
++
++	/* Initialize MFD devices */
++	cmfd = &rsmu_cdev[rsmu->index];
++	if (rsmu->type == RSMU_CM)
++		pmfd = &rsmu_cm_pdev[rsmu->index];
++	else if (rsmu->type == RSMU_SABRE)
++		pmfd = &rsmu_sabre_pdev[rsmu->index];
++	else
++		return -EINVAL;
++
++	ret = rsmu_mfd_init(rsmu, pmfd, pdata);
++	if (ret)
++		return ret;
++
++	return rsmu_mfd_init(rsmu, cmfd, pdata);
++}
++
++static int rsmu_dt_init(struct rsmu_dev *rsmu)
++{
++	struct device_node *np = rsmu->dev->of_node;
++
++	rsmu->type = RSMU_NONE;
++	if (of_device_is_compatible(np, "idt,8a34000")) {
++		rsmu->type = RSMU_CM;
++	} else if (of_device_is_compatible(np, "idt,82p33810")) {
++		rsmu->type = RSMU_SABRE;
++	} else {
++		dev_err(rsmu->dev, "unknown RSMU device\n");
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int rsmu_probe(struct i2c_client *client, const struct i2c_device_id *id)
++{
++	struct rsmu_dev *rsmu;
++	int ret;
++
++	rsmu = devm_kzalloc(&client->dev, sizeof(struct rsmu_dev),
++			       GFP_KERNEL);
++	if (rsmu == NULL)
++		return -ENOMEM;
++
++	i2c_set_clientdata(client, rsmu);
++	mutex_init(&rsmu->lock);
++	rsmu->dev = &client->dev;
++	rsmu->client = client;
++
++	ret = rsmu_dt_init(rsmu);
++	if (ret)
++		return ret;
++
++	mutex_lock(&rsmu->lock);
++
++	ret = rsmu_dev_init(rsmu);
++	if (ret == 0)
++		atomic_inc(&rsmu_ndevs);
++
++	mutex_unlock(&rsmu->lock);
++
++	return ret;
++}
++
++static int rsmu_remove(struct i2c_client *client)
++{
++	struct rsmu_dev *rsmu = i2c_get_clientdata(client);
++
++	mfd_remove_devices(&client->dev);
++	mutex_destroy(&rsmu->lock);
++	atomic_dec(&rsmu_ndevs);
++
++	return 0;
++}
++
++static const struct i2c_device_id rsmu_id[] = {
++	{ "8a34000", 0 },
++	{ "82p33810", 0 },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, rsmu_id);
++
++static const struct of_device_id rsmu_of_match[] = {
++	{.compatible = "idt,8a34000", },
++	{.compatible = "idt,82p33810", },
++	{},
++};
++MODULE_DEVICE_TABLE(of, rsmu_of_match);
++
++static struct i2c_driver rsmu_driver = {
++	.driver = {
++		   .name = "rsmu-i2c",
++		   .of_match_table = of_match_ptr(rsmu_of_match),
++	},
++	.probe = rsmu_probe,
++	.remove	= rsmu_remove,
++	.id_table = rsmu_id,
++};
++
++static int __init rsmu_init(void)
++{
++	return i2c_add_driver(&rsmu_driver);
++}
++/* init early so consumer devices can complete system boot */
++subsys_initcall(rsmu_init);
++
++static void __exit rsmu_exit(void)
++{
++	i2c_del_driver(&rsmu_driver);
++}
++module_exit(rsmu_exit);
++
++MODULE_DESCRIPTION("Renesas SMU I2C multi-function driver");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/mfd/rsmu_private.h b/drivers/mfd/rsmu_private.h
+new file mode 100644
+index 000000000000..8841a2406492
+--- /dev/null
++++ b/drivers/mfd/rsmu_private.h
+@@ -0,0 +1,32 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * Multi-function driver for the IDT ClockMatrix(TM) and 82p33xxx families of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++
++#ifndef __RSMU_MFD_PRIVATE_H
++#define __RSMU_MFD_PRIVATE_H
++
++#include <linux/mfd/rsmu.h>
++
++/* Maximum number of mfd devices */
++#define RSMU_MAX_MFD_DEV		4
++
++struct rsmu_dev {
++	struct device *dev;
++	void *client;
++	struct regmap *regmap;
++	struct mutex lock;
++	enum rsmu_type type;
++	u8 index;
++	u16 page;
++};
++
++enum rsmu_mfd_type {
++	RSMU_MFD_PTP		= 0,
++	RSMU_MFD_CDEV		= 1,
++	RSMU_MFD_NUM		= 2,
++};
++#endif /*  __LINUX_MFD_RSMU_H */
+diff --git a/drivers/mfd/rsmu_spi.c b/drivers/mfd/rsmu_spi.c
+new file mode 100644
+index 000000000000..5a1ae9a6b874
+--- /dev/null
++++ b/drivers/mfd/rsmu_spi.c
+@@ -0,0 +1,370 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Multi-function driver for the IDT ClockMatrix(TM) and 82P33xxx families of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/slab.h>
++#include <linux/spi/spi.h>
++#include <linux/regmap.h>
++#include <linux/of.h>
++#include <linux/mfd/core.h>
++#include <linux/mfd/rsmu.h>
++#include "rsmu_private.h"
++
++/*
++ * 16-bit register address: the lower 7 bits of the register address come
++ * from the offset addr byte and the upper 9 bits come from the page register.
++ */
++#define	RSMU_CM_PAGE_ADDR		0x7C
++#define	RSMU_SABRE_PAGE_ADDR		0x7F
++#define	RSMU_HIGHER_ADDR_MASK		0xFF80
++#define	RSMU_HIGHER_ADDR_SHIFT		7
++#define	RSMU_LOWER_ADDR_MASK		0x7F
++
++/* Current mfd device index */
++static atomic_t rsmu_ndevs = ATOMIC_INIT(0);
++
++/* Platform data */
++static struct rsmu_pdata rsmu_pdata[RSMU_MAX_MFD_DEV];
++
++/* clockmatrix phc devices */
++static struct mfd_cell rsmu_cm_pdev[RSMU_MAX_MFD_DEV] = {
++	[0] = {
++		.name = "idtcm-ptp0",
++		.of_compatible	= "renesas,idtcm-ptp0",
++	},
++	[1] = {
++		.name = "idtcm-ptp1",
++		.of_compatible	= "renesas,idtcm-ptp1",
++	},
++	[2] = {
++		.name = "idtcm-ptp2",
++		.of_compatible	= "renesas,idtcm-ptp2",
++	},
++	[3] = {
++		.name = "idtcm-ptp3",
++		.of_compatible	= "renesas,idtcm-ptp3",
++	},
++};
++
++/* sabre phc devices */
++static struct mfd_cell rsmu_sabre_pdev[RSMU_MAX_MFD_DEV] = {
++	[0] = {
++		.name = "idt82p33-ptp0",
++		.of_compatible	= "renesas,idt82p33-ptp0",
++	},
++	[1] = {
++		.name = "idt82p33-ptp1",
++		.of_compatible	= "renesas,idt82p33-ptp1",
++	},
++	[2] = {
++		.name = "idt82p33-ptp2",
++		.of_compatible	= "renesas,idt82p33-ptp2",
++	},
++	[3] = {
++		.name = "idt82p33-ptp3",
++		.of_compatible	= "renesas,idt82p33-ptp3",
++	},
++};
++
++/* rsmu character devices */
++static struct mfd_cell rsmu_cdev[RSMU_MAX_MFD_DEV] = {
++	[0] = {
++		.name = "rsmu-cdev0",
++		.of_compatible	= "renesas,rsmu-cdev0",
++	},
++	[1] = {
++		.name = "rsmu-cdev1",
++		.of_compatible	= "renesas,rsmu-cdev1",
++	},
++	[2] = {
++		.name = "rsmu-cdev2",
++		.of_compatible	= "renesas,rsmu-cdev2",
++	},
++	[3] = {
++		.name = "rsmu-cdev3",
++		.of_compatible	= "renesas,rsmu-cdev3",
++	},
++};
++
++static int rsmu_read_device(struct rsmu_dev *rsmu, u8 reg, u8 *buf, u16 bytes)
++{
++	struct spi_device *client = rsmu->client;
++	struct spi_transfer xfer = {0};
++	struct spi_message msg;
++	u8 cmd[256] = {0};
++	u8 rsp[256] = {0};
++	int ret;
++
++	cmd[0] = reg | 0x80;
++	xfer.rx_buf = rsp;
++	xfer.len = bytes + 1;
++	xfer.tx_buf = cmd;
++	xfer.bits_per_word = client->bits_per_word;
++	xfer.speed_hz = client->max_speed_hz;
++
++	spi_message_init(&msg);
++	spi_message_add_tail(&xfer, &msg);
++
++	ret = spi_sync(client, &msg);
++	if (ret >= 0)
++		memcpy(buf, &rsp[1], xfer.len-1);
++
++	return ret;
++}
++
++static int rsmu_write_device(struct rsmu_dev *rsmu, u8 reg, u8 *buf, u16 bytes)
++{
++	struct spi_device *client = rsmu->client;
++	struct spi_transfer xfer = {0};
++	struct spi_message msg;
++	u8 cmd[256] = {0};
++	int ret = -1;
++
++	cmd[0] = reg;
++	memcpy(&cmd[1], buf, bytes);
++
++	xfer.len = bytes + 1;
++	xfer.tx_buf = cmd;
++	xfer.bits_per_word = client->bits_per_word;
++	xfer.speed_hz = client->max_speed_hz;
++	spi_message_init(&msg);
++	spi_message_add_tail(&xfer, &msg);
++
++	ret = spi_sync(client, &msg);
++	return ret;
++}
++
++static int rsmu_write_page_register(struct rsmu_dev *rsmu, u16 reg)
++{
++	u8 buf[2];
++	u16 bytes;
++	u16 page;
++	u8 preg;
++	int err;
++
++	switch (rsmu->type) {
++	case RSMU_CM:
++		preg = RSMU_CM_PAGE_ADDR;
++		page = reg & RSMU_HIGHER_ADDR_MASK;
++		buf[0] = (u8)(page & 0xff);
++		buf[1] = (u8)((page >> 8) & 0xff);
++		bytes = 2;
++		break;
++	case RSMU_SABRE:
++		preg = RSMU_SABRE_PAGE_ADDR;
++		page = reg >> RSMU_HIGHER_ADDR_SHIFT;
++		buf[0] = (u8)(page & 0xff);
++		bytes = 1;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	if (rsmu->page == page)
++		return 0;
++
++	err = rsmu_write_device(rsmu, preg, buf, bytes);
++
++	if (err) {
++		rsmu->page = 0xffff;
++		dev_err(rsmu->dev,
++			"failed to set page offset 0x%x\n", page);
++	} else {
++		rsmu->page = page;
++	}
++
++	return err;
++}
++
++int rsmu_read(struct device *dev, u16 reg, u8 *buf, u16 size)
++{
++	struct rsmu_dev *rsmu = dev_get_drvdata(dev);
++	u8 addr = (u8)(reg & RSMU_LOWER_ADDR_MASK);
++	int err;
++
++	err = rsmu_write_page_register(rsmu, reg);
++	if (err)
++		return err;
++
++	err = rsmu_read_device(rsmu, addr, buf, size);
++	if (err)
++		dev_err(rsmu->dev,
++			"failed to read offset address 0x%x\n", addr);
++
++	return err;
++}
++EXPORT_SYMBOL_GPL(rsmu_read);
++
++int rsmu_write(struct device *dev, u16 reg, u8 *buf, u16 size)
++{
++	struct rsmu_dev *rsmu = dev_get_drvdata(dev);
++	u8 addr = (u8)(reg & RSMU_LOWER_ADDR_MASK);
++	int err;
++	err = rsmu_write_page_register(rsmu, reg);
++	if (err)
++		return err;
++
++	err = rsmu_write_device(rsmu, addr, buf, size);
++	if (err)
++		dev_err(rsmu->dev,
++			"failed to write offset address 0x%x\n", addr);
++
++	return err;
++}
++EXPORT_SYMBOL_GPL(rsmu_write);
++
++static int rsmu_mfd_init(struct rsmu_dev *rsmu, struct mfd_cell *mfd,
++			 struct rsmu_pdata *pdata)
++{
++	int ret;
++
++	mfd->platform_data = pdata;
++	mfd->pdata_size = sizeof(struct rsmu_pdata);
++
++	ret = mfd_add_devices(rsmu->dev, -1, mfd, 1, NULL, 0, NULL);
++	if (ret < 0) {
++		dev_err(rsmu->dev, "mfd_add_devices failed with %s\n",
++			mfd->name);
++		return ret;
++	}
++
++	return ret;
++}
++
++static int rsmu_dev_init(struct rsmu_dev *rsmu)
++{
++	struct rsmu_pdata *pdata;
++	struct mfd_cell *pmfd;
++	struct mfd_cell *cmfd;
++	int ret;
++
++	/* Initialize device index */
++	rsmu->index = atomic_read(&rsmu_ndevs);
++	if (rsmu->index >= RSMU_MAX_MFD_DEV)
++		return -ENODEV;
++
++	/* Initialize platform data */
++	pdata = &rsmu_pdata[rsmu->index];
++	pdata->lock = &rsmu->lock;
++	pdata->type = rsmu->type;
++	pdata->index = rsmu->index;
++
++	/* Initialize MFD devices */
++	cmfd = &rsmu_cdev[rsmu->index];
++	if (rsmu->type == RSMU_CM)
++		pmfd = &rsmu_cm_pdev[rsmu->index];
++	else if (rsmu->type == RSMU_SABRE)
++		pmfd = &rsmu_sabre_pdev[rsmu->index];
++	else
++		return -EINVAL;
++
++	ret = rsmu_mfd_init(rsmu, pmfd, pdata);
++	if (ret)
++		return ret;
++
++	return rsmu_mfd_init(rsmu, cmfd, pdata);
++}
++
++static int rsmu_dt_init(struct rsmu_dev *rsmu)
++{
++	struct device_node *np = rsmu->dev->of_node;
++
++	rsmu->type = RSMU_NONE;
++	if (of_device_is_compatible(np, "idt,8a34000")) {
++		rsmu->type = RSMU_CM;
++	} else if (of_device_is_compatible(np, "idt,82p33810")) {
++		rsmu->type = RSMU_SABRE;
++	} else {
++		dev_err(rsmu->dev, "unknown RSMU device\n");
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int rsmu_probe(struct spi_device *client)
++{
++	struct rsmu_dev *rsmu;
++	int ret;
++
++	rsmu = devm_kzalloc(&client->dev, sizeof(struct rsmu_dev), GFP_KERNEL);
++	if (rsmu == NULL)
++		return -ENOMEM;
++
++	spi_set_drvdata(client, rsmu);
++	mutex_init(&rsmu->lock);
++	rsmu->dev = &client->dev;
++	rsmu->client = client;
++
++	ret = rsmu_dt_init(rsmu);
++	if (ret)
++		return ret;
++
++	mutex_lock(&rsmu->lock);
++
++	ret = rsmu_dev_init(rsmu);
++	if (ret == 0)
++		atomic_inc(&rsmu_ndevs);
++
++	mutex_unlock(&rsmu->lock);
++
++	return ret;
++}
++
++static int rsmu_remove(struct spi_device *client)
++{
++	struct rsmu_dev *rsmu = spi_get_drvdata(client);
++
++	mfd_remove_devices(&client->dev);
++	mutex_destroy(&rsmu->lock);
++	atomic_dec(&rsmu_ndevs);
++
++	return 0;
++}
++
++static const struct spi_device_id rsmu_id[] = {
++	{ "8a34000", 0 },
++	{ "82p33810", 0 },
++	{ }
++};
++MODULE_DEVICE_TABLE(spi, rsmu_id);
++
++static const struct of_device_id rsmu_of_match[] = {
++	{.compatible = "idt,8a34000", },
++	{.compatible = "idt,82p33810", },
++	{},
++};
++MODULE_DEVICE_TABLE(of, rsmu_of_match);
++
++static struct spi_driver rsmu_driver = {
++	.driver = {
++		   .name = "rsmu-spi",
++		   .of_match_table = of_match_ptr(rsmu_of_match),
++	},
++	.probe = rsmu_probe,
++	.remove	= rsmu_remove,
++	.id_table = rsmu_id,
++};
++
++static int __init rsmu_init(void)
++{
++	return spi_register_driver(&rsmu_driver);
++}
++/* init early so consumer devices can complete system boot */
++subsys_initcall(rsmu_init);
++
++static void __exit rsmu_exit(void)
++{
++	spi_unregister_driver(&rsmu_driver);
++}
++module_exit(rsmu_exit);
++
++MODULE_DESCRIPTION("Renesas SMU SPI multi-function driver");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/misc/Kconfig b/drivers/misc/Kconfig
+index edfbc2540fbd..ad97b175f193 100644
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -500,6 +500,14 @@ config HISI_HIKEY_USB
+ 	  found on HiKey 960/970 boards, which is necessary to support
+ 	  switching between the dual-role USB-C port and the USB-A host ports
+ 	  using only one USB controller.
++config RSMU
++	tristate "Renesas Synchronization Management Unit (SMU)"
++	depends on MFD_RSMU_I2C || MFD_RSMU_SPI
++	help
++	  This option enables support for Renesas SMU, such as Clockmatrix and
++	  82P33XXX series. It will be used by Renesas PTP Clock Manager for
++	  Linux (pcm4l) software to provide support to GNSS assisted partial
++	  timing support (APTS) and other networking timing functions.
+ 
+ source "drivers/misc/jesd204b/Kconfig"
+ source "drivers/misc/c2port/Kconfig"
+diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
+index 7bdb21a14037..409f6b201458 100644
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -13,6 +13,8 @@ obj-$(CONFIG_ATMEL_SSC)		+= atmel-ssc.o
+ obj-$(CONFIG_ATMEL_TCLIB)	+= atmel_tclib.o
+ obj-$(CONFIG_DUMMY_IRQ)		+= dummy-irq.o
+ obj-$(CONFIG_ICS932S401)	+= ics932s401.o
++rsmu-objs			:= rsmu_cdev.o rsmu_cm.o rsmu_sabre.o
++obj-$(CONFIG_RSMU)		+= rsmu.o
+ obj-$(CONFIG_LKDTM)		+= lkdtm/
+ obj-$(CONFIG_TIFM_CORE)       	+= tifm_core.o
+ obj-$(CONFIG_TIFM_7XX1)       	+= tifm_7xx1.o
+diff --git a/drivers/misc/rsmu_cdev.c b/drivers/misc/rsmu_cdev.c
+new file mode 100644
+index 000000000000..3e0b4c92d41e
+--- /dev/null
++++ b/drivers/misc/rsmu_cdev.c
+@@ -0,0 +1,373 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * This driver is developed for the IDT ClockMatrix(TM) and 82P33xxx families
++ * of timing and synchronization devices. It will be used by Renesas PTP Clock
++ * Manager for Linux (pcm4l) software to provide support to GNSS assisted
++ * partial timing support (APTS) and other networking timing functions.
++ *
++ * Please note it must work with Renesas MFD driver to access device through
++ * I2C/SPI.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++
++#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
++
++#include <linux/cdev.h>
++#include <linux/device.h>
++#include <linux/fs.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <linux/mfd/rsmu.h>
++#include <uapi/linux/rsmu.h>
++
++#include "rsmu_cdev.h"
++
++#define DRIVER_NAME	"rsmu"
++#define DRIVER_MAX_DEV	BIT(MINORBITS)
++
++static struct class *rsmu_class;
++static dev_t rsmu_cdevt;
++static struct rsmu_ops *ops_array[] = {
++	[RSMU_CM] = &cm_ops,
++	[RSMU_SABRE] = &sabre_ops,
++};
++
++static int
++rsmu_set_combomode(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_combomode mode;
++	int err;
++
++	if (copy_from_user(&mode, arg, sizeof(mode)))
++		return -EFAULT;
++
++	if (ops->set_combomode == NULL)
++		return -ENOTSUPP;
++
++	mutex_lock(rsmu->lock);
++	err = ops->set_combomode(rsmu, mode.dpll, mode.mode);
++	mutex_unlock(rsmu->lock);
++
++	return err;
++}
++
++static int
++rsmu_get_dpll_state(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_get_state state_request;
++	u8 state;
++	int err;
++
++	if (copy_from_user(&state_request, arg, sizeof(state_request)))
++		return -EFAULT;
++
++	if (ops->get_dpll_state == NULL)
++		return -ENOTSUPP;
++
++	mutex_lock(rsmu->lock);
++	err = ops->get_dpll_state(rsmu, state_request.dpll, &state);
++	mutex_unlock(rsmu->lock);
++
++	state_request.state = state;
++	if (copy_to_user(arg, &state_request, sizeof(state_request)))
++		return -EFAULT;
++
++	return err;
++}
++
++static int
++rsmu_get_dpll_ffo(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_get_ffo ffo_request;
++	int err;
++
++	if (copy_from_user(&ffo_request, arg, sizeof(ffo_request)))
++		return -EFAULT;
++
++	if (ops->get_dpll_ffo == NULL)
++		return -ENOTSUPP;
++
++	mutex_lock(rsmu->lock);
++	err = ops->get_dpll_ffo(rsmu, ffo_request.dpll, &ffo_request);
++	mutex_unlock(rsmu->lock);
++
++	if (copy_to_user(arg, &ffo_request, sizeof(ffo_request)))
++		return -EFAULT;
++
++	return err;
++}
++
++static int
++rsmu_get_regval(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_regval reg_info;
++	int err;
++
++	if (copy_from_user(&reg_info, arg, sizeof(reg_info)))
++		return -EFAULT;
++
++	if (ops->get_reg_val == NULL)
++		return -ENOTSUPP;
++
++	mutex_lock(rsmu->lock);
++	err = ops->get_reg_val(rsmu, &reg_info);
++	mutex_unlock(rsmu->lock);
++
++	if (copy_to_user(arg, &reg_info, sizeof(reg_info)))
++		return -EFAULT;
++
++	return err;
++}
++
++static int
++rsmu_set_regval(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_regval reg_info;
++	int err;
++
++	if (copy_from_user(&reg_info, arg, sizeof(reg_info)))
++		return -EFAULT;
++
++	if (ops->set_reg_val == NULL)
++		return -ENOTSUPP;
++
++	mutex_lock(rsmu->lock);
++	err = ops->set_reg_val(rsmu, &reg_info);
++	mutex_unlock(rsmu->lock);
++
++	if (copy_to_user(arg, &reg_info, sizeof(reg_info)))
++		return -EFAULT;
++
++	return err;
++}
++
++static int
++rsmu_open(struct inode *iptr, struct file *fptr)
++{
++	struct rsmu_cdev *rsmu;
++
++	rsmu = container_of(iptr->i_cdev, struct rsmu_cdev, rsmu_cdev);
++	fptr->private_data = rsmu;
++	return 0;
++}
++
++static int
++rsmu_release(struct inode *iptr, struct file *fptr)
++{
++	return 0;
++}
++
++static long
++rsmu_ioctl(struct file *fptr, unsigned int cmd, unsigned long data)
++{
++	struct rsmu_cdev *rsmu = fptr->private_data;
++	void __user *arg = (void __user *)data;
++	int err = 0;
++
++	switch (cmd) {
++	case RSMU_SET_COMBOMODE:
++		err = rsmu_set_combomode(rsmu, arg);
++		break;
++	case RSMU_GET_STATE:
++		err = rsmu_get_dpll_state(rsmu, arg);
++		break;
++	case RSMU_GET_FFO:
++		err = rsmu_get_dpll_ffo(rsmu, arg);
++		break;
++	case RSMU_GET_REGVAL:
++		err = rsmu_get_regval(rsmu, arg);
++		break;
++	case RSMU_SET_REGVAL:
++		err = rsmu_set_regval(rsmu, arg);
++        break;
++	default:
++		/* Should not get here */
++		dev_err(rsmu->dev, "Undefined RSMU IOCTL");
++		err = -EINVAL;
++		break;
++	}
++
++	return err;
++}
++
++static long rsmu_compat_ioctl(struct file *fptr, unsigned int cmd,
++			      unsigned long data)
++{
++	return rsmu_ioctl(fptr, cmd, data);
++}
++
++static const struct file_operations rsmu_fops = {
++	.owner = THIS_MODULE,
++	.open = rsmu_open,
++	.release = rsmu_release,
++	.unlocked_ioctl = rsmu_ioctl,
++	.compat_ioctl =	rsmu_compat_ioctl,
++};
++
++static int rsmu_init_ops(struct rsmu_cdev *rsmu)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(ops_array); i++)
++		if (ops_array[i]->type == rsmu->type)
++			break;
++
++	if (i == ARRAY_SIZE(ops_array))
++		return -EINVAL;
++
++	rsmu->ops = ops_array[i];
++	return 0;
++}
++
++static int
++rsmu_probe(struct platform_device *pdev)
++{
++	struct rsmu_pdata *pdata = dev_get_platdata(&pdev->dev);
++	struct rsmu_cdev *rsmu;
++	struct device *rsmu_cdev;
++	int err;
++
++	rsmu = devm_kzalloc(&pdev->dev, sizeof(*rsmu), GFP_KERNEL);
++	if (!rsmu)
++		return -ENOMEM;
++
++	rsmu->dev = &pdev->dev;
++	rsmu->mfd = pdev->dev.parent;
++	rsmu->type = pdata->type;
++	rsmu->lock = pdata->lock;
++	rsmu->index = pdata->index;
++
++	/* Save driver private data */
++	platform_set_drvdata(pdev, rsmu);
++
++	cdev_init(&rsmu->rsmu_cdev, &rsmu_fops);
++	rsmu->rsmu_cdev.owner = THIS_MODULE;
++	err = cdev_add(&rsmu->rsmu_cdev,
++		       MKDEV(MAJOR(rsmu_cdevt), 0), 1);
++	if (err < 0) {
++		dev_err(rsmu->dev, "cdev_add failed");
++		err = -EIO;
++		goto err_rsmu_dev;
++	}
++
++	if (!rsmu_class) {
++		err = -EIO;
++		dev_err(rsmu->dev, "rsmu class not created correctly");
++		goto err_rsmu_cdev;
++	}
++
++	rsmu_cdev = device_create(rsmu_class, rsmu->dev,
++				  MKDEV(MAJOR(rsmu_cdevt), 0),
++				  rsmu, "rsmu%d", rsmu->index);
++	if (IS_ERR(rsmu_cdev)) {
++		dev_err(rsmu->dev, "Unable to create char device");
++		err = PTR_ERR(rsmu_cdev);
++		goto err_rsmu_cdev;
++	}
++
++	err = rsmu_init_ops(rsmu);
++	if (err) {
++		dev_err(rsmu->dev, "Unable to match type %d", rsmu->type);
++		goto err_rsmu_cdev;
++	}
++
++	dev_info(rsmu->dev, "Probe SMU type %d successful\n", rsmu->type);
++	return 0;
++
++	/* Failure cleanup */
++err_rsmu_cdev:
++	cdev_del(&rsmu->rsmu_cdev);
++err_rsmu_dev:
++	return err;
++}
++
++static int
++rsmu_remove(struct platform_device *pdev)
++{
++	struct rsmu_cdev *rsmu = platform_get_drvdata(pdev);
++	struct device *dev = &pdev->dev;
++
++	if (!rsmu_class) {
++		dev_err(dev, "rsmu_class is NULL");
++		return -EIO;
++	}
++
++	device_destroy(rsmu_class, MKDEV(MAJOR(rsmu_cdevt), 0));
++	cdev_del(&rsmu->rsmu_cdev);
++
++	return 0;
++}
++
++static const struct platform_device_id rsmu_id_table[] = {
++	{ "rsmu-cdev0", },
++	{ "rsmu-cdev1", },
++	{ "rsmu-cdev2", },
++	{ "rsmu-cdev3", },
++	{}
++};
++MODULE_DEVICE_TABLE(platform, rsmu_id_table);
++
++static struct platform_driver rsmu_driver = {
++	.driver = {
++		.name = DRIVER_NAME,
++	},
++	.probe = rsmu_probe,
++	.remove =  rsmu_remove,
++	.id_table = rsmu_id_table,
++};
++
++static int __init rsmu_init(void)
++{
++	int err;
++
++	rsmu_class = class_create(THIS_MODULE, DRIVER_NAME);
++	if (IS_ERR(rsmu_class)) {
++		err = PTR_ERR(rsmu_class);
++		pr_err("Unable to register rsmu class");
++		return err;
++	}
++
++	err = alloc_chrdev_region(&rsmu_cdevt, 0, DRIVER_MAX_DEV, DRIVER_NAME);
++	if (err < 0) {
++		pr_err("Unable to get major number");
++		goto err_rsmu_class;
++	}
++
++	err = platform_driver_register(&rsmu_driver);
++	if (err < 0) {
++		pr_err("Unabled to register %s driver", DRIVER_NAME);
++		goto err_rsmu_drv;
++	}
++	return 0;
++
++	/* Error Path */
++err_rsmu_drv:
++	unregister_chrdev_region(rsmu_cdevt, DRIVER_MAX_DEV);
++err_rsmu_class:
++	class_destroy(rsmu_class);
++	return err;
++}
++
++static void __exit rsmu_exit(void)
++{
++	platform_driver_unregister(&rsmu_driver);
++	unregister_chrdev_region(rsmu_cdevt, DRIVER_MAX_DEV);
++	class_destroy(rsmu_class);
++	rsmu_class = NULL;
++}
++
++module_init(rsmu_init);
++module_exit(rsmu_exit);
++
++MODULE_DESCRIPTION("Renesas SMU character device driver");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/misc/rsmu_cdev.h b/drivers/misc/rsmu_cdev.h
+new file mode 100644
+index 000000000000..0521f1aedb90
+--- /dev/null
++++ b/drivers/misc/rsmu_cdev.h
+@@ -0,0 +1,74 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * This driver is developed for the IDT ClockMatrix(TM) of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++#ifndef __LINUX_RSMU_CDEV_H
++#define __LINUX_RSMU_CDEV_H
++
++#include <linux/cdev.h>
++
++struct rsmu_ops;
++
++/**
++ * struct rsmu_cdev - Driver data for RSMU character device
++ * @dev: pointer to platform device
++ * @mfd: pointer to MFD device
++ * @rsmu_cdev: character device handle
++ * @lock: mutex to protect operations from being interrupted
++ * @type: rsmu device type
++ * @ops: rsmu device methods
++ * @index: rsmu device index
++ */
++struct rsmu_cdev {
++	struct device *dev;
++	struct device *mfd;
++	struct cdev rsmu_cdev;
++	struct mutex *lock;
++	enum rsmu_type type;
++	struct rsmu_ops *ops;
++	u8 index;
++};
++
++extern struct rsmu_ops cm_ops;
++extern struct rsmu_ops sabre_ops;
++
++struct rsmu_ops {
++	enum rsmu_type type;
++	int (*set_combomode)(struct rsmu_cdev *rsmu, u8 dpll, u8 mode);
++	int (*get_dpll_state)(struct rsmu_cdev *rsmu, u8 dpll, u8 *state);
++	int (*get_dpll_ffo)(struct rsmu_cdev *rsmu, u8 dpll,
++			    struct rsmu_get_ffo *ffo);
++	int (*get_reg_val)(struct rsmu_cdev *rsmu, struct rsmu_regval *reg_info);
++	int (*set_reg_val)(struct rsmu_cdev *rsmu, struct rsmu_regval *reg_info);
++};
++
++/**
++ * Enumerated type listing DPLL combination modes
++ */
++enum rsmu_dpll_combomode {
++	E_COMBOMODE_CURRENT = 0,
++	E_COMBOMODE_FASTAVG,
++	E_COMBOMODE_SLOWAVG,
++	E_COMBOMODE_HOLDOVER,
++	E_COMBOMODE_MAX
++};
++
++/**
++ * An id used to identify the respective child class states.
++ */
++enum rsmu_class_state {
++	E_SRVLOINITIALSTATE = 0,
++	E_SRVLOUNQUALIFIEDSTATE = 1,
++	E_SRVLOLOCKACQSTATE = 2,
++	E_SRVLOFREQUENCYLOCKEDSTATE = 3,
++	E_SRVLOTIMELOCKEDSTATE = 4,
++	E_SRVLOHOLDOVERINSPECSTATE = 5,
++	E_SRVLOHOLDOVEROUTOFSPECSTATE = 6,
++	E_SRVLOFREERUNSTATE = 7,
++	E_SRVNUMBERLOSTATES = 8,
++	E_SRVLOSTATEINVALID = 9,
++};
++#endif
+diff --git a/drivers/misc/rsmu_cm.c b/drivers/misc/rsmu_cm.c
+new file mode 100644
+index 000000000000..cd0f234d5633
+--- /dev/null
++++ b/drivers/misc/rsmu_cm.c
+@@ -0,0 +1,190 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * This driver is developed for the IDT ClockMatrix(TM) of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/device.h>
++#include <linux/mfd/idt8a340_reg.h>
++#include <linux/mfd/rsmu.h>
++#include <uapi/linux/rsmu.h>
++#include <asm/unaligned.h>
++
++#include "rsmu_cdev.h"
++
++static int rsmu_cm_set_combomode(struct rsmu_cdev *rsmu, u8 dpll, u8 mode)
++{
++	u16 dpll_ctrl_n;
++	u8 cfg;
++	int err;
++
++	switch (dpll) {
++	case 0:
++		dpll_ctrl_n = DPLL_CTRL_0;
++		break;
++	case 1:
++		dpll_ctrl_n = DPLL_CTRL_1;
++		break;
++	case 2:
++		dpll_ctrl_n = DPLL_CTRL_2;
++		break;
++	case 3:
++		dpll_ctrl_n = DPLL_CTRL_3;
++		break;
++	case 4:
++		dpll_ctrl_n = DPLL_CTRL_4;
++		break;
++	case 5:
++		dpll_ctrl_n = DPLL_CTRL_5;
++		break;
++	case 6:
++		dpll_ctrl_n = DPLL_CTRL_6;
++		break;
++	case 7:
++		dpll_ctrl_n = DPLL_CTRL_7;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	if (mode >= E_COMBOMODE_MAX)
++		return -EINVAL;
++
++	err = rsmu_read(rsmu->mfd, dpll_ctrl_n + DPLL_CTRL_COMBO_MASTER_CFG,
++			&cfg, sizeof(cfg));
++	if (err)
++		return err;
++
++	/* Only need to enable/disable COMBO_MODE_HOLD. */
++	if (mode)
++		cfg |= COMBO_MASTER_HOLD;
++	else
++		cfg &= ~COMBO_MASTER_HOLD;
++
++	return rsmu_write(rsmu->mfd, dpll_ctrl_n + DPLL_CTRL_COMBO_MASTER_CFG,
++			  &cfg, sizeof(cfg));
++}
++
++static int rsmu_cm_get_dpll_state(struct rsmu_cdev *rsmu, u8 dpll, u8 *state)
++{
++	u8 cfg;
++	int err;
++
++	/* 8 is sys dpll */
++	if (dpll > 8)
++		return -EINVAL;
++
++	err = rsmu_read(rsmu->mfd,
++			  STATUS + DPLL0_STATUS + dpll,
++			  &cfg, sizeof(cfg));
++	if (err)
++		return err;
++
++	switch (cfg & DPLL_STATE_MASK) {
++	case DPLL_STATE_FREERUN:
++		*state = E_SRVLOUNQUALIFIEDSTATE;
++		break;
++	case DPLL_STATE_LOCKACQ:
++	case DPLL_STATE_LOCKREC:
++		*state = E_SRVLOLOCKACQSTATE;
++		break;
++	case DPLL_STATE_LOCKED:
++		*state = E_SRVLOTIMELOCKEDSTATE;
++		break;
++	case DPLL_STATE_HOLDOVER:
++		*state = E_SRVLOHOLDOVERINSPECSTATE;
++		break;
++	default:
++		*state = E_SRVLOSTATEINVALID;
++		break;
++	}
++
++	return 0;
++}
++
++static int rsmu_cm_get_dpll_ffo(struct rsmu_cdev *rsmu, u8 dpll,
++				struct rsmu_get_ffo *ffo)
++{
++	u8 buf[8] = {0};
++	s64 fcw = 0;
++	u16 dpll_filter_status;
++	int err;
++
++	switch (dpll) {
++	case 0:
++		dpll_filter_status = DPLL0_FILTER_STATUS;
++		break;
++	case 1:
++		dpll_filter_status = DPLL1_FILTER_STATUS;
++		break;
++	case 2:
++		dpll_filter_status = DPLL2_FILTER_STATUS;
++		break;
++	case 3:
++		dpll_filter_status = DPLL3_FILTER_STATUS;
++		break;
++	case 4:
++		dpll_filter_status = DPLL4_FILTER_STATUS;
++		break;
++	case 5:
++		dpll_filter_status = DPLL5_FILTER_STATUS;
++		break;
++	case 6:
++		dpll_filter_status = DPLL6_FILTER_STATUS;
++		break;
++	case 7:
++		dpll_filter_status = DPLL7_FILTER_STATUS;
++		break;
++	case 8:
++		dpll_filter_status = DPLLSYS_FILTER_STATUS;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	err = rsmu_read(rsmu->mfd, STATUS + dpll_filter_status, buf, 6);
++	if (err)
++		return err;
++
++	/* Convert to frequency control word */
++	fcw = sign_extend64(get_unaligned_le64(buf), 47);
++
++	/* FCW unit is 2 ^ -53 = 1.1102230246251565404236316680908e-16 */
++	ffo->ffo = fcw * 111;
++
++	return 0;
++}
++
++static int rsmu_cm_get_reg_val(struct rsmu_cdev *rsmu, struct rsmu_regval *reg_info)
++{
++	int err;
++
++	err = rsmu_read(rsmu->mfd, reg_info->reg_addr, (u8 *)&reg_info->value, 4);
++	if (err)
++		return err;
++
++	return 0;
++}
++
++static int rsmu_cm_set_reg_val(struct rsmu_cdev *rsmu, struct rsmu_regval *reg_info)
++{
++	int err;
++
++	err = rsmu_write(rsmu->mfd, reg_info->reg_addr, (u8 *)&reg_info->value, 4);
++	if (err)
++		return err;
++
++	return 0;
++}
++
++struct rsmu_ops cm_ops = {
++	.type = RSMU_CM,
++	.set_combomode = rsmu_cm_set_combomode,
++	.get_dpll_state = rsmu_cm_get_dpll_state,
++	.get_dpll_ffo = rsmu_cm_get_dpll_ffo,
++	.get_reg_val = rsmu_cm_get_reg_val,
++	.set_reg_val = rsmu_cm_set_reg_val,
++};
+diff --git a/drivers/misc/rsmu_sabre.c b/drivers/misc/rsmu_sabre.c
+new file mode 100644
+index 000000000000..5767a074fbb6
+--- /dev/null
++++ b/drivers/misc/rsmu_sabre.c
+@@ -0,0 +1,146 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * This driver is developed for the IDT 82P33XXX series of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/device.h>
++#include <linux/mfd/idt82p33_reg.h>
++#include <linux/mfd/rsmu.h>
++#include <uapi/linux/rsmu.h>
++#include <asm/unaligned.h>
++
++#include "rsmu_cdev.h"
++
++static int rsmu_sabre_set_combomode(struct rsmu_cdev *rsmu, u8 dpll, u8 mode)
++{
++	u16 dpll_ctrl_n;
++	u8 cfg;
++	int err;
++
++	switch (dpll) {
++	case 0:
++		dpll_ctrl_n = DPLL1_OPERATING_MODE_CNFG;
++		break;
++	case 1:
++		dpll_ctrl_n = DPLL2_OPERATING_MODE_CNFG;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	if (mode >= E_COMBOMODE_MAX)
++		return -EINVAL;
++
++	err = rsmu_read(rsmu->mfd, dpll_ctrl_n, &cfg, sizeof(cfg));
++	if (err)
++		return err;
++
++	cfg &= ~(COMBO_MODE_MASK << COMBO_MODE_SHIFT);
++	cfg |= mode << COMBO_MODE_SHIFT;
++
++	return rsmu_write(rsmu->mfd, dpll_ctrl_n, &cfg, sizeof(cfg));
++}
++
++static int rsmu_sabre_get_dpll_state(struct rsmu_cdev *rsmu, u8 dpll, u8 *state)
++{
++	u16 dpll_sts_n;
++	u8 cfg;
++	int err;
++
++	switch (dpll) {
++	case 0:
++		dpll_sts_n = DPLL1_OPERATING_STS;
++		break;
++	case 1:
++		dpll_sts_n = DPLL2_OPERATING_STS;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	err = rsmu_read(rsmu->mfd, dpll_sts_n, &cfg, sizeof(cfg));
++	if (err)
++		return err;
++
++	switch (cfg & OPERATING_STS_MASK) {
++	case DPLL_STATE_FREERUN:
++		*state = E_SRVLOUNQUALIFIEDSTATE;
++		break;
++	case DPLL_STATE_PRELOCKED2:
++	case DPLL_STATE_PRELOCKED:
++		*state = E_SRVLOLOCKACQSTATE;
++		break;
++	case DPLL_STATE_LOCKED:
++		*state = E_SRVLOTIMELOCKEDSTATE;
++		break;
++	case DPLL_STATE_HOLDOVER:
++		*state = E_SRVLOHOLDOVERINSPECSTATE;
++		break;
++	default:
++		*state = E_SRVLOSTATEINVALID;
++		break;
++	}
++
++	return 0;
++}
++
++static int rsmu_sabre_get_dpll_ffo(struct rsmu_cdev *rsmu, u8 dpll,
++				   struct rsmu_get_ffo *ffo)
++{
++	u8 buf[8] = {0};
++	s64 fcw = 0;
++	u16 dpll_freq_n;
++	int err;
++
++	/* 
++	 * IDTDpll_GetCurrentDpllFreqOffset retrieves the FFO integrator only. 
++	 * In order to get Proportional + Integrator, use the holdover FFO with
++	 * the filter bandwidth 0.5 Hz set by TCS file.
++	 */
++	switch (dpll) {
++	case 0:
++		dpll_freq_n = DPLL1_HOLDOVER_FREQ_CNFG;
++		break;
++	case 1:
++		dpll_freq_n = DPLL2_HOLDOVER_FREQ_CNFG;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	err = rsmu_read(rsmu->mfd, dpll_freq_n, buf, 5);
++	if (err)
++		return err;
++
++	/* Convert to frequency control word */
++	fcw = sign_extend64(get_unaligned_le64(buf), 39);
++
++	/* FCW unit is 77760 / ( 1638400 * 2^48) = 1.68615121864946 * 10^-16 */
++	ffo->ffo = div_s64(fcw * 2107689, 12500);
++
++	return 0;
++}
++
++static int rsmu_sabre_get_reg_val(struct rsmu_cdev *rsmu, struct rsmu_regval *reg_info)
++{
++	int err;
++
++	/* int rsmu_read(struct device *dev, u16 reg, u8 *buf, u16 size) */
++	err = rsmu_read(rsmu->mfd, reg_info->reg_addr, (u8 *)&reg_info->value, 4);
++	if (err)
++		return err;
++
++	return 0;
++}
++
++struct rsmu_ops sabre_ops = {
++	.type = RSMU_SABRE,
++	.set_combomode = rsmu_sabre_set_combomode,
++	.get_dpll_state = rsmu_sabre_get_dpll_state,
++	.get_dpll_ffo = rsmu_sabre_get_dpll_ffo,
++	.get_reg_val = rsmu_sabre_get_reg_val,
++};
+diff --git a/drivers/ptp/Makefile b/drivers/ptp/Makefile
+index 9ce5058ac9e9..edb4a747df02 100644
+--- a/drivers/ptp/Makefile
++++ b/drivers/ptp/Makefile
+@@ -5,6 +5,8 @@
+ 
+ ptp-y					:= ptp_clock.o ptp_chardev.o ptp_sysfs.o
+ obj-$(CONFIG_PTP_1588_CLOCK)		+= ptp.o
++ptp_idtcm-objs				+= ptp_clockmatrix.o
++obj-$(CONFIG_PTP_1588_CLOCK_IDTCM)	+= ptp_idtcm.o
+ obj-$(CONFIG_PTP_1588_CLOCK_DTE)	+= ptp_dte.o
+ obj-$(CONFIG_PTP_1588_CLOCK_INES)	+= ptp_ines.o
+ obj-$(CONFIG_PTP_1588_CLOCK_PCH)	+= ptp_pch.o
+@@ -13,6 +15,5 @@ obj-$(CONFIG_PTP_1588_CLOCK_XILINX)	+= ptp_xilinx.o
+ obj-$(CONFIG_PTP_1588_CLOCK_QORIQ)	+= ptp-qoriq.o
+ ptp-qoriq-y				+= ptp_qoriq.o
+ ptp-qoriq-$(CONFIG_DEBUG_FS)		+= ptp_qoriq_debugfs.o
+-obj-$(CONFIG_PTP_1588_CLOCK_IDTCM)	+= ptp_clockmatrix.o
+ obj-$(CONFIG_PTP_1588_CLOCK_IDT82P33)	+= ptp_idt82p33.o
+ obj-$(CONFIG_PTP_1588_CLOCK_VMW)	+= ptp_vmw.o
+diff --git a/drivers/ptp/ptp_clockmatrix.c b/drivers/ptp/ptp_clockmatrix.c
+index 663255774c0b..1527f961fedd 100644
+--- a/drivers/ptp/ptp_clockmatrix.c
++++ b/drivers/ptp/ptp_clockmatrix.c
+@@ -6,7 +6,7 @@
+  * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
+  */
+ #include <linux/firmware.h>
+-#include <linux/i2c.h>
++#include <linux/platform_device.h>
+ #include <linux/module.h>
+ #include <linux/ptp_clock_kernel.h>
+ #include <linux/delay.h>
+@@ -14,6 +14,11 @@
+ #include <linux/kernel.h>
+ #include <linux/timekeeping.h>
+ #include <linux/string.h>
++#include <linux/of.h>
++#include <linux/mfd/rsmu.h>
++#include <linux/mfd/idt8a340_reg.h>
++#include <asm/unaligned.h>
++#include <linux/gpio.h>
+ 
+ #include "ptp_private.h"
+ #include "ptp_clockmatrix.h"
+@@ -32,15 +37,67 @@ static char *firmware;
+ module_param(firmware, charp, 0);
+ 
+ #define SETTIME_CORRECTION (0)
++#define EXTTS_PERIOD_MS (95)
+ 
+-static long set_write_phase_ready(struct ptp_clock_info *ptp)
++static inline int idtcm_read(struct idtcm *idtcm,
++			     u16 module,
++			     u16 regaddr,
++			     u8 *buf,
++			     u16 count)
+ {
+-	struct idtcm_channel *channel =
+-		container_of(ptp, struct idtcm_channel, caps);
++	return rsmu_read(idtcm->mfd, module + regaddr, buf, count);
++}
+ 
+-	channel->write_phase_ready = 1;
++static inline int idtcm_write(struct idtcm *idtcm,
++			      u16 module,
++			      u16 regaddr,
++			      u8 *buf,
++			      u16 count)
++{
++	return rsmu_write(idtcm->mfd, module + regaddr, buf, count);
++}
+ 
+-	return 0;
++static int contains_full_configuration(struct idtcm *idtcm,
++				       const struct firmware *fw)
++{
++	struct idtcm_fwrc *rec = (struct idtcm_fwrc *)fw->data;
++	u16 scratch = IDTCM_FW_REG(idtcm->fw_ver, V520, SCRATCH);
++	s32 full_count;
++	s32 count = 0;
++	u16 regaddr;
++	u8 loaddr;
++	s32 len;
++
++	/* 4 bytes skipped every 0x80 */
++	full_count = (scratch - GPIO_USER_CONTROL) -
++		     ((scratch >> 7) - (GPIO_USER_CONTROL >> 7)) * 4;
++
++	/* If the firmware contains 'full configuration' SM_RESET can be used
++	 * to ensure proper configuration.
++	 *
++	 * Full configuration is defined as the number of programmable
++	 * bytes within the configuration range minus page offset addr range.
++	 */
++	for (len = fw->size; len > 0; len -= sizeof(*rec)) {
++		regaddr = rec->hiaddr << 8;
++		regaddr |= rec->loaddr;
++
++		loaddr = rec->loaddr;
++
++		rec++;
++
++		/* Top (status registers) and bottom are read-only */
++		if (regaddr < GPIO_USER_CONTROL || regaddr >= scratch)
++			continue;
++
++		/* Page size 128, last 4 bytes of page skipped */
++		if ((loaddr > 0x7b && loaddr <= 0x7f) || loaddr > 0xfb)
++			continue;
++
++		count++;
++	}
++
++	return (count >= full_count);
+ }
+ 
+ static int char_array_to_timespec(u8 *buf,
+@@ -125,185 +182,220 @@ static int idtcm_strverscmp(const char *version1, const char *version2)
+ 	return 0;
+ }
+ 
+-static int idtcm_xfer_read(struct idtcm *idtcm,
+-			   u8 regaddr,
+-			   u8 *buf,
+-			   u16 count)
+-{
+-	struct i2c_client *client = idtcm->client;
+-	struct i2c_msg msg[2];
+-	int cnt;
+-	char *fmt = "i2c_transfer failed at %d in %s, at addr: %04X!\n";
+-
+-	msg[0].addr = client->addr;
+-	msg[0].flags = 0;
+-	msg[0].len = 1;
+-	msg[0].buf = &regaddr;
+-
+-	msg[1].addr = client->addr;
+-	msg[1].flags = I2C_M_RD;
+-	msg[1].len = count;
+-	msg[1].buf = buf;
+-
+-	cnt = i2c_transfer(client->adapter, msg, 2);
+-
+-	if (cnt < 0) {
+-		dev_err(&client->dev,
+-			fmt,
+-			__LINE__,
+-			__func__,
+-			regaddr);
+-		return cnt;
+-	} else if (cnt != 2) {
+-		dev_err(&client->dev,
+-			"i2c_transfer sent only %d of %d messages\n", cnt, 2);
+-		return -EIO;
+-	}
++static enum fw_version idtcm_fw_version(const char *version)
++{
++	enum fw_version ver = V_DEFAULT;
+ 
+-	return 0;
++	if (idtcm_strverscmp(version, "4.8.7") >= 0)
++		ver = V487;
++
++	if (idtcm_strverscmp(version, "5.2.0") >= 0)
++		ver = V520;
++
++	return ver;
+ }
+ 
+-static int idtcm_xfer_write(struct idtcm *idtcm,
+-			    u8 regaddr,
+-			    u8 *buf,
+-			    u16 count)
++static int clear_boot_status(struct idtcm *idtcm)
+ {
+-	struct i2c_client *client = idtcm->client;
+-	/* we add 1 byte for device register */
+-	u8 msg[IDTCM_MAX_WRITE_COUNT + 1];
+-	int cnt;
+-	char *fmt = "i2c_master_send failed at %d in %s, at addr: %04X!\n";
++	u8 buf[4] = {0};
+ 
+-	if (count > IDTCM_MAX_WRITE_COUNT)
+-		return -EINVAL;
++	return idtcm_write(idtcm, GENERAL_STATUS, BOOT_STATUS, buf, sizeof(buf));
++}
+ 
+-	msg[0] = regaddr;
+-	memcpy(&msg[1], buf, count);
++static int read_boot_status(struct idtcm *idtcm, u32 *status)
++{
++	int err;
++	u8 buf[4] = {0};
+ 
+-	cnt = i2c_master_send(client, msg, count + 1);
++	err = idtcm_read(idtcm, GENERAL_STATUS, BOOT_STATUS, buf, sizeof(buf));
+ 
+-	if (cnt < 0) {
+-		dev_err(&client->dev,
+-			fmt,
+-			__LINE__,
+-			__func__,
+-			regaddr);
+-		return cnt;
+-	}
++	*status = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | buf[0];
+ 
+-	return 0;
++	return err;
+ }
+ 
+-static int idtcm_page_offset(struct idtcm *idtcm, u8 val)
++static int wait_for_boot_status_ready(struct idtcm *idtcm)
+ {
+-	u8 buf[4];
++	u32 status = 0;
++	u8 i = 30;	/* 30 * 100ms = 3s */
+ 	int err;
+ 
+-	if (idtcm->page_offset == val)
+-		return 0;
++	do {
++		err = read_boot_status(idtcm, &status);
++		if (err)
++			return err;
+ 
+-	buf[0] = 0x0;
+-	buf[1] = val;
+-	buf[2] = 0x10;
+-	buf[3] = 0x20;
++		if (status == 0xA0)
++			return 0;
+ 
+-	err = idtcm_xfer_write(idtcm, PAGE_ADDR, buf, sizeof(buf));
++		msleep(100);
++		i--;
+ 
+-	if (err) {
+-		idtcm->page_offset = 0xff;
+-		dev_err(&idtcm->client->dev, "failed to set page offset\n");
+-	} else {
+-		idtcm->page_offset = val;
+-	}
++	} while (i);
+ 
+-	return err;
++	dev_warn(idtcm->dev, "%s timed out", __func__);
++
++	return -EBUSY;
+ }
+ 
+-static int _idtcm_rdwr(struct idtcm *idtcm,
+-		       u16 regaddr,
+-		       u8 *buf,
+-		       u16 count,
+-		       bool write)
++static int _idtcm_set_scsr_read_trig(struct idtcm_channel *channel,
++				     enum scsr_read_trig_sel trig, u8 ref)
+ {
+-	u8 hi;
+-	u8 lo;
++	struct idtcm *idtcm = channel->idtcm;
++	u16 tod_read_cmd = IDTCM_FW_REG(idtcm->fw_ver, V520, TOD_READ_PRIMARY_CMD);
++	u8 val;
+ 	int err;
+ 
+-	hi = (regaddr >> 8) & 0xff;
+-	lo = regaddr & 0xff;
++	if (trig == SCSR_TOD_READ_TRIG_SEL_REFCLK) {
++		err = idtcm_read(idtcm, channel->tod_read_primary,
++				 TOD_READ_PRIMARY_SEL_CFG_0, &val, sizeof(val));
++		if (err)
++			return err;
++
++		val &= ~(WR_REF_INDEX_MASK << WR_REF_INDEX_SHIFT);
++		val |= (ref << WR_REF_INDEX_SHIFT);
+ 
+-	err = idtcm_page_offset(idtcm, hi);
++		err = idtcm_write(idtcm, channel->tod_read_primary,
++				  TOD_READ_PRIMARY_SEL_CFG_0, &val, sizeof(val));
++		if (err)
++			return err;
++	}
+ 
++	err = idtcm_read(idtcm, channel->tod_read_primary,
++			 tod_read_cmd, &val, sizeof(val));
+ 	if (err)
+ 		return err;
+ 
+-	if (write)
+-		return idtcm_xfer_write(idtcm, lo, buf, count);
++	val &= ~(TOD_READ_TRIGGER_MASK << TOD_READ_TRIGGER_SHIFT);
++	val |= (trig << TOD_READ_TRIGGER_SHIFT);
++	val &= ~TOD_READ_TRIGGER_MODE; /* single shot */
++
++	err = idtcm_write(idtcm, channel->tod_read_primary,
++			  tod_read_cmd, &val, sizeof(val));
++	return err;
++}
++
++static int idtcm_enable_extts(struct idtcm_channel *channel, u8 todn, u8 ref,
++			      bool enable)
++{
++	struct idtcm *idtcm = channel->idtcm;
++	u8 old_mask = idtcm->extts_mask;
++	u8 mask = 1 << todn;
++	int err = 0;
++
++	if (todn >= MAX_TOD)
++		return -EINVAL;
++
++	if (enable) {
++		if (ref > 0xF) /* E_REF_CLK15 */
++			return -EINVAL;
++		if (idtcm->extts_mask & mask)
++			return 0;
++		err = _idtcm_set_scsr_read_trig(&idtcm->channel[todn],
++						SCSR_TOD_READ_TRIG_SEL_REFCLK,
++						ref);
++		if (err == 0) {
++			idtcm->extts_mask |= mask;
++			idtcm->event_channel[todn] = channel;
++			idtcm->channel[todn].refn = ref;
++		}
++	} else
++		idtcm->extts_mask &= ~mask;
++
++	if (old_mask == 0 && idtcm->extts_mask)
++		schedule_delayed_work(&idtcm->extts_work,
++				      msecs_to_jiffies(EXTTS_PERIOD_MS));
++
++	return err;
++}
++
++static int read_sys_apll_status(struct idtcm *idtcm, u8 *status)
++{
++	return idtcm_read(idtcm, STATUS, DPLL_SYS_APLL_STATUS, status,
++			  sizeof(u8));
++}
+ 
+-	return idtcm_xfer_read(idtcm, lo, buf, count);
++static int read_sys_dpll_status(struct idtcm *idtcm, u8 *status)
++{
++	return idtcm_read(idtcm, STATUS, DPLL_SYS_STATUS, status, sizeof(u8));
+ }
+ 
+-static int idtcm_read(struct idtcm *idtcm,
+-		      u16 module,
+-		      u16 regaddr,
+-		      u8 *buf,
+-		      u16 count)
++static int wait_for_sys_apll_dpll_lock(struct idtcm *idtcm)
+ {
+-	return _idtcm_rdwr(idtcm, module + regaddr, buf, count, false);
++	unsigned long timeout = jiffies + msecs_to_jiffies(LOCK_TIMEOUT_MS);
++	u8 apll = 0;
++	u8 dpll = 0;
++	int err;
++
++	do {
++		err = read_sys_apll_status(idtcm, &apll);
++		if (err)
++			return err;
++
++		err = read_sys_dpll_status(idtcm, &dpll);
++		if (err)
++			return err;
++
++		apll &= SYS_APLL_LOSS_LOCK_LIVE_MASK;
++		dpll &= DPLL_SYS_STATE_MASK;
++
++		if (apll == SYS_APLL_LOSS_LOCK_LIVE_LOCKED &&
++		    dpll == DPLL_STATE_LOCKED) {
++			return 0;
++		} else if (dpll == DPLL_STATE_FREERUN ||
++			   dpll == DPLL_STATE_HOLDOVER ||
++			   dpll == DPLL_STATE_OPEN_LOOP) {
++			dev_warn(idtcm->dev,
++				"No wait state: DPLL_SYS_STATE %d", dpll);
++			return -EPERM;
++		}
++
++		msleep(LOCK_POLL_INTERVAL_MS);
++	} while (time_is_after_jiffies(timeout));
++
++	dev_warn(idtcm->dev,
++		 "%d ms lock timeout: SYS APLL Loss Lock %d  SYS DPLL state %d",
++		 LOCK_TIMEOUT_MS, apll, dpll);
++
++	return -ETIME;
+ }
+ 
+-static int idtcm_write(struct idtcm *idtcm,
+-		       u16 module,
+-		       u16 regaddr,
+-		       u8 *buf,
+-		       u16 count)
++static void wait_for_chip_ready(struct idtcm *idtcm)
+ {
+-	return _idtcm_rdwr(idtcm, module + regaddr, buf, count, true);
++	if (wait_for_boot_status_ready(idtcm))
++		dev_warn(idtcm->dev, "BOOT_STATUS != 0xA0");
++
++	if (wait_for_sys_apll_dpll_lock(idtcm))
++		dev_warn(idtcm->dev,
++			 "Continuing while SYS APLL/DPLL is not locked");
+ }
+ 
+ static int _idtcm_gettime(struct idtcm_channel *channel,
+-			  struct timespec64 *ts)
++			  struct timespec64 *ts, u8 timeout)
+ {
+ 	struct idtcm *idtcm = channel->idtcm;
++	u16 tod_read_cmd = IDTCM_FW_REG(idtcm->fw_ver, V520, TOD_READ_PRIMARY_CMD);
+ 	u8 buf[TOD_BYTE_COUNT];
+-	u8 timeout = 10;
+ 	u8 trigger;
+ 	int err;
+ 
+-	err = idtcm_read(idtcm, channel->tod_read_primary,
+-			 TOD_READ_PRIMARY_CMD, &trigger, sizeof(trigger));
+-	if (err)
+-		return err;
+-
+-	trigger &= ~(TOD_READ_TRIGGER_MASK << TOD_READ_TRIGGER_SHIFT);
+-	trigger |= (1 << TOD_READ_TRIGGER_SHIFT);
+-	trigger &= ~TOD_READ_TRIGGER_MODE; /* single shot */
+-
+-	err = idtcm_write(idtcm, channel->tod_read_primary,
+-			  TOD_READ_PRIMARY_CMD, &trigger, sizeof(trigger));
+-	if (err)
+-		return err;
+-
+ 	/* wait trigger to be 0 */
+-	while (trigger & TOD_READ_TRIGGER_MASK) {
++	do {
++		if (timeout-- == 0)
++			return -EIO;
+ 
+ 		if (idtcm->calculate_overhead_flag)
+ 			idtcm->start_time = ktime_get_raw();
+ 
+ 		err = idtcm_read(idtcm, channel->tod_read_primary,
+-				 TOD_READ_PRIMARY_CMD, &trigger,
++				 tod_read_cmd, &trigger,
+ 				 sizeof(trigger));
+-
+ 		if (err)
+ 			return err;
+-
+-		if (--timeout == 0)
+-			return -EIO;
+-	}
++	} while (trigger & TOD_READ_TRIGGER_MASK);
+ 
+ 	err = idtcm_read(idtcm, channel->tod_read_primary,
+ 			 TOD_READ_PRIMARY, buf, sizeof(buf));
+-
+ 	if (err)
+ 		return err;
+ 
+@@ -312,6 +404,79 @@ static int _idtcm_gettime(struct idtcm_channel *channel,
+ 	return err;
+ }
+ 
++static int idtcm_extts_check_channel(struct idtcm* idtcm, u8 todn)
++{
++	struct idtcm_channel *ptp_channel, *extts_channel;
++	struct ptp_clock_event event;
++	struct timespec64 ts;
++	u32 dco_delay = 0;
++	int err;
++
++	extts_channel = &idtcm->channel[todn];
++	ptp_channel = idtcm->event_channel[todn];
++	if (extts_channel == ptp_channel)
++		dco_delay = ptp_channel->dco_delay;
++
++	err = _idtcm_gettime(extts_channel, &ts, 1);
++	if (err == 0) {
++		event.type = PTP_CLOCK_EXTTS;
++		event.index = todn;
++		event.timestamp = timespec64_to_ns(&ts) - dco_delay;
++		ptp_clock_event(ptp_channel->ptp_clock, &event);
++	}
++	return err;
++}
++
++static u8 idtcm_enable_extts_mask(struct idtcm_channel *channel,
++				    u8 extts_mask, bool enable)
++{
++	struct idtcm *idtcm = channel->idtcm;
++	int i, err;
++
++	for (i = 0; i < MAX_TOD; i++) {
++		u8 mask = 1 << i;
++		u8 refn = idtcm->channel[i].refn;
++
++		if (extts_mask & mask) {
++			/* check extts before disabling it */
++			if (enable == false) {
++				err = idtcm_extts_check_channel(idtcm, i);
++				/* trigger happened so we won't re-enable it */
++				if (err == 0)
++					extts_mask &= ~mask;
++			}
++			(void)idtcm_enable_extts(channel, i, refn, enable);
++		}
++	}
++
++	return extts_mask;
++}
++
++static int _idtcm_gettime_immediate(struct idtcm_channel *channel,
++				    struct timespec64 *ts)
++{
++	struct idtcm *idtcm = channel->idtcm;
++	u8 extts_mask = 0;
++	int err;
++
++	/* Disable extts */
++	if (idtcm->extts_mask) {
++		extts_mask = idtcm_enable_extts_mask(channel, idtcm->extts_mask,
++						     false);
++	}
++
++	err = _idtcm_set_scsr_read_trig(channel,
++					SCSR_TOD_READ_TRIG_SEL_IMMEDIATE, 0);
++	if (err == 0)
++		err = _idtcm_gettime(channel, ts, 10);
++
++	/* Re-enable extts */
++	if (extts_mask)
++		idtcm_enable_extts_mask(channel, extts_mask, true);
++
++	return err;
++}
++
+ static int _sync_pll_output(struct idtcm *idtcm,
+ 			    u8 pll,
+ 			    u8 sync_src,
+@@ -324,7 +489,7 @@ static int _sync_pll_output(struct idtcm *idtcm,
+ 	u16 sync_ctrl1;
+ 	u8 temp;
+ 
+-	if ((qn == 0) && (qn_plus_1 == 0))
++	if (qn == 0 && qn_plus_1 == 0)
+ 		return 0;
+ 
+ 	switch (pll) {
+@@ -389,7 +554,7 @@ static int _sync_pll_output(struct idtcm *idtcm,
+ 		return err;
+ 
+ 	/* PLL5 can have OUT8 as second additional output. */
+-	if ((pll == 5) && (qn_plus_1 != 0)) {
++	if (pll == 5 && qn_plus_1 != 0) {
+ 		err = idtcm_read(idtcm, 0, HW_Q8_CTRL_SPARE,
+ 				 &temp, sizeof(temp));
+ 		if (err)
+@@ -411,7 +576,7 @@ static int _sync_pll_output(struct idtcm *idtcm,
+ 	}
+ 
+ 	/* PLL6 can have OUT11 as second additional output. */
+-	if ((pll == 6) && (qn_plus_1 != 0)) {
++	if (pll == 6 && qn_plus_1 != 0) {
+ 		err = idtcm_read(idtcm, 0, HW_Q11_CTRL_SPARE,
+ 				 &temp, sizeof(temp));
+ 		if (err)
+@@ -439,49 +604,18 @@ static int _sync_pll_output(struct idtcm *idtcm,
+ 	return err;
+ }
+ 
+-static int sync_source_dpll_tod_pps(u16 tod_addr, u8 *sync_src)
+-{
+-	int err = 0;
+-
+-	switch (tod_addr) {
+-	case TOD_0:
+-		*sync_src = SYNC_SOURCE_DPLL0_TOD_PPS;
+-		break;
+-	case TOD_1:
+-		*sync_src = SYNC_SOURCE_DPLL1_TOD_PPS;
+-		break;
+-	case TOD_2:
+-		*sync_src = SYNC_SOURCE_DPLL2_TOD_PPS;
+-		break;
+-	case TOD_3:
+-		*sync_src = SYNC_SOURCE_DPLL3_TOD_PPS;
+-		break;
+-	default:
+-		err = -EINVAL;
+-	}
+-
+-	return err;
+-}
+-
+ static int idtcm_sync_pps_output(struct idtcm_channel *channel)
+ {
+ 	struct idtcm *idtcm = channel->idtcm;
+-
+ 	u8 pll;
+-	u8 sync_src;
+ 	u8 qn;
+ 	u8 qn_plus_1;
+ 	int err = 0;
+ 	u8 out8_mux = 0;
+ 	u8 out11_mux = 0;
+ 	u8 temp;
+-
+ 	u16 output_mask = channel->output_mask;
+ 
+-	err = sync_source_dpll_tod_pps(channel->tod_n, &sync_src);
+-	if (err)
+-		return err;
+-
+ 	err = idtcm_read(idtcm, 0, HW_Q8_CTRL_SPARE,
+ 			 &temp, sizeof(temp));
+ 	if (err)
+@@ -536,9 +670,9 @@ static int idtcm_sync_pps_output(struct idtcm_channel *channel)
+ 			}
+ 		}
+ 
+-		if ((qn != 0) || (qn_plus_1 != 0))
+-			err = _sync_pll_output(idtcm, pll, sync_src, qn,
+-					       qn_plus_1);
++		if (qn != 0 || qn_plus_1 != 0)
++			err = _sync_pll_output(idtcm, pll, channel->sync_src,
++					       qn, qn_plus_1);
+ 
+ 		if (err)
+ 			return err;
+@@ -552,7 +686,6 @@ static int _idtcm_set_dpll_hw_tod(struct idtcm_channel *channel,
+ 			       enum hw_tod_write_trig_sel wr_trig)
+ {
+ 	struct idtcm *idtcm = channel->idtcm;
+-
+ 	u8 buf[TOD_BYTE_COUNT];
+ 	u8 cmd;
+ 	int err;
+@@ -562,7 +695,6 @@ static int _idtcm_set_dpll_hw_tod(struct idtcm_channel *channel,
+ 	/* Configure HW TOD write trigger. */
+ 	err = idtcm_read(idtcm, channel->hw_dpll_n, HW_DPLL_TOD_CTRL_1,
+ 			 &cmd, sizeof(cmd));
+-
+ 	if (err)
+ 		return err;
+ 
+@@ -571,20 +703,16 @@ static int _idtcm_set_dpll_hw_tod(struct idtcm_channel *channel,
+ 
+ 	err = idtcm_write(idtcm, channel->hw_dpll_n, HW_DPLL_TOD_CTRL_1,
+ 			  &cmd, sizeof(cmd));
+-
+ 	if (err)
+ 		return err;
+ 
+ 	if (wr_trig  != HW_TOD_WR_TRIG_SEL_MSB) {
+-
+ 		err = timespec_to_char_array(&local_ts, buf, sizeof(buf));
+-
+ 		if (err)
+ 			return err;
+ 
+ 		err = idtcm_write(idtcm, channel->hw_dpll_n,
+ 				  HW_DPLL_TOD_OVR__0, buf, sizeof(buf));
+-
+ 		if (err)
+ 			return err;
+ 	}
+@@ -596,11 +724,11 @@ static int _idtcm_set_dpll_hw_tod(struct idtcm_channel *channel,
+ 			  &cmd, sizeof(cmd));
+ 
+ 	if (wr_trig == HW_TOD_WR_TRIG_SEL_MSB) {
+-
+ 		if (idtcm->calculate_overhead_flag) {
+ 			/* Assumption: I2C @ 400KHz */
+-			total_overhead_ns =  ktime_to_ns(ktime_get_raw()
+-							 - idtcm->start_time)
++			ktime_t diff = ktime_sub(ktime_get_raw(),
++						 idtcm->start_time);
++			total_overhead_ns =  ktime_to_ns(diff)
+ 					     + idtcm->tod_write_overhead_ns
+ 					     + SETTIME_CORRECTION;
+ 
+@@ -610,7 +738,6 @@ static int _idtcm_set_dpll_hw_tod(struct idtcm_channel *channel,
+ 		}
+ 
+ 		err = timespec_to_char_array(&local_ts, buf, sizeof(buf));
+-
+ 		if (err)
+ 			return err;
+ 
+@@ -634,7 +761,6 @@ static int _idtcm_set_dpll_scsr_tod(struct idtcm_channel *channel,
+ 	timespec64_add_ns(&local_ts, SETTIME_CORRECTION);
+ 
+ 	err = timespec_to_char_array(&local_ts, buf, sizeof(buf));
+-
+ 	if (err)
+ 		return err;
+ 
+@@ -670,12 +796,12 @@ static int _idtcm_set_dpll_scsr_tod(struct idtcm_channel *channel,
+ 		if (err)
+ 			return err;
+ 
+-		if (cmd == 0)
++		if ((cmd & TOD_WRITE_SELECTION_MASK) == 0)
+ 			break;
+ 
+ 		if (++count > 20) {
+-			dev_err(&idtcm->client->dev,
+-				"Timed out waiting for the write counter\n");
++			dev_err(idtcm->dev,
++				"Timed out waiting for the write counter");
+ 			return -EIO;
+ 		}
+ 	}
+@@ -683,49 +809,73 @@ static int _idtcm_set_dpll_scsr_tod(struct idtcm_channel *channel,
+ 	return 0;
+ }
+ 
+-static int _idtcm_settime(struct idtcm_channel *channel,
+-			  struct timespec64 const *ts,
+-			  enum hw_tod_write_trig_sel wr_trig)
++static int get_output_base_addr(enum fw_version ver, u8 outn)
+ {
+-	struct idtcm *idtcm = channel->idtcm;
+-	int err;
+-	int i;
+-	u8 trig_sel;
+-
+-	err = _idtcm_set_dpll_hw_tod(channel, ts, wr_trig);
+-
+-	if (err)
+-		return err;
+-
+-	/* Wait for the operation to complete. */
+-	for (i = 0; i < 10000; i++) {
+-		err = idtcm_read(idtcm, channel->hw_dpll_n,
+-				 HW_DPLL_TOD_CTRL_1, &trig_sel,
+-				 sizeof(trig_sel));
++	int base;
+ 
+-		if (err)
+-			return err;
++	switch (outn) {
++	case 0:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_0);
++		break;
++	case 1:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_1);
++		break;
++	case 2:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_2);
++		break;
++	case 3:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_3);
++		break;
++	case 4:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_4);
++		break;
++	case 5:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_5);
++		break;
++	case 6:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_6);
++		break;
++	case 7:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_7);
++		break;
++	case 8:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_8);
++		break;
++	case 9:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_9);
++		break;
++	case 10:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_10);
++		break;
++	case 11:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_11);
++		break;
++	default:
++		base = -EINVAL;
++	}
+ 
+-		if (trig_sel == 0x4a)
+-			break;
++	return base;
++}
+ 
+-		err = 1;
+-	}
++static int _idtcm_settime_deprecated(struct idtcm_channel *channel,
++				     struct timespec64 const *ts)
++{
++	struct idtcm *idtcm = channel->idtcm;
++	int err;
+ 
++	err = _idtcm_set_dpll_hw_tod(channel, ts, HW_TOD_WR_TRIG_SEL_MSB);
+ 	if (err) {
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
++		dev_err(idtcm->dev,
++			"%s: Set HW ToD failed", __func__);
+ 		return err;
+ 	}
+ 
+ 	return idtcm_sync_pps_output(channel);
+ }
+ 
+-static int _idtcm_settime_v487(struct idtcm_channel *channel,
+-			       struct timespec64 const *ts,
+-			       enum scsr_tod_write_type_sel wr_type)
++static int _idtcm_settime(struct idtcm_channel *channel,
++			  struct timespec64 const *ts,
++			  enum scsr_tod_write_type_sel wr_type)
+ {
+ 	return _idtcm_set_dpll_scsr_tod(channel, ts,
+ 					SCSR_TOD_WR_TRIG_SEL_IMMEDIATE,
+@@ -738,7 +888,6 @@ static int idtcm_set_phase_pull_in_offset(struct idtcm_channel *channel,
+ 	int err;
+ 	int i;
+ 	struct idtcm *idtcm = channel->idtcm;
+-
+ 	u8 buf[4];
+ 
+ 	for (i = 0; i < 4; i++) {
+@@ -758,7 +907,6 @@ static int idtcm_set_phase_pull_in_slope_limit(struct idtcm_channel *channel,
+ 	int err;
+ 	u8 i;
+ 	struct idtcm *idtcm = channel->idtcm;
+-
+ 	u8 buf[3];
+ 
+ 	if (max_ffo_ppb & 0xff000000)
+@@ -779,12 +927,10 @@ static int idtcm_start_phase_pull_in(struct idtcm_channel *channel)
+ {
+ 	int err;
+ 	struct idtcm *idtcm = channel->idtcm;
+-
+ 	u8 buf;
+ 
+ 	err = idtcm_read(idtcm, channel->dpll_phase_pull_in, PULL_IN_CTRL,
+ 			 &buf, sizeof(buf));
+-
+ 	if (err)
+ 		return err;
+ 
+@@ -806,12 +952,10 @@ static int idtcm_do_phase_pull_in(struct idtcm_channel *channel,
+ 	int err;
+ 
+ 	err = idtcm_set_phase_pull_in_offset(channel, -offset_ns);
+-
+ 	if (err)
+ 		return err;
+ 
+ 	err = idtcm_set_phase_pull_in_slope_limit(channel, max_ffo_ppb);
+-
+ 	if (err)
+ 		return err;
+ 
+@@ -827,9 +971,9 @@ static int set_tod_write_overhead(struct idtcm_channel *channel)
+ 	s64 lowest_ns = 0;
+ 	int err;
+ 	u8 i;
+-
+ 	ktime_t start;
+ 	ktime_t stop;
++	ktime_t diff;
+ 
+ 	char buf[TOD_BYTE_COUNT] = {0};
+ 
+@@ -838,18 +982,18 @@ static int set_tod_write_overhead(struct idtcm_channel *channel)
+ 		    buf, sizeof(buf));
+ 
+ 	for (i = 0; i < TOD_WRITE_OVERHEAD_COUNT_MAX; i++) {
+-
+ 		start = ktime_get_raw();
+ 
+ 		err = idtcm_write(idtcm, channel->hw_dpll_n,
+ 				  HW_DPLL_TOD_OVR__0, buf, sizeof(buf));
+-
+ 		if (err)
+ 			return err;
+ 
+ 		stop = ktime_get_raw();
+ 
+-		current_ns = ktime_to_ns(stop - start);
++		diff = ktime_sub(stop, start);
++
++		current_ns = ktime_to_ns(diff);
+ 
+ 		if (i == 0) {
+ 			lowest_ns = current_ns;
+@@ -864,25 +1008,23 @@ static int set_tod_write_overhead(struct idtcm_channel *channel)
+ 	return err;
+ }
+ 
+-static int _idtcm_adjtime(struct idtcm_channel *channel, s64 delta)
++static int _idtcm_adjtime_deprecated(struct idtcm_channel *channel, s64 delta)
+ {
+ 	int err;
+ 	struct idtcm *idtcm = channel->idtcm;
+ 	struct timespec64 ts;
+ 	s64 now;
+ 
+-	if (abs(delta) < PHASE_PULL_IN_THRESHOLD_NS) {
++	if (abs(delta) < PHASE_PULL_IN_THRESHOLD_NS_DEPRECATED) {
+ 		err = idtcm_do_phase_pull_in(channel, delta, 0);
+ 	} else {
+ 		idtcm->calculate_overhead_flag = 1;
+ 
+ 		err = set_tod_write_overhead(channel);
+-
+ 		if (err)
+ 			return err;
+ 
+-		err = _idtcm_gettime(channel, &ts);
+-
++		err = _idtcm_gettime_immediate(channel, &ts);
+ 		if (err)
+ 			return err;
+ 
+@@ -891,7 +1033,7 @@ static int _idtcm_adjtime(struct idtcm_channel *channel, s64 delta)
+ 
+ 		ts = ns_to_timespec64(now);
+ 
+-		err = _idtcm_settime(channel, &ts, HW_TOD_WR_TRIG_SEL_MSB);
++		err = _idtcm_settime_deprecated(channel, &ts);
+ 	}
+ 
+ 	return err;
+@@ -899,13 +1041,33 @@ static int _idtcm_adjtime(struct idtcm_channel *channel, s64 delta)
+ 
+ static int idtcm_state_machine_reset(struct idtcm *idtcm)
+ {
+-	int err;
+ 	u8 byte = SM_RESET_CMD;
++	u32 status = 0;
++	int err;
++	u8 i;
++
++	clear_boot_status(idtcm);
++
++	err = idtcm_write(idtcm, RESET_CTRL,
++			  IDTCM_FW_REG(idtcm->fw_ver, V520, SM_RESET),
++			  &byte, sizeof(byte));
+ 
+-	err = idtcm_write(idtcm, RESET_CTRL, SM_RESET, &byte, sizeof(byte));
++	if (!err) {
++		for (i = 0; i < 30; i++) {
++			msleep_interruptible(100);
++			read_boot_status(idtcm, &status);
+ 
+-	if (!err)
+-		msleep_interruptible(POST_SM_RESET_DELAY_MS);
++			if (status == 0xA0) {
++				dev_dbg(idtcm->dev,
++					"SM_RESET completed in %d ms", i * 100);
++				break;
++			}
++		}
++
++		if (!status)
++			dev_err(idtcm->dev,
++				"Timed out waiting for CM_RESET to complete");
++	}
+ 
+ 	return err;
+ }
+@@ -1000,12 +1162,12 @@ static int set_pll_output_mask(struct idtcm *idtcm, u16 addr, u8 val)
+ static int set_tod_ptp_pll(struct idtcm *idtcm, u8 index, u8 pll)
+ {
+ 	if (index >= MAX_TOD) {
+-		dev_err(&idtcm->client->dev, "ToD%d not supported\n", index);
++		dev_err(idtcm->dev, "ToD%d not supported", index);
+ 		return -EINVAL;
+ 	}
+ 
+ 	if (pll >= MAX_PLL) {
+-		dev_err(&idtcm->client->dev, "Pll%d not supported\n", pll);
++		dev_err(idtcm->dev, "Pll%d not supported", pll);
+ 		return -EINVAL;
+ 	}
+ 
+@@ -1023,8 +1185,7 @@ static int check_and_set_masks(struct idtcm *idtcm,
+ 	switch (regaddr) {
+ 	case TOD_MASK_ADDR:
+ 		if ((val & 0xf0) || !(val & 0x0f)) {
+-			dev_err(&idtcm->client->dev,
+-				"Invalid TOD mask 0x%hhx\n", val);
++			dev_err(idtcm->dev, "Invalid TOD mask 0x%02x", val);
+ 			err = -EINVAL;
+ 		} else {
+ 			idtcm->tod_mask = val;
+@@ -1055,14 +1216,14 @@ static void display_pll_and_masks(struct idtcm *idtcm)
+ 	u8 i;
+ 	u8 mask;
+ 
+-	dev_dbg(&idtcm->client->dev, "tod_mask = 0x%02x\n", idtcm->tod_mask);
++	dev_dbg(idtcm->dev, "tod_mask = 0x%02x", idtcm->tod_mask);
+ 
+ 	for (i = 0; i < MAX_TOD; i++) {
+ 		mask = 1 << i;
+ 
+ 		if (mask & idtcm->tod_mask)
+-			dev_dbg(&idtcm->client->dev,
+-				"TOD%d pll = %d    output_mask = 0x%04x\n",
++			dev_dbg(idtcm->dev,
++				"TOD%d pll = %d    output_mask = 0x%04x",
+ 				i, idtcm->channel[i].pll,
+ 				idtcm->channel[i].output_mask);
+ 	}
+@@ -1071,6 +1232,7 @@ static void display_pll_and_masks(struct idtcm *idtcm)
+ static int idtcm_load_firmware(struct idtcm *idtcm,
+ 			       struct device *dev)
+ {
++	u16 scratch = IDTCM_FW_REG(idtcm->fw_ver, V520, SCRATCH);
+ 	char fname[128] = FW_FILENAME;
+ 	const struct firmware *fw;
+ 	struct idtcm_fwrc *rec;
+@@ -1083,30 +1245,24 @@ static int idtcm_load_firmware(struct idtcm *idtcm,
+ 	if (firmware) /* module parameter */
+ 		snprintf(fname, sizeof(fname), "%s", firmware);
+ 
+-	dev_dbg(&idtcm->client->dev, "requesting firmware '%s'\n", fname);
+-
++	dev_dbg(idtcm->dev, "requesting firmware '%s'", fname);
+ 	err = request_firmware(&fw, fname, dev);
+-
+ 	if (err) {
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
++		dev_err(idtcm->dev,
++			"Failed at line %d in %s!", __LINE__, __func__);
+ 		return err;
+ 	}
+ 
+-	dev_dbg(&idtcm->client->dev, "firmware size %zu bytes\n", fw->size);
+-
++	dev_dbg(idtcm->dev, "firmware size %zu bytes", fw->size);
+ 	rec = (struct idtcm_fwrc *) fw->data;
+ 
+-	if (fw->size > 0)
++	if (contains_full_configuration(idtcm, fw))
+ 		idtcm_state_machine_reset(idtcm);
+ 
+ 	for (len = fw->size; len > 0; len -= sizeof(*rec)) {
+-
+ 		if (rec->reserved) {
+-			dev_err(&idtcm->client->dev,
+-				"bad firmware, reserved field non-zero\n");
++			dev_err(idtcm->dev,
++				"bad firmware, reserved field non-zero");
+ 			err = -EINVAL;
+ 		} else {
+ 			regaddr = rec->hiaddr << 8;
+@@ -1124,13 +1280,11 @@ static int idtcm_load_firmware(struct idtcm *idtcm,
+ 			err = 0;
+ 
+ 			/* Top (status registers) and bottom are read-only */
+-			if ((regaddr < GPIO_USER_CONTROL)
+-			    || (regaddr >= SCRATCH))
++			if (regaddr < GPIO_USER_CONTROL || regaddr >= scratch)
+ 				continue;
+ 
+ 			/* Page size 128, last 4 bytes of page skipped */
+-			if (((loaddr > 0x7b) && (loaddr <= 0x7f))
+-			     || loaddr > 0xfb)
++			if ((loaddr > 0x7b && loaddr <= 0x7f) || loaddr > 0xfb)
+ 				continue;
+ 
+ 			err = idtcm_write(idtcm, regaddr, 0, &val, sizeof(val));
+@@ -1139,7 +1293,6 @@ static int idtcm_load_firmware(struct idtcm *idtcm,
+ 		if (err)
+ 			goto out;
+ 	}
+-
+ 	display_pll_and_masks(idtcm);
+ 
+ out:
+@@ -1151,12 +1304,19 @@ static int idtcm_output_enable(struct idtcm_channel *channel,
+ 			       bool enable, unsigned int outn)
+ {
+ 	struct idtcm *idtcm = channel->idtcm;
++	int base;
+ 	int err;
+ 	u8 val;
+ 
+-	err = idtcm_read(idtcm, OUTPUT_MODULE_FROM_INDEX(outn),
+-			 OUT_CTRL_1, &val, sizeof(val));
++	base = get_output_base_addr(idtcm->fw_ver, outn);
++
++	if (!(base > 0)) {
++		dev_err(idtcm->dev,
++			"%s - Unsupported out%d", __func__, outn);
++		return base;
++	}
+ 
++	err = idtcm_read(idtcm, (u16)base, OUT_CTRL_1, &val, sizeof(val));
+ 	if (err)
+ 		return err;
+ 
+@@ -1165,8 +1325,7 @@ static int idtcm_output_enable(struct idtcm_channel *channel,
+ 	else
+ 		val &= ~SQUELCH_DISABLE;
+ 
+-	return idtcm_write(idtcm, OUTPUT_MODULE_FROM_INDEX(outn),
+-			   OUT_CTRL_1, &val, sizeof(val));
++	return idtcm_write(idtcm, (u16)base, OUT_CTRL_1, &val, sizeof(val));
+ }
+ 
+ static int idtcm_output_mask_enable(struct idtcm_channel *channel,
+@@ -1180,11 +1339,8 @@ static int idtcm_output_mask_enable(struct idtcm_channel *channel,
+ 	outn = 0;
+ 
+ 	while (mask) {
+-
+ 		if (mask & 0x1) {
+-
+ 			err = idtcm_output_enable(channel, enable, outn);
+-
+ 			if (err)
+ 				return err;
+ 		}
+@@ -1197,16 +1353,44 @@ static int idtcm_output_mask_enable(struct idtcm_channel *channel,
+ }
+ 
+ static int idtcm_perout_enable(struct idtcm_channel *channel,
+-			       bool enable,
+-			       struct ptp_perout_request *perout)
++			       struct ptp_perout_request *perout,
++			       bool enable)
+ {
++	struct idtcm *idtcm = channel->idtcm;
+ 	unsigned int flags = perout->flags;
++	struct timespec64 ts = {0, 0};
++	int err;
+ 
+ 	if (flags == PEROUT_ENABLE_OUTPUT_MASK)
+-		return idtcm_output_mask_enable(channel, enable);
++		err = idtcm_output_mask_enable(channel, enable);
++	else
++		err = idtcm_output_enable(channel, enable, perout->index);
++
++	if (err) {
++		dev_err(idtcm->dev, "Unable to set output enable");
++		return err;
++	}
++
++	/* Align output to internal 1 PPS */
++	return _idtcm_settime(channel, &ts, SCSR_TOD_WR_TYPE_SEL_DELTA_PLUS);
++}
++
++static int idtcm_get_pll_mode(struct idtcm_channel *channel,
++			      enum pll_mode *pll_mode)
++{
++	struct idtcm *idtcm = channel->idtcm;
++	int err;
++	u8 dpll_mode;
++
++	err = idtcm_read(idtcm, channel->dpll_n,
++			 IDTCM_FW_REG(idtcm->fw_ver, V520, DPLL_MODE),
++			 &dpll_mode, sizeof(dpll_mode));
++	if (err)
++		return err;
++
++	*pll_mode = (dpll_mode >> PLL_MODE_SHIFT) & PLL_MODE_MASK;
+ 
+-	/* Enable/disable individual output instead */
+-	return idtcm_output_enable(channel, enable, perout->index);
++	return 0;
+ }
+ 
+ static int idtcm_set_pll_mode(struct idtcm_channel *channel,
+@@ -1216,7 +1400,8 @@ static int idtcm_set_pll_mode(struct idtcm_channel *channel,
+ 	int err;
+ 	u8 dpll_mode;
+ 
+-	err = idtcm_read(idtcm, channel->dpll_n, DPLL_MODE,
++	err = idtcm_read(idtcm, channel->dpll_n,
++			 IDTCM_FW_REG(idtcm->fw_ver, V520, DPLL_MODE),
+ 			 &dpll_mode, sizeof(dpll_mode));
+ 	if (err)
+ 		return err;
+@@ -1227,7 +1412,8 @@ static int idtcm_set_pll_mode(struct idtcm_channel *channel,
+ 
+ 	channel->pll_mode = pll_mode;
+ 
+-	err = idtcm_write(idtcm, channel->dpll_n, DPLL_MODE,
++	err = idtcm_write(idtcm, channel->dpll_n,
++			  IDTCM_FW_REG(idtcm->fw_ver, V520, DPLL_MODE),
+ 			  &dpll_mode, sizeof(dpll_mode));
+ 	if (err)
+ 		return err;
+@@ -1247,7 +1433,6 @@ static int idtcm_set_pll_mode(struct idtcm_channel *channel,
+ static int _idtcm_adjphase(struct idtcm_channel *channel, s32 delta_ns)
+ {
+ 	struct idtcm *idtcm = channel->idtcm;
+-
+ 	int err;
+ 	u8 i;
+ 	u8 buf[4] = {0};
+@@ -1255,21 +1440,11 @@ static int _idtcm_adjphase(struct idtcm_channel *channel, s32 delta_ns)
+ 	s64 offset_ps;
+ 
+ 	if (channel->pll_mode != PLL_MODE_WRITE_PHASE) {
+-
+ 		err = idtcm_set_pll_mode(channel, PLL_MODE_WRITE_PHASE);
+-
+ 		if (err)
+ 			return err;
+-
+-		channel->write_phase_ready = 0;
+-
+-		ptp_schedule_worker(channel->ptp_clock,
+-				    msecs_to_jiffies(WR_PHASE_SETUP_MS));
+ 	}
+ 
+-	if (!channel->write_phase_ready)
+-		delta_ns = 0;
+-
+ 	offset_ps = (s64)delta_ns * 1000;
+ 
+ 	/*
+@@ -1282,7 +1457,7 @@ static int _idtcm_adjphase(struct idtcm_channel *channel, s32 delta_ns)
+ 	else if (offset_ps < -MAX_ABS_WRITE_PHASE_PICOSECONDS)
+ 		offset_ps = -MAX_ABS_WRITE_PHASE_PICOSECONDS;
+ 
+-	phase_50ps = DIV_ROUND_CLOSEST(div64_s64(offset_ps, 50), 1);
++	phase_50ps = div_s64(offset_ps, 50);
+ 
+ 	for (i = 0; i < 4; i++) {
+ 		buf[i] = phase_50ps & 0xff;
+@@ -1299,7 +1474,6 @@ static int _idtcm_adjfine(struct idtcm_channel *channel, long scaled_ppm)
+ {
+ 	struct idtcm *idtcm = channel->idtcm;
+ 	u8 i;
+-	bool neg_adj = 0;
+ 	int err;
+ 	u8 buf[6] = {0};
+ 	s64 fcw;
+@@ -1323,18 +1497,11 @@ static int _idtcm_adjfine(struct idtcm_channel *channel, long scaled_ppm)
+ 	 * FCW = -------------
+ 	 *         111 * 2^4
+ 	 */
+-	if (scaled_ppm < 0) {
+-		neg_adj = 1;
+-		scaled_ppm = -scaled_ppm;
+-	}
+ 
+ 	/* 2 ^ -53 = 1.1102230246251565404236316680908e-16 */
+ 	fcw = scaled_ppm * 244140625ULL;
+ 
+-	fcw = div_u64(fcw, 1776);
+-
+-	if (neg_adj)
+-		fcw = -fcw;
++	fcw = div_s64(fcw, 1776);
+ 
+ 	for (i = 0; i < 6; i++) {
+ 		buf[i] = fcw & 0xff;
+@@ -1349,180 +1516,136 @@ static int _idtcm_adjfine(struct idtcm_channel *channel, long scaled_ppm)
+ 
+ static int idtcm_gettime(struct ptp_clock_info *ptp, struct timespec64 *ts)
+ {
+-	struct idtcm_channel *channel =
+-		container_of(ptp, struct idtcm_channel, caps);
++	struct idtcm_channel *channel = container_of(ptp, struct idtcm_channel, caps);
+ 	struct idtcm *idtcm = channel->idtcm;
+ 	int err;
+ 
+-	mutex_lock(&idtcm->reg_lock);
+-
+-	err = _idtcm_gettime(channel, ts);
++	mutex_lock(idtcm->lock);
++	err = _idtcm_gettime_immediate(channel, ts);
++	mutex_unlock(idtcm->lock);
+ 
+ 	if (err)
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
+-
+-	mutex_unlock(&idtcm->reg_lock);
++		dev_err(idtcm->dev, "Failed at line %d in %s!",
++			__LINE__, __func__);
+ 
+ 	return err;
+ }
+ 
+-static int idtcm_settime(struct ptp_clock_info *ptp,
+-			 const struct timespec64 *ts)
++static int idtcm_settime_deprecated(struct ptp_clock_info *ptp,
++				    const struct timespec64 *ts)
+ {
+-	struct idtcm_channel *channel =
+-		container_of(ptp, struct idtcm_channel, caps);
++	struct idtcm_channel *channel = container_of(ptp, struct idtcm_channel, caps);
+ 	struct idtcm *idtcm = channel->idtcm;
+ 	int err;
+ 
+-	mutex_lock(&idtcm->reg_lock);
+-
+-	err = _idtcm_settime(channel, ts, HW_TOD_WR_TRIG_SEL_MSB);
++	mutex_lock(idtcm->lock);
++	err = _idtcm_settime_deprecated(channel, ts);
++	mutex_unlock(idtcm->lock);
+ 
+ 	if (err)
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
+-
+-	mutex_unlock(&idtcm->reg_lock);
++		dev_err(idtcm->dev,
++			"Failed at line %d in %s!", __LINE__, __func__);
+ 
+ 	return err;
+ }
+ 
+-static int idtcm_settime_v487(struct ptp_clock_info *ptp,
++static int idtcm_settime(struct ptp_clock_info *ptp,
+ 			 const struct timespec64 *ts)
+ {
+-	struct idtcm_channel *channel =
+-		container_of(ptp, struct idtcm_channel, caps);
++	struct idtcm_channel *channel = container_of(ptp, struct idtcm_channel, caps);
+ 	struct idtcm *idtcm = channel->idtcm;
+ 	int err;
+ 
+-	mutex_lock(&idtcm->reg_lock);
+-
+-	err = _idtcm_settime_v487(channel, ts, SCSR_TOD_WR_TYPE_SEL_ABSOLUTE);
++	mutex_lock(idtcm->lock);
++	err = _idtcm_settime(channel, ts, SCSR_TOD_WR_TYPE_SEL_ABSOLUTE);
++	mutex_unlock(idtcm->lock);
+ 
+ 	if (err)
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
+-
+-	mutex_unlock(&idtcm->reg_lock);
++		dev_err(idtcm->dev,
++			"Failed at line %d in %s!", __LINE__, __func__);
+ 
+ 	return err;
+ }
+ 
+-static int idtcm_adjtime(struct ptp_clock_info *ptp, s64 delta)
++static int idtcm_adjtime_deprecated(struct ptp_clock_info *ptp, s64 delta)
+ {
+-	struct idtcm_channel *channel =
+-		container_of(ptp, struct idtcm_channel, caps);
++	struct idtcm_channel *channel = container_of(ptp, struct idtcm_channel, caps);
+ 	struct idtcm *idtcm = channel->idtcm;
+ 	int err;
+ 
+-	mutex_lock(&idtcm->reg_lock);
+-
+-	err = _idtcm_adjtime(channel, delta);
++	mutex_lock(idtcm->lock);
++	err = _idtcm_adjtime_deprecated(channel, delta);
++	mutex_unlock(idtcm->lock);
+ 
+ 	if (err)
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
+-
+-	mutex_unlock(&idtcm->reg_lock);
++		dev_err(idtcm->dev,
++			"Failed at line %d in %s!", __LINE__, __func__);
+ 
+ 	return err;
+ }
+ 
+-static int idtcm_adjtime_v487(struct ptp_clock_info *ptp, s64 delta)
++static int idtcm_adjtime(struct ptp_clock_info *ptp, s64 delta)
+ {
+-	struct idtcm_channel *channel =
+-		container_of(ptp, struct idtcm_channel, caps);
++	struct idtcm_channel *channel = container_of(ptp, struct idtcm_channel, caps);
+ 	struct idtcm *idtcm = channel->idtcm;
+ 	struct timespec64 ts;
+ 	enum scsr_tod_write_type_sel type;
+ 	int err;
+ 
+-	if (abs(delta) < PHASE_PULL_IN_THRESHOLD_NS_V487) {
+-		err = idtcm_do_phase_pull_in(channel, delta, 0);
+-		if (err)
+-			dev_err(&idtcm->client->dev,
+-				"Failed at line %d in func %s!\n",
+-				__LINE__,
+-				__func__);
+-		return err;
+-	}
++	mutex_lock(idtcm->lock);
+ 
+-	if (delta >= 0) {
+-		ts = ns_to_timespec64(delta);
+-		type = SCSR_TOD_WR_TYPE_SEL_DELTA_PLUS;
++	if (abs(delta) < PHASE_PULL_IN_THRESHOLD_NS) {
++		err = idtcm_do_phase_pull_in(channel, delta, 0);
+ 	} else {
+-		ts = ns_to_timespec64(-delta);
+-		type = SCSR_TOD_WR_TYPE_SEL_DELTA_MINUS;
++		if (delta >= 0) {
++			ts = ns_to_timespec64(delta);
++			type = SCSR_TOD_WR_TYPE_SEL_DELTA_PLUS;
++		} else {
++			ts = ns_to_timespec64(-delta);
++			type = SCSR_TOD_WR_TYPE_SEL_DELTA_MINUS;
++		}
++		err = _idtcm_settime(channel, &ts, type);
+ 	}
+ 
+-	mutex_lock(&idtcm->reg_lock);
+-
+-	err = _idtcm_settime_v487(channel, &ts, type);
++	mutex_unlock(idtcm->lock);
+ 
+ 	if (err)
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
+-
+-	mutex_unlock(&idtcm->reg_lock);
++		dev_err(idtcm->dev,
++			"Failed at line %d in %s!", __LINE__, __func__);
+ 
+ 	return err;
+ }
+ 
+ static int idtcm_adjphase(struct ptp_clock_info *ptp, s32 delta)
+ {
+-	struct idtcm_channel *channel =
+-		container_of(ptp, struct idtcm_channel, caps);
+-
++	struct idtcm_channel *channel = container_of(ptp, struct idtcm_channel, caps);
+ 	struct idtcm *idtcm = channel->idtcm;
+-
+ 	int err;
+ 
+-	mutex_lock(&idtcm->reg_lock);
+-
++	mutex_lock(idtcm->lock);
+ 	err = _idtcm_adjphase(channel, delta);
++	mutex_unlock(idtcm->lock);
+ 
+ 	if (err)
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
+-
+-	mutex_unlock(&idtcm->reg_lock);
++		dev_err(idtcm->dev,
++			"Failed at line %d in %s!", __LINE__, __func__);
+ 
+ 	return err;
+ }
+ 
+ static int idtcm_adjfine(struct ptp_clock_info *ptp,  long scaled_ppm)
+ {
+-	struct idtcm_channel *channel =
+-		container_of(ptp, struct idtcm_channel, caps);
+-
++	struct idtcm_channel *channel = container_of(ptp, struct idtcm_channel, caps);
+ 	struct idtcm *idtcm = channel->idtcm;
+-
+ 	int err;
+ 
+-	mutex_lock(&idtcm->reg_lock);
+-
++	mutex_lock(idtcm->lock);
+ 	err = _idtcm_adjfine(channel, scaled_ppm);
++	mutex_unlock(idtcm->lock);
+ 
+ 	if (err)
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
+-
+-	mutex_unlock(&idtcm->reg_lock);
++		dev_err(idtcm->dev,
++			"Failed at line %d in %s!", __LINE__, __func__);
+ 
+ 	return err;
+ }
+@@ -1530,262 +1653,36 @@ static int idtcm_adjfine(struct ptp_clock_info *ptp,  long scaled_ppm)
+ static int idtcm_enable(struct ptp_clock_info *ptp,
+ 			struct ptp_clock_request *rq, int on)
+ {
+-	int err;
++	struct idtcm_channel *channel = container_of(ptp, struct idtcm_channel, caps);
++	struct idtcm *idtcm = channel->idtcm;
++	int err = -EOPNOTSUPP;
+ 
+-	struct idtcm_channel *channel =
+-		container_of(ptp, struct idtcm_channel, caps);
++	mutex_lock(idtcm->lock);
+ 
+ 	switch (rq->type) {
+ 	case PTP_CLK_REQ_PEROUT:
+-		if (!on) {
+-			err = idtcm_perout_enable(channel, false, &rq->perout);
+-			if (err)
+-				dev_err(&channel->idtcm->client->dev,
+-					"Failed at line %d in func %s!\n",
+-					__LINE__,
+-					__func__);
+-			return err;
+-		}
+-
++		if (!on)
++			err = idtcm_perout_enable(channel, &rq->perout, false);
+ 		/* Only accept a 1-PPS aligned to the second. */
+-		if (rq->perout.start.nsec || rq->perout.period.sec != 1 ||
+-		    rq->perout.period.nsec)
+-			return -ERANGE;
+-
+-		err = idtcm_perout_enable(channel, true, &rq->perout);
+-		if (err)
+-			dev_err(&channel->idtcm->client->dev,
+-				"Failed at line %d in func %s!\n",
+-				__LINE__,
+-				__func__);
+-		return err;
+-	default:
++		else if (rq->perout.start.nsec || rq->perout.period.sec != 1 ||
++			 rq->perout.period.nsec)
++			err = -ERANGE;
++		else
++			err = idtcm_perout_enable(channel, &rq->perout, true);
+ 		break;
+-	}
+-
+-	return -EOPNOTSUPP;
+-}
+-
+-static int _enable_pll_tod_sync(struct idtcm *idtcm,
+-				u8 pll,
+-				u8 sync_src,
+-				u8 qn,
+-				u8 qn_plus_1)
+-{
+-	int err;
+-	u8 val;
+-	u16 dpll;
+-	u16 out0 = 0, out1 = 0;
+-
+-	if ((qn == 0) && (qn_plus_1 == 0))
+-		return 0;
+-
+-	switch (pll) {
+-	case 0:
+-		dpll = DPLL_0;
+-		if (qn)
+-			out0 = OUTPUT_0;
+-		if (qn_plus_1)
+-			out1 = OUTPUT_1;
+-		break;
+-	case 1:
+-		dpll = DPLL_1;
+-		if (qn)
+-			out0 = OUTPUT_2;
+-		if (qn_plus_1)
+-			out1 = OUTPUT_3;
+-		break;
+-	case 2:
+-		dpll = DPLL_2;
+-		if (qn)
+-			out0 = OUTPUT_4;
+-		if (qn_plus_1)
+-			out1 = OUTPUT_5;
+-		break;
+-	case 3:
+-		dpll = DPLL_3;
+-		if (qn)
+-			out0 = OUTPUT_6;
+-		if (qn_plus_1)
+-			out1 = OUTPUT_7;
+-		break;
+-	case 4:
+-		dpll = DPLL_4;
+-		if (qn)
+-			out0 = OUTPUT_8;
+-		break;
+-	case 5:
+-		dpll = DPLL_5;
+-		if (qn)
+-			out0 = OUTPUT_9;
+-		if (qn_plus_1)
+-			out1 = OUTPUT_8;
+-		break;
+-	case 6:
+-		dpll = DPLL_6;
+-		if (qn)
+-			out0 = OUTPUT_10;
+-		if (qn_plus_1)
+-			out1 = OUTPUT_11;
+-		break;
+-	case 7:
+-		dpll = DPLL_7;
+-		if (qn)
+-			out0 = OUTPUT_11;
++	case PTP_CLK_REQ_EXTTS:
++		err = idtcm_enable_extts(channel, rq->extts.index,
++					 rq->extts.rsv[0], on);
+ 		break;
+ 	default:
+-		return -EINVAL;
+-	}
+-
+-	/*
+-	 * Enable OUTPUT OUT_SYNC.
+-	 */
+-	if (out0) {
+-		err = idtcm_read(idtcm, out0, OUT_CTRL_1, &val, sizeof(val));
+-
+-		if (err)
+-			return err;
+-
+-		val &= ~OUT_SYNC_DISABLE;
+-
+-		err = idtcm_write(idtcm, out0, OUT_CTRL_1, &val, sizeof(val));
+-
+-		if (err)
+-			return err;
+-	}
+-
+-	if (out1) {
+-		err = idtcm_read(idtcm, out1, OUT_CTRL_1, &val, sizeof(val));
+-
+-		if (err)
+-			return err;
+-
+-		val &= ~OUT_SYNC_DISABLE;
+-
+-		err = idtcm_write(idtcm, out1, OUT_CTRL_1, &val, sizeof(val));
+-
+-		if (err)
+-			return err;
+-	}
+-
+-	/* enable dpll sync tod pps, must be set before dpll_mode */
+-	err = idtcm_read(idtcm, dpll, DPLL_TOD_SYNC_CFG, &val, sizeof(val));
+-	if (err)
+-		return err;
+-
+-	val &= ~(TOD_SYNC_SOURCE_MASK << TOD_SYNC_SOURCE_SHIFT);
+-	val |= (sync_src << TOD_SYNC_SOURCE_SHIFT);
+-	val |= TOD_SYNC_EN;
+-
+-	return idtcm_write(idtcm, dpll, DPLL_TOD_SYNC_CFG, &val, sizeof(val));
+-}
+-
+-static int idtcm_enable_tod_sync(struct idtcm_channel *channel)
+-{
+-	struct idtcm *idtcm = channel->idtcm;
+-
+-	u8 pll;
+-	u8 sync_src;
+-	u8 qn;
+-	u8 qn_plus_1;
+-	u8 cfg;
+-	int err = 0;
+-	u16 output_mask = channel->output_mask;
+-	u8 out8_mux = 0;
+-	u8 out11_mux = 0;
+-	u8 temp;
+-
+-	/*
+-	 * set tod_out_sync_enable to 0.
+-	 */
+-	err = idtcm_read(idtcm, channel->tod_n, TOD_CFG, &cfg, sizeof(cfg));
+-	if (err)
+-		return err;
+-
+-	cfg &= ~TOD_OUT_SYNC_ENABLE;
+-
+-	err = idtcm_write(idtcm, channel->tod_n, TOD_CFG, &cfg, sizeof(cfg));
+-	if (err)
+-		return err;
+-
+-	switch (channel->tod_n) {
+-	case TOD_0:
+-		sync_src = 0;
+-		break;
+-	case TOD_1:
+-		sync_src = 1;
+-		break;
+-	case TOD_2:
+-		sync_src = 2;
+ 		break;
+-	case TOD_3:
+-		sync_src = 3;
+-		break;
+-	default:
+-		return -EINVAL;
+ 	}
+ 
+-	err = idtcm_read(idtcm, 0, HW_Q8_CTRL_SPARE,
+-			 &temp, sizeof(temp));
+-	if (err)
+-		return err;
+-
+-	if ((temp & Q9_TO_Q8_FANOUT_AND_CLOCK_SYNC_ENABLE_MASK) ==
+-	    Q9_TO_Q8_FANOUT_AND_CLOCK_SYNC_ENABLE_MASK)
+-		out8_mux = 1;
++	mutex_unlock(idtcm->lock);
+ 
+-	err = idtcm_read(idtcm, 0, HW_Q11_CTRL_SPARE,
+-			 &temp, sizeof(temp));
+ 	if (err)
+-		return err;
+-
+-	if ((temp & Q10_TO_Q11_FANOUT_AND_CLOCK_SYNC_ENABLE_MASK) ==
+-	    Q10_TO_Q11_FANOUT_AND_CLOCK_SYNC_ENABLE_MASK)
+-		out11_mux = 1;
+-
+-	for (pll = 0; pll < 8; pll++) {
+-		qn = 0;
+-		qn_plus_1 = 0;
+-
+-		if (pll < 4) {
+-			/* First 4 pll has 2 outputs */
+-			qn = output_mask & 0x1;
+-			output_mask = output_mask >> 1;
+-			qn_plus_1 = output_mask & 0x1;
+-			output_mask = output_mask >> 1;
+-		} else if (pll == 4) {
+-			if (out8_mux == 0) {
+-				qn = output_mask & 0x1;
+-				output_mask = output_mask >> 1;
+-			}
+-		} else if (pll == 5) {
+-			if (out8_mux) {
+-				qn_plus_1 = output_mask & 0x1;
+-				output_mask = output_mask >> 1;
+-			}
+-			qn = output_mask & 0x1;
+-			output_mask = output_mask >> 1;
+-		} else if (pll == 6) {
+-			qn = output_mask & 0x1;
+-			output_mask = output_mask >> 1;
+-			if (out11_mux) {
+-				qn_plus_1 = output_mask & 0x1;
+-				output_mask = output_mask >> 1;
+-			}
+-		} else if (pll == 7) {
+-			if (out11_mux == 0) {
+-				qn = output_mask & 0x1;
+-				output_mask = output_mask >> 1;
+-			}
+-		}
+-
+-		if ((qn != 0) || (qn_plus_1 != 0))
+-			err = _enable_pll_tod_sync(idtcm, pll, sync_src, qn,
+-					       qn_plus_1);
+-
+-		if (err)
+-			return err;
+-	}
++		dev_err(channel->idtcm->dev,
++			"Failed in %s with err %d!\n", __func__, err);
+ 
+ 	return err;
+ }
+@@ -1793,27 +1690,39 @@ static int idtcm_enable_tod_sync(struct idtcm_channel *channel)
+ static int idtcm_enable_tod(struct idtcm_channel *channel)
+ {
+ 	struct idtcm *idtcm = channel->idtcm;
++	u16 tod_cfg = IDTCM_FW_REG(idtcm->fw_ver, V520, TOD_CFG);
+ 	struct timespec64 ts = {0, 0};
+ 	u8 cfg;
+ 	int err;
+ 
++	/* STEELAI-366 - Temporary workaround for ts2phc compatibility */
++	if (0) {
++		err = idtcm_output_mask_enable(channel, false);
++		if (err)
++			return err;
++	}
++
+ 	/*
+ 	 * Start the TOD clock ticking.
+ 	 */
+-	err = idtcm_read(idtcm, channel->tod_n, TOD_CFG, &cfg, sizeof(cfg));
++	err = idtcm_read(idtcm, channel->tod_n, tod_cfg, &cfg, sizeof(cfg));
+ 	if (err)
+ 		return err;
+ 
+ 	cfg |= TOD_ENABLE;
+ 
+-	err = idtcm_write(idtcm, channel->tod_n, TOD_CFG, &cfg, sizeof(cfg));
++	err = idtcm_write(idtcm, channel->tod_n, tod_cfg, &cfg, sizeof(cfg));
+ 	if (err)
+ 		return err;
+ 
+-	return _idtcm_settime(channel, &ts, HW_TOD_WR_TRIG_SEL_MSB);
++	if (idtcm->fw_ver < V487)
++		return _idtcm_settime_deprecated(channel, &ts);
++	else
++		return _idtcm_settime(channel, &ts,
++				      SCSR_TOD_WR_TYPE_SEL_ABSOLUTE);
+ }
+ 
+-static void idtcm_display_version_info(struct idtcm *idtcm)
++static void idtcm_set_version_info(struct idtcm *idtcm)
+ {
+ 	u8 major;
+ 	u8 minor;
+@@ -1821,7 +1730,6 @@ static void idtcm_display_version_info(struct idtcm *idtcm)
+ 	u16 product_id;
+ 	u8 hw_rev_id;
+ 	u8 config_select;
+-	char *fmt = "%d.%d.%d, Id: 0x%04x  HW Rev: %d  OTP Config Select: %d\n";
+ 
+ 	idtcm_read_major_release(idtcm, &major);
+ 	idtcm_read_minor_release(idtcm, &minor);
+@@ -1835,38 +1743,43 @@ static void idtcm_display_version_info(struct idtcm *idtcm)
+ 	snprintf(idtcm->version, sizeof(idtcm->version), "%u.%u.%u",
+ 		 major, minor, hotfix);
+ 
+-	dev_info(&idtcm->client->dev, fmt, major, minor, hotfix,
++	idtcm->fw_ver = idtcm_fw_version(idtcm->version);
++
++	dev_info(idtcm->dev,
++		 "%d.%d.%d, Id: 0x%04x  HW Rev: %d  OTP Config Select: %d",
++		 major, minor, hotfix,
+ 		 product_id, hw_rev_id, config_select);
+ }
+ 
+-static const struct ptp_clock_info idtcm_caps_v487 = {
++static const struct ptp_clock_info idtcm_caps = {
+ 	.owner		= THIS_MODULE,
+ 	.max_adj	= 244000,
+ 	.n_per_out	= 12,
++	.n_ext_ts	= MAX_TOD,
+ 	.adjphase	= &idtcm_adjphase,
+ 	.adjfine	= &idtcm_adjfine,
+-	.adjtime	= &idtcm_adjtime_v487,
++	.adjtime	= &idtcm_adjtime,
+ 	.gettime64	= &idtcm_gettime,
+-	.settime64	= &idtcm_settime_v487,
++	.settime64	= &idtcm_settime,
+ 	.enable		= &idtcm_enable,
+-	.do_aux_work	= &set_write_phase_ready,
+ };
+ 
+-static const struct ptp_clock_info idtcm_caps = {
++static const struct ptp_clock_info idtcm_caps_deprecated = {
+ 	.owner		= THIS_MODULE,
+ 	.max_adj	= 244000,
+ 	.n_per_out	= 12,
++	.n_ext_ts	= MAX_TOD,
+ 	.adjphase	= &idtcm_adjphase,
+ 	.adjfine	= &idtcm_adjfine,
+-	.adjtime	= &idtcm_adjtime,
++	.adjtime	= &idtcm_adjtime_deprecated,
+ 	.gettime64	= &idtcm_gettime,
+-	.settime64	= &idtcm_settime,
++	.settime64	= &idtcm_settime_deprecated,
+ 	.enable		= &idtcm_enable,
+-	.do_aux_work	= &set_write_phase_ready,
+ };
+ 
+ static int configure_channel_pll(struct idtcm_channel *channel)
+ {
++	struct idtcm *idtcm = channel->idtcm;
+ 	int err = 0;
+ 
+ 	switch (channel->pll) {
+@@ -1888,7 +1801,7 @@ static int configure_channel_pll(struct idtcm_channel *channel)
+ 		break;
+ 	case 2:
+ 		channel->dpll_freq = DPLL_FREQ_2;
+-		channel->dpll_n = DPLL_2;
++		channel->dpll_n = IDTCM_FW_REG(idtcm->fw_ver, V520, DPLL_2);
+ 		channel->hw_dpll_n = HW_DPLL_2;
+ 		channel->dpll_phase = DPLL_PHASE_2;
+ 		channel->dpll_ctrl_n = DPLL_CTRL_2;
+@@ -1904,7 +1817,7 @@ static int configure_channel_pll(struct idtcm_channel *channel)
+ 		break;
+ 	case 4:
+ 		channel->dpll_freq = DPLL_FREQ_4;
+-		channel->dpll_n = DPLL_4;
++		channel->dpll_n = IDTCM_FW_REG(idtcm->fw_ver, V520, DPLL_4);
+ 		channel->hw_dpll_n = HW_DPLL_4;
+ 		channel->dpll_phase = DPLL_PHASE_4;
+ 		channel->dpll_ctrl_n = DPLL_CTRL_4;
+@@ -1920,7 +1833,7 @@ static int configure_channel_pll(struct idtcm_channel *channel)
+ 		break;
+ 	case 6:
+ 		channel->dpll_freq = DPLL_FREQ_6;
+-		channel->dpll_n = DPLL_6;
++		channel->dpll_n = IDTCM_FW_REG(idtcm->fw_ver, V520, DPLL_6);
+ 		channel->hw_dpll_n = HW_DPLL_6;
+ 		channel->dpll_phase = DPLL_PHASE_6;
+ 		channel->dpll_ctrl_n = DPLL_CTRL_6;
+@@ -1941,86 +1854,127 @@ static int configure_channel_pll(struct idtcm_channel *channel)
+ 	return err;
+ }
+ 
+-static int idtcm_enable_channel(struct idtcm *idtcm, u32 index)
++/*
++ * Compensate for the PTP DCO input-to-output delay.
++ * This delay is 18 FOD cycles.
++ */
++static u32 idtcm_get_dco_delay(struct idtcm_channel *channel)
+ {
+-	struct idtcm_channel *channel;
++	struct idtcm *idtcm = channel->idtcm;
++	u8 mbuf[8] = {0};
++	u8 nbuf[2] = {0};
++	u32 fodFreq;
+ 	int err;
++	u64 m;
++	u16 n;
+ 
+-	if (!(index < MAX_TOD))
+-		return -EINVAL;
+-
+-	channel = &idtcm->channel[index];
++	err = idtcm_read(idtcm, channel->dpll_ctrl_n,
++			 DPLL_CTRL_DPLL_FOD_FREQ, mbuf, 6);
++	if (err)
++		return 0;
+ 
+-	/* Set pll addresses */
+-	err = configure_channel_pll(channel);
++	err = idtcm_read(idtcm, channel->dpll_ctrl_n,
++			 DPLL_CTRL_DPLL_FOD_FREQ + 6, nbuf, 2);
+ 	if (err)
+-		return err;
++		return 0;
++
++	m = get_unaligned_le64(mbuf);
++	n = get_unaligned_le16(nbuf);
++
++	if (n == 0)
++		n = 1;
++
++	fodFreq = m / n;
++
++	if (fodFreq >= 500000000)
++		return 18 * (u64)NSEC_PER_SEC / fodFreq;
++
++	return 0;
++}
++
++static int configure_channel_tod(struct idtcm_channel *channel, u32 index)
++{
++	enum fw_version fw_ver = channel->idtcm->fw_ver;
+ 
+ 	/* Set tod addresses */
+ 	switch (index) {
+ 	case 0:
+-		channel->tod_read_primary = TOD_READ_PRIMARY_0;
+-		channel->tod_write = TOD_WRITE_0;
+-		channel->tod_n = TOD_0;
++		channel->tod_read_primary = IDTCM_FW_REG(fw_ver, V520, TOD_READ_PRIMARY_0);
++		channel->tod_write = IDTCM_FW_REG(fw_ver, V520, TOD_WRITE_0);
++		channel->tod_n = IDTCM_FW_REG(fw_ver, V520, TOD_0);
++		channel->sync_src = SYNC_SOURCE_DPLL0_TOD_PPS;
+ 		break;
+ 	case 1:
+-		channel->tod_read_primary = TOD_READ_PRIMARY_1;
+-		channel->tod_write = TOD_WRITE_1;
+-		channel->tod_n = TOD_1;
++		channel->tod_read_primary = IDTCM_FW_REG(fw_ver, V520, TOD_READ_PRIMARY_1);
++		channel->tod_write = IDTCM_FW_REG(fw_ver, V520, TOD_WRITE_1);
++		channel->tod_n = IDTCM_FW_REG(fw_ver, V520, TOD_1);
++		channel->sync_src = SYNC_SOURCE_DPLL1_TOD_PPS;
+ 		break;
+ 	case 2:
+-		channel->tod_read_primary = TOD_READ_PRIMARY_2;
+-		channel->tod_write = TOD_WRITE_2;
+-		channel->tod_n = TOD_2;
++		channel->tod_read_primary = IDTCM_FW_REG(fw_ver, V520, TOD_READ_PRIMARY_2);
++		channel->tod_write = IDTCM_FW_REG(fw_ver, V520, TOD_WRITE_2);
++		channel->tod_n = IDTCM_FW_REG(fw_ver, V520, TOD_2);
++		channel->sync_src = SYNC_SOURCE_DPLL2_TOD_PPS;
+ 		break;
+ 	case 3:
+-		channel->tod_read_primary = TOD_READ_PRIMARY_3;
+-		channel->tod_write = TOD_WRITE_3;
+-		channel->tod_n = TOD_3;
++		channel->tod_read_primary = IDTCM_FW_REG(fw_ver, V520, TOD_READ_PRIMARY_3);
++		channel->tod_write = IDTCM_FW_REG(fw_ver, V520, TOD_WRITE_3);
++		channel->tod_n = IDTCM_FW_REG(fw_ver, V520, TOD_3);
++		channel->sync_src = SYNC_SOURCE_DPLL3_TOD_PPS;
+ 		break;
+ 	default:
+ 		return -EINVAL;
+ 	}
+ 
++	return 0;
++}
++
++static int idtcm_enable_channel(struct idtcm *idtcm, u32 index)
++{
++	struct idtcm_channel *channel;
++	int err;
++
++	if (!(index < MAX_TOD))
++		return -EINVAL;
++
++	channel = &idtcm->channel[index];
+ 	channel->idtcm = idtcm;
+ 
+-	if (idtcm_strverscmp(idtcm->version, "4.8.7") >= 0)
+-		channel->caps = idtcm_caps_v487;
++	/* Set pll addresses */
++	err = configure_channel_pll(channel);
++	if (err)
++		return err;
++
++	/* Set tod addresses */
++	err = configure_channel_tod(channel, index);
++	if (err)
++		return err;
++
++	if (idtcm->fw_ver < V487)
++		channel->caps = idtcm_caps_deprecated;
+ 	else
+ 		channel->caps = idtcm_caps;
+ 
+ 	snprintf(channel->caps.name, sizeof(channel->caps.name),
+ 		 "IDT CM TOD%u", index);
+ 
+-	if (idtcm_strverscmp(idtcm->version, "4.8.7") >= 0) {
+-		err = idtcm_enable_tod_sync(channel);
+-		if (err) {
+-			dev_err(&idtcm->client->dev,
+-				"Failed at line %d in func %s!\n",
+-				__LINE__,
+-				__func__);
+-			return err;
+-		}
+-	}
+-
+-	err = idtcm_set_pll_mode(channel, PLL_MODE_WRITE_FREQUENCY);
++	/* Sync pll mode with hardware */
++	err = idtcm_get_pll_mode(channel, &channel->pll_mode);
+ 	if (err) {
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
++		dev_err(idtcm->dev,
++			"Error: %s - Unable to read pll mode", __func__);
+ 		return err;
+ 	}
+ 
+ 	err = idtcm_enable_tod(channel);
+ 	if (err) {
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
++		dev_err(idtcm->dev,
++			"Failed at line %d in %s!", __LINE__, __func__);
+ 		return err;
+ 	}
+ 
++	channel->dco_delay = idtcm_get_dco_delay(channel);
++
+ 	channel->ptp_clock = ptp_clock_register(&channel->caps, NULL);
+ 
+ 	if (IS_ERR(channel->ptp_clock)) {
+@@ -2032,21 +1986,65 @@ static int idtcm_enable_channel(struct idtcm *idtcm, u32 index)
+ 	if (!channel->ptp_clock)
+ 		return -ENOTSUPP;
+ 
+-	channel->write_phase_ready = 0;
+-
+-	dev_info(&idtcm->client->dev, "PLL%d registered as ptp%d\n",
++	dev_info(idtcm->dev, "PLL%d registered as ptp%d",
+ 		 index, channel->ptp_clock->index);
+ 
+ 	return 0;
+ }
+ 
++static int idtcm_enable_extts_channel(struct idtcm *idtcm, u32 index)
++{
++	struct idtcm_channel *channel;
++	int err;
++
++	if (!(index < MAX_TOD))
++		return -EINVAL;
++
++	channel = &idtcm->channel[index];
++	channel->idtcm = idtcm;
++
++	/* Set tod addresses */
++	err = configure_channel_tod(channel, index);
++	if (err)
++		return err;
++
++	channel->idtcm = idtcm;
++
++	return 0;
++}
++
++static void idtcm_extts_check(struct work_struct *work)
++{
++	struct idtcm *idtcm = container_of(work, struct idtcm, extts_work.work);
++	int err, i;
++
++	if (idtcm->extts_mask == 0)
++		return;
++
++	mutex_lock(idtcm->lock);
++	for (i = 0; i < MAX_TOD; i++) {
++		u8 mask = 1 << i;
++
++		if (idtcm->extts_mask & mask) {
++			err = idtcm_extts_check_channel(idtcm, i);
++			/* trigger clears itself, so clear the mask */
++			if (err == 0)
++				idtcm->extts_mask &= ~mask;
++		}
++	}
++
++	if (idtcm->extts_mask)
++		schedule_delayed_work(&idtcm->extts_work,
++				      msecs_to_jiffies(EXTTS_PERIOD_MS));
++	mutex_unlock(idtcm->lock);
++}
++
+ static void ptp_clock_unregister_all(struct idtcm *idtcm)
+ {
+ 	u8 i;
+ 	struct idtcm_channel *channel;
+ 
+ 	for (i = 0; i < MAX_TOD; i++) {
+-
+ 		channel = &idtcm->channel[i];
+ 
+ 		if (channel->ptp_clock)
+@@ -2057,6 +2055,7 @@ static void ptp_clock_unregister_all(struct idtcm *idtcm)
+ static void set_default_masks(struct idtcm *idtcm)
+ {
+ 	idtcm->tod_mask = DEFAULT_TOD_MASK;
++	idtcm->extts_mask = 0;
+ 
+ 	idtcm->channel[0].pll = DEFAULT_TOD0_PTP_PLL;
+ 	idtcm->channel[1].pll = DEFAULT_TOD1_PTP_PLL;
+@@ -2069,162 +2068,106 @@ static void set_default_masks(struct idtcm *idtcm)
+ 	idtcm->channel[3].output_mask = DEFAULT_OUTPUT_MASK_PLL3;
+ }
+ 
+-static int idtcm_probe(struct i2c_client *client,
+-		       const struct i2c_device_id *id)
++static int idtcm_probe(struct platform_device *pdev)
+ {
++	struct rsmu_pdata *pdata = dev_get_platdata(&pdev->dev);
+ 	struct idtcm *idtcm;
+ 	int err;
+ 	u8 i;
+-	char *fmt = "Failed at %d in line %s with channel output %d!\n";
++	struct gpio_desc *reset;
++	reset = gpiod_get(pdev->dev.parent, "reset", 0);
+ 
+-	/* Unused for now */
+-	(void)id;
+-
+-	idtcm = devm_kzalloc(&client->dev, sizeof(struct idtcm), GFP_KERNEL);
++	if (IS_ERR(reset)){
++		printk("idtcm_probe get reset pin failed!\n");	
++		return PTR_ERR(reset);
++	}
++	gpiod_direction_output(reset, 1);
++	usleep_range(10000, 15000);
++	gpiod_set_value(reset, 0);
++	gpiod_put(reset);
++	msleep(3000);
++	idtcm = devm_kzalloc(&pdev->dev, sizeof(struct idtcm), GFP_KERNEL);
+ 
+ 	if (!idtcm)
+ 		return -ENOMEM;
+ 
+-	idtcm->client = client;
+-	idtcm->page_offset = 0xff;
++	idtcm->dev = &pdev->dev;
++	idtcm->mfd = pdev->dev.parent;
++	idtcm->lock = pdata->lock;
+ 	idtcm->calculate_overhead_flag = 0;
+ 
+-	set_default_masks(idtcm);
++	INIT_DELAYED_WORK(&idtcm->extts_work, idtcm_extts_check);
+ 
+-	mutex_init(&idtcm->reg_lock);
+-	mutex_lock(&idtcm->reg_lock);
++	set_default_masks(idtcm);
+ 
+-	idtcm_display_version_info(idtcm);
++	mutex_lock(idtcm->lock);
+ 
+-	err = idtcm_load_firmware(idtcm, &client->dev);
++	idtcm_set_version_info(idtcm);
++	err = idtcm_load_firmware(idtcm, &pdev->dev);
+ 
+ 	if (err)
+-		dev_warn(&idtcm->client->dev,
++		dev_warn(idtcm->dev,
+ 			 "loading firmware failed with %d\n", err);
+ 
++	wait_for_chip_ready(idtcm);
++
+ 	if (idtcm->tod_mask) {
+ 		for (i = 0; i < MAX_TOD; i++) {
+-			if (idtcm->tod_mask & (1 << i)) {
++			if (idtcm->tod_mask & (1 << i)) {	
+ 				err = idtcm_enable_channel(idtcm, i);
+-				if (err) {
+-					dev_err(&idtcm->client->dev,
+-						fmt,
+-						__LINE__,
+-						__func__,
+-						i);
+-					break;
+-				}
++			}
++			else {
++				err = idtcm_enable_extts_channel(idtcm, i);
++			}
++			if (err) {
++				dev_err(idtcm->dev,
++					"idtcm_enable_channel %d failed!", i);
++				break;
+ 			}
+ 		}
+ 	} else {
+-		dev_err(&idtcm->client->dev,
++		dev_err(idtcm->dev,
+ 			"no PLLs flagged as PHCs, nothing to do\n");
+ 		err = -ENODEV;
+ 	}
+ 
+-	mutex_unlock(&idtcm->reg_lock);
++	mutex_unlock(idtcm->lock);
+ 
+ 	if (err) {
+ 		ptp_clock_unregister_all(idtcm);
+ 		return err;
+ 	}
+-
+-	i2c_set_clientdata(client, idtcm);
+-
++	platform_set_drvdata(pdev, idtcm);
+ 	return 0;
+ }
+ 
+-static int idtcm_remove(struct i2c_client *client)
++static int idtcm_remove(struct platform_device *pdev)
+ {
+-	struct idtcm *idtcm = i2c_get_clientdata(client);
++	struct idtcm *idtcm = platform_get_drvdata(pdev);
+ 
+ 	ptp_clock_unregister_all(idtcm);
+ 
+-	mutex_destroy(&idtcm->reg_lock);
++	cancel_delayed_work_sync(&idtcm->extts_work);
+ 
+ 	return 0;
+ }
+ 
+-#ifdef CONFIG_OF
+-static const struct of_device_id idtcm_dt_id[] = {
+-	{ .compatible = "idt,8a34000" },
+-	{ .compatible = "idt,8a34001" },
+-	{ .compatible = "idt,8a34002" },
+-	{ .compatible = "idt,8a34003" },
+-	{ .compatible = "idt,8a34004" },
+-	{ .compatible = "idt,8a34005" },
+-	{ .compatible = "idt,8a34006" },
+-	{ .compatible = "idt,8a34007" },
+-	{ .compatible = "idt,8a34008" },
+-	{ .compatible = "idt,8a34009" },
+-	{ .compatible = "idt,8a34010" },
+-	{ .compatible = "idt,8a34011" },
+-	{ .compatible = "idt,8a34012" },
+-	{ .compatible = "idt,8a34013" },
+-	{ .compatible = "idt,8a34014" },
+-	{ .compatible = "idt,8a34015" },
+-	{ .compatible = "idt,8a34016" },
+-	{ .compatible = "idt,8a34017" },
+-	{ .compatible = "idt,8a34018" },
+-	{ .compatible = "idt,8a34019" },
+-	{ .compatible = "idt,8a34040" },
+-	{ .compatible = "idt,8a34041" },
+-	{ .compatible = "idt,8a34042" },
+-	{ .compatible = "idt,8a34043" },
+-	{ .compatible = "idt,8a34044" },
+-	{ .compatible = "idt,8a34045" },
+-	{ .compatible = "idt,8a34046" },
+-	{ .compatible = "idt,8a34047" },
+-	{ .compatible = "idt,8a34048" },
+-	{ .compatible = "idt,8a34049" },
+-	{},
+-};
+-MODULE_DEVICE_TABLE(of, idtcm_dt_id);
+-#endif
+-
+-static const struct i2c_device_id idtcm_i2c_id[] = {
+-	{ "8a34000" },
+-	{ "8a34001" },
+-	{ "8a34002" },
+-	{ "8a34003" },
+-	{ "8a34004" },
+-	{ "8a34005" },
+-	{ "8a34006" },
+-	{ "8a34007" },
+-	{ "8a34008" },
+-	{ "8a34009" },
+-	{ "8a34010" },
+-	{ "8a34011" },
+-	{ "8a34012" },
+-	{ "8a34013" },
+-	{ "8a34014" },
+-	{ "8a34015" },
+-	{ "8a34016" },
+-	{ "8a34017" },
+-	{ "8a34018" },
+-	{ "8a34019" },
+-	{ "8a34040" },
+-	{ "8a34041" },
+-	{ "8a34042" },
+-	{ "8a34043" },
+-	{ "8a34044" },
+-	{ "8a34045" },
+-	{ "8a34046" },
+-	{ "8a34047" },
+-	{ "8a34048" },
+-	{ "8a34049" },
++static const struct platform_device_id idtcm_id_table[] = {
++	{ "idtcm-ptp0", },
++	{ "idtcm-ptp1", },
++	{ "idtcm-ptp2", },
++	{ "idtcm-ptp3", },
+ 	{},
+ };
+-MODULE_DEVICE_TABLE(i2c, idtcm_i2c_id);
++MODULE_DEVICE_TABLE(platform, idtcm_id_table);
+ 
+-static struct i2c_driver idtcm_driver = {
++static struct platform_driver idtcm_driver = {
+ 	.driver = {
+-		.of_match_table	= of_match_ptr(idtcm_dt_id),
+-		.name		= "idtcm",
++		.name = "idtcm-phc",
+ 	},
+-	.probe		= idtcm_probe,
+-	.remove		= idtcm_remove,
+-	.id_table	= idtcm_i2c_id,
++	.probe = idtcm_probe,
++	.remove	= idtcm_remove,
++	.id_table = idtcm_id_table,
+ };
+ 
+-module_i2c_driver(idtcm_driver);
++module_platform_driver(idtcm_driver);
+diff --git a/drivers/ptp/ptp_clockmatrix.h b/drivers/ptp/ptp_clockmatrix.h
+index 82840d72364a..1b48e078bab8 100644
+--- a/drivers/ptp/ptp_clockmatrix.h
++++ b/drivers/ptp/ptp_clockmatrix.h
+@@ -9,8 +9,8 @@
+ #define PTP_IDTCLOCKMATRIX_H
+ 
+ #include <linux/ktime.h>
+-
+-#include "idt8a340_reg.h"
++#include <linux/workqueue.h>
++#include <linux/mfd/idt8a340_reg.h>
+ 
+ #define FW_FILENAME	"idtcm.bin"
+ #define MAX_TOD		(4)
+@@ -44,62 +44,27 @@
+ #define DEFAULT_TOD2_PTP_PLL		(2)
+ #define DEFAULT_TOD3_PTP_PLL		(3)
+ 
+-#define POST_SM_RESET_DELAY_MS		(3000)
+-#define PHASE_PULL_IN_THRESHOLD_NS	(150000)
+-#define PHASE_PULL_IN_THRESHOLD_NS_V487	(15000)
+-#define TOD_WRITE_OVERHEAD_COUNT_MAX	(2)
+-#define TOD_BYTE_COUNT			(11)
+-#define WR_PHASE_SETUP_MS		(5000)
+-
+-#define OUTPUT_MODULE_FROM_INDEX(index)	(OUTPUT_0 + (index) * 0x10)
+-
+-#define PEROUT_ENABLE_OUTPUT_MASK		(0xdeadbeef)
+-
+-#define IDTCM_MAX_WRITE_COUNT			(512)
+-
+-/* Values of DPLL_N.DPLL_MODE.PLL_MODE */
+-enum pll_mode {
+-	PLL_MODE_MIN = 0,
+-	PLL_MODE_NORMAL = PLL_MODE_MIN,
+-	PLL_MODE_WRITE_PHASE = 1,
+-	PLL_MODE_WRITE_FREQUENCY = 2,
+-	PLL_MODE_GPIO_INC_DEC = 3,
+-	PLL_MODE_SYNTHESIS = 4,
+-	PLL_MODE_PHASE_MEASUREMENT = 5,
+-	PLL_MODE_DISABLED = 6,
+-	PLL_MODE_MAX = PLL_MODE_DISABLED,
+-};
++#define PHASE_PULL_IN_THRESHOLD_NS_DEPRECATED	(150000)
++#define PHASE_PULL_IN_THRESHOLD_NS		(15000)
++#define TOD_WRITE_OVERHEAD_COUNT_MAX		(2)
++#define TOD_BYTE_COUNT				(11)
+ 
+-enum hw_tod_write_trig_sel {
+-	HW_TOD_WR_TRIG_SEL_MIN = 0,
+-	HW_TOD_WR_TRIG_SEL_MSB = HW_TOD_WR_TRIG_SEL_MIN,
+-	HW_TOD_WR_TRIG_SEL_RESERVED = 1,
+-	HW_TOD_WR_TRIG_SEL_TOD_PPS = 2,
+-	HW_TOD_WR_TRIG_SEL_IRIGB_PPS = 3,
+-	HW_TOD_WR_TRIG_SEL_PWM_PPS = 4,
+-	HW_TOD_WR_TRIG_SEL_GPIO = 5,
+-	HW_TOD_WR_TRIG_SEL_FOD_SYNC = 6,
+-	WR_TRIG_SEL_MAX = HW_TOD_WR_TRIG_SEL_FOD_SYNC,
+-};
++#define LOCK_TIMEOUT_MS			(2000)
++#define LOCK_POLL_INTERVAL_MS		(10)
+ 
+-/* 4.8.7 only */
+-enum scsr_tod_write_trig_sel {
+-	SCSR_TOD_WR_TRIG_SEL_DISABLE = 0,
+-	SCSR_TOD_WR_TRIG_SEL_IMMEDIATE = 1,
+-	SCSR_TOD_WR_TRIG_SEL_REFCLK = 2,
+-	SCSR_TOD_WR_TRIG_SEL_PWMPPS = 3,
+-	SCSR_TOD_WR_TRIG_SEL_TODPPS = 4,
+-	SCSR_TOD_WR_TRIG_SEL_SYNCFOD = 5,
+-	SCSR_TOD_WR_TRIG_SEL_GPIO = 6,
+-	SCSR_TOD_WR_TRIG_SEL_MAX = SCSR_TOD_WR_TRIG_SEL_GPIO,
+-};
++#define PEROUT_ENABLE_OUTPUT_MASK	(0xdeadbeef)
++
++#define IDTCM_MAX_WRITE_COUNT		(512)
+ 
+-/* 4.8.7 only */
+-enum scsr_tod_write_type_sel {
+-	SCSR_TOD_WR_TYPE_SEL_ABSOLUTE = 0,
+-	SCSR_TOD_WR_TYPE_SEL_DELTA_PLUS = 1,
+-	SCSR_TOD_WR_TYPE_SEL_DELTA_MINUS = 2,
+-	SCSR_TOD_WR_TYPE_SEL_MAX = SCSR_TOD_WR_TYPE_SEL_DELTA_MINUS,
++/*
++ * Return register address based on passed in firmware version
++ */
++#define IDTCM_FW_REG(FW, VER, REG)	(((FW) < (VER)) ? (REG) : (REG##_##VER))
++
++enum fw_version {
++	V_DEFAULT = 0,
++	V487 = 1,
++	V520 = 2,
+ };
+ 
+ struct idtcm;
+@@ -117,26 +82,33 @@ struct idtcm_channel {
+ 	u16			tod_write;
+ 	u16			tod_n;
+ 	u16			hw_dpll_n;
++	u8			sync_src;
++	u32			dco_delay;
+ 	enum pll_mode		pll_mode;
++	/* last input trigger for extts */
++	u8			refn;
+ 	u8			pll;
+ 	u16			output_mask;
+-	int			write_phase_ready;
+ };
+ 
+ struct idtcm {
+ 	struct idtcm_channel	channel[MAX_TOD];
+-	struct i2c_client	*client;
+-	u8			page_offset;
++	struct device		*dev;
+ 	u8			tod_mask;
+ 	char			version[16];
+-
++	enum fw_version		fw_ver;
++	/* Polls for external time stamps */
++	u8			extts_mask;
++	struct delayed_work	extts_work;
++	/* Remember the ptp channel to report extts */
++	struct idtcm_channel	*event_channel[MAX_TOD];
++	/* Mutex to protect operations from being interrupted */
++	struct mutex		*lock;
++	struct device		*mfd;
+ 	/* Overhead calculation for adjtime */
+ 	u8			calculate_overhead_flag;
+ 	s64			tod_write_overhead_ns;
+ 	ktime_t			start_time;
+-
+-	/* Protects I2C read/modify/write registers from concurrent access */
+-	struct mutex		reg_lock;
+ };
+ 
+ struct idtcm_fwrc {
+diff --git a/include/linux/mfd/idt82p33_reg.h b/include/linux/mfd/idt82p33_reg.h
+new file mode 100644
+index 000000000000..50872b0382fe
+--- /dev/null
++++ b/include/linux/mfd/idt82p33_reg.h
+@@ -0,0 +1,116 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/* idt82p33_reg.h
++ *
++ * Register Map - AN888_SMUforIEEE_SynchEther_82P33xxx_RevH.pdf
++ *
++ */
++#ifndef HAVE_IDT82P33_REG
++#define HAVE_IDT82P33_REG
++
++/* Register address */
++#define REG_ADDR(page, offset) (((page) << 0x7) | ((offset) & 0x7f))
++
++#define PAGE_ADDR 0x7F
++
++#define DPLL1_TOD_CNFG 0x134
++#define DPLL2_TOD_CNFG 0x1B4
++
++#define DPLL1_TOD_STS 0x10B
++#define DPLL2_TOD_STS 0x18B
++
++#define DPLL1_TOD_TRIGGER 0x115
++#define DPLL2_TOD_TRIGGER 0x195
++
++#define DPLL1_OPERATING_MODE_CNFG 0x120
++#define DPLL2_OPERATING_MODE_CNFG 0x1A0
++
++#define DPLL1_HOLDOVER_FREQ_CNFG 0x12C
++#define DPLL2_HOLDOVER_FREQ_CNFG 0x1AC
++
++#define DPLL1_PHASE_OFFSET_CNFG 0x143
++#define DPLL2_PHASE_OFFSET_CNFG 0x1C3
++
++#define DPLL1_SYNC_EDGE_CNFG 0x140
++#define DPLL2_SYNC_EDGE_CNFG 0x1C0
++
++#define DPLL1_INPUT_MODE_CNFG 0x116
++#define DPLL2_INPUT_MODE_CNFG 0x196
++
++#define DPLL1_OPERATING_STS 0x102
++#define DPLL2_OPERATING_STS 0x182
++
++#define DPLL1_CURRENT_FREQ_STS 0x103
++#define DPLL2_CURRENT_FREQ_STS 0x183
++
++#define REG_SOFT_RESET 0X381
++
++#define OUT_MUX_CNFG(outn) REG_ADDR(0x6, (0xC * (outn)))
++
++/* Register bit definitions */
++#define SYNC_TOD BIT(1)
++#define PH_OFFSET_EN BIT(7)
++#define SQUELCH_ENABLE BIT(5)
++
++/* Bit definitions for the DPLL_MODE register */
++#define PLL_MODE_SHIFT		(0)
++#define PLL_MODE_MASK		(0x1F)
++#define COMBO_MODE_EN		BIT(5)
++#define COMBO_MODE_SHIFT	(6)
++#define COMBO_MODE_MASK		(0x3)
++
++/* Bit definitions for DPLL_OPERATING_STS register */
++#define OPERATING_STS_MASK	(0x7)
++#define OPERATING_STS_SHIFT	(0x0)
++
++/* Bit definitions for DPLL_TOD_TRIGGER register */
++#define READ_TRIGGER_MASK	(0xF)
++#define READ_TRIGGER_SHIFT	(0x0)
++#define WRITE_TRIGGER_MASK	(0xF0)
++#define WRITE_TRIGGER_SHIFT	(0x4)
++
++/* Bit definitions for REG_SOFT_RESET register */
++#define SOFT_RESET_EN		BIT(7)
++
++enum pll_mode {
++	PLL_MODE_MIN = 0,
++	PLL_MODE_AUTOMATIC = PLL_MODE_MIN,
++	PLL_MODE_FORCE_FREERUN = 1,
++	PLL_MODE_FORCE_HOLDOVER = 2,
++	PLL_MODE_FORCE_LOCKED = 4,
++	PLL_MODE_FORCE_PRE_LOCKED2 = 5,
++	PLL_MODE_FORCE_PRE_LOCKED = 6,
++	PLL_MODE_FORCE_LOST_PHASE = 7,
++	PLL_MODE_DCO = 10,
++	PLL_MODE_WPH = 18,
++	PLL_MODE_MAX = PLL_MODE_WPH,
++};
++
++enum hw_tod_trig_sel {
++	HW_TOD_TRIG_SEL_MIN = 0,
++	HW_TOD_TRIG_SEL_NO_WRITE = HW_TOD_TRIG_SEL_MIN,
++	HW_TOD_TRIG_SEL_NO_READ = HW_TOD_TRIG_SEL_MIN,
++	HW_TOD_TRIG_SEL_SYNC_SEL = 1,
++	HW_TOD_TRIG_SEL_IN12 = 2,
++	HW_TOD_TRIG_SEL_IN13 = 3,
++	HW_TOD_TRIG_SEL_IN14 = 4,
++	HW_TOD_TRIG_SEL_TOD_PPS = 5,
++	HW_TOD_TRIG_SEL_TIMER_INTERVAL = 6,
++	HW_TOD_TRIG_SEL_MSB_PHASE_OFFSET_CNFG = 7,
++	HW_TOD_TRIG_SEL_MSB_HOLDOVER_FREQ_CNFG = 8,
++	HW_TOD_WR_TRIG_SEL_MSB_TOD_CNFG = 9,
++	HW_TOD_RD_TRIG_SEL_LSB_TOD_STS = HW_TOD_WR_TRIG_SEL_MSB_TOD_CNFG,
++	WR_TRIG_SEL_MAX = HW_TOD_WR_TRIG_SEL_MSB_TOD_CNFG,
++};
++
++/** @brief Enumerated type listing DPLL operational modes */
++enum dpll_state {
++	DPLL_STATE_FREERUN = 1,
++	DPLL_STATE_HOLDOVER = 2,
++	DPLL_STATE_LOCKED = 4,
++	DPLL_STATE_PRELOCKED2 = 5,
++	DPLL_STATE_PRELOCKED = 6,
++	DPLL_STATE_LOSTPHASE = 7,
++	DPLL_STATE_MAX
++};
++
++#endif
+diff --git a/include/linux/mfd/idt8a340_reg.h b/include/linux/mfd/idt8a340_reg.h
+new file mode 100644
+index 000000000000..911f66eef3d3
+--- /dev/null
++++ b/include/linux/mfd/idt8a340_reg.h
+@@ -0,0 +1,876 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/* idt8a340_reg.h
++ *
++ * Originally generated by regen.tcl on Thu Feb 14 19:23:44 PST 2019
++ * https://github.com/richardcochran/regen
++ *
++ * Hand modified to include some HW registers.
++ * Based on 5.2.0, Family Programming Guide (Sept 30, 2020)
++ */
++#ifndef HAVE_IDT8A340_REG
++#define HAVE_IDT8A340_REG
++
++#define PAGE_ADDR_BASE                    0x0000
++#define PAGE_ADDR                         0x00fc
++
++#define HW_REVISION                       0x8180
++#define REV_ID                            0x007a
++
++#define HW_DPLL_0                         (0x8a00)
++#define HW_DPLL_1                         (0x8b00)
++#define HW_DPLL_2                         (0x8c00)
++#define HW_DPLL_3                         (0x8d00)
++#define HW_DPLL_4                         (0x8e00)
++#define HW_DPLL_5                         (0x8f00)
++#define HW_DPLL_6                         (0x9000)
++#define HW_DPLL_7                         (0x9100)
++
++#define HW_DPLL_TOD_SW_TRIG_ADDR__0       (0x080)
++#define HW_DPLL_TOD_CTRL_1                (0x089)
++#define HW_DPLL_TOD_CTRL_2                (0x08A)
++#define HW_DPLL_TOD_OVR__0                (0x098)
++#define HW_DPLL_TOD_OUT_0__0              (0x0B0)
++
++#define HW_Q0_Q1_CH_SYNC_CTRL_0           (0xa740)
++#define HW_Q0_Q1_CH_SYNC_CTRL_1           (0xa741)
++#define HW_Q2_Q3_CH_SYNC_CTRL_0           (0xa742)
++#define HW_Q2_Q3_CH_SYNC_CTRL_1           (0xa743)
++#define HW_Q4_Q5_CH_SYNC_CTRL_0           (0xa744)
++#define HW_Q4_Q5_CH_SYNC_CTRL_1           (0xa745)
++#define HW_Q6_Q7_CH_SYNC_CTRL_0           (0xa746)
++#define HW_Q6_Q7_CH_SYNC_CTRL_1           (0xa747)
++#define HW_Q8_CH_SYNC_CTRL_0              (0xa748)
++#define HW_Q8_CH_SYNC_CTRL_1              (0xa749)
++#define HW_Q9_CH_SYNC_CTRL_0              (0xa74a)
++#define HW_Q9_CH_SYNC_CTRL_1              (0xa74b)
++#define HW_Q10_CH_SYNC_CTRL_0             (0xa74c)
++#define HW_Q10_CH_SYNC_CTRL_1             (0xa74d)
++#define HW_Q11_CH_SYNC_CTRL_0             (0xa74e)
++#define HW_Q11_CH_SYNC_CTRL_1             (0xa74f)
++
++#define SYNC_SOURCE_DPLL0_TOD_PPS	0x14
++#define SYNC_SOURCE_DPLL1_TOD_PPS	0x15
++#define SYNC_SOURCE_DPLL2_TOD_PPS	0x16
++#define SYNC_SOURCE_DPLL3_TOD_PPS	0x17
++
++#define SYNCTRL1_MASTER_SYNC_RST	BIT(7)
++#define SYNCTRL1_MASTER_SYNC_TRIG	BIT(5)
++#define SYNCTRL1_TOD_SYNC_TRIG		BIT(4)
++#define SYNCTRL1_FBDIV_FRAME_SYNC_TRIG	BIT(3)
++#define SYNCTRL1_FBDIV_SYNC_TRIG	BIT(2)
++#define SYNCTRL1_Q1_DIV_SYNC_TRIG	BIT(1)
++#define SYNCTRL1_Q0_DIV_SYNC_TRIG	BIT(0)
++
++#define HW_Q8_CTRL_SPARE  (0xa7d4)
++#define HW_Q11_CTRL_SPARE (0xa7ec)
++
++/**
++ * Select FOD5 as sync_trigger for Q8 divider.
++ * Transition from logic zero to one
++ * sets trigger to sync Q8 divider.
++ *
++ * Unused when FOD4 is driving Q8 divider (normal operation).
++ */
++#define Q9_TO_Q8_SYNC_TRIG  BIT(1)
++
++/**
++ * Enable FOD5 as driver for clock and sync for Q8 divider.
++ * Enable fanout buffer for FOD5.
++ *
++ * Unused when FOD4 is driving Q8 divider (normal operation).
++ */
++#define Q9_TO_Q8_FANOUT_AND_CLOCK_SYNC_ENABLE_MASK  (BIT(0) | BIT(2))
++
++/**
++ * Select FOD6 as sync_trigger for Q11 divider.
++ * Transition from logic zero to one
++ * sets trigger to sync Q11 divider.
++ *
++ * Unused when FOD7 is driving Q11 divider (normal operation).
++ */
++#define Q10_TO_Q11_SYNC_TRIG  BIT(1)
++
++/**
++ * Enable FOD6 as driver for clock and sync for Q11 divider.
++ * Enable fanout buffer for FOD6.
++ *
++ * Unused when FOD7 is driving Q11 divider (normal operation).
++ */
++#define Q10_TO_Q11_FANOUT_AND_CLOCK_SYNC_ENABLE_MASK  (BIT(0) | BIT(2))
++
++#define RESET_CTRL                        0xc000
++#define SM_RESET                          0x0012
++#define SM_RESET_V520                     0x0013
++#define SM_RESET_CMD                      0x5A
++
++#define GENERAL_STATUS                    0xc014
++#define BOOT_STATUS                       0x0000
++#define HW_REV_ID                         0x000A
++#define BOND_ID                           0x000B
++#define HW_CSR_ID                         0x000C
++#define HW_IRQ_ID                         0x000E
++
++#define MAJ_REL                           0x0010
++#define MIN_REL                           0x0011
++#define HOTFIX_REL                        0x0012
++
++#define PIPELINE_ID                       0x0014
++#define BUILD_ID                          0x0018
++
++#define JTAG_DEVICE_ID                    0x001c
++#define PRODUCT_ID                        0x001e
++
++#define OTP_SCSR_CONFIG_SELECT            0x0022
++
++#define STATUS                            0xc03c
++#define DPLL0_STATUS			  0x0018
++#define DPLL1_STATUS			  0x0019
++#define DPLL2_STATUS			  0x001a
++#define DPLL3_STATUS			  0x001b
++#define DPLL4_STATUS			  0x001c
++#define DPLL5_STATUS			  0x001d
++#define DPLL6_STATUS			  0x001e
++#define DPLL7_STATUS			  0x001f
++#define DPLL_SYS_STATUS                   0x0020
++#define DPLL_SYS_APLL_STATUS              0x0021
++#define DPLL0_FILTER_STATUS               0x0044
++#define DPLL1_FILTER_STATUS               0x004c
++#define DPLL2_FILTER_STATUS               0x0054
++#define DPLL3_FILTER_STATUS               0x005c
++#define DPLL4_FILTER_STATUS               0x0064
++#define DPLL5_FILTER_STATUS               0x006c
++#define DPLL6_FILTER_STATUS               0x0074
++#define DPLL7_FILTER_STATUS               0x007c
++#define DPLLSYS_FILTER_STATUS             0x0084
++#define USER_GPIO0_TO_7_STATUS            0x008a
++#define USER_GPIO8_TO_15_STATUS           0x008b
++
++#define GPIO_USER_CONTROL                 0xc160
++#define GPIO0_TO_7_OUT                    0x0000
++#define GPIO8_TO_15_OUT                   0x0001
++#define GPIO0_TO_7_OUT_V520               0x0002
++#define GPIO8_TO_15_OUT_V520              0x0003
++
++#define STICKY_STATUS_CLEAR               0xc164
++
++#define GPIO_TOD_NOTIFICATION_CLEAR       0xc16c
++
++#define ALERT_CFG                         0xc188
++
++#define SYS_DPLL_XO                       0xc194
++
++#define SYS_APLL                          0xc19c
++
++#define INPUT_0                           0xc1b0
++
++#define INPUT_1                           0xc1c0
++
++#define INPUT_2                           0xc1d0
++
++#define INPUT_3                           0xc200
++
++#define INPUT_4                           0xc210
++
++#define INPUT_5                           0xc220
++
++#define INPUT_6                           0xc230
++
++#define INPUT_7                           0xc240
++
++#define INPUT_8                           0xc250
++
++#define INPUT_9                           0xc260
++
++#define INPUT_10                          0xc280
++
++#define INPUT_11                          0xc290
++
++#define INPUT_12                          0xc2a0
++
++#define INPUT_13                          0xc2b0
++
++#define INPUT_14                          0xc2c0
++
++#define INPUT_15                          0xc2d0
++
++#define REF_MON_0                         0xc2e0
++
++#define REF_MON_1                         0xc2ec
++
++#define REF_MON_2                         0xc300
++
++#define REF_MON_3                         0xc30c
++
++#define REF_MON_4                         0xc318
++
++#define REF_MON_5                         0xc324
++
++#define REF_MON_6                         0xc330
++
++#define REF_MON_7                         0xc33c
++
++#define REF_MON_8                         0xc348
++
++#define REF_MON_9                         0xc354
++
++#define REF_MON_10                        0xc360
++
++#define REF_MON_11                        0xc36c
++
++#define REF_MON_12                        0xc380
++
++#define REF_MON_13                        0xc38c
++
++#define REF_MON_14                        0xc398
++
++#define REF_MON_15                        0xc3a4
++
++#define DPLL_0                            0xc3b0
++#define DPLL_CTRL_REG_0                   0x0002
++#define DPLL_CTRL_REG_1                   0x0003
++#define DPLL_CTRL_REG_2                   0x0004
++#define DPLL_TOD_SYNC_CFG                 0x0031
++#define DPLL_COMBO_SLAVE_CFG_0            0x0032
++#define DPLL_COMBO_SLAVE_CFG_1            0x0033
++#define DPLL_SLAVE_REF_CFG                0x0034
++#define DPLL_REF_MODE                     0x0035
++#define DPLL_PHASE_MEASUREMENT_CFG        0x0036
++#define DPLL_MODE                         0x0037
++#define DPLL_MODE_V520                    0x003B
++
++#define DPLL_1                            0xc400
++
++#define DPLL_2                            0xc438
++#define DPLL_2_V520                       0xc43c
++
++#define DPLL_3                            0xc480
++
++#define DPLL_4                            0xc4b8
++#define DPLL_4_V520                       0xc4bc
++
++#define DPLL_5                            0xc500
++
++#define DPLL_6                            0xc538
++#define DPLL_6_V520                       0xc53c
++
++#define DPLL_7                            0xc580
++
++#define SYS_DPLL                          0xc5b8
++#define SYS_DPLL_V520                     0xc5bc
++
++#define DPLL_CTRL_0                       0xc600
++#define DPLL_CTRL_DPLL_MANU_REF_CFG       0x0001
++#define DPLL_CTRL_DPLL_FOD_FREQ           0x001c
++#define DPLL_CTRL_COMBO_MASTER_CFG        0x003a
++
++#define DPLL_CTRL_1                       0xc63c
++
++#define DPLL_CTRL_2                       0xc680
++
++#define DPLL_CTRL_3                       0xc6bc
++
++#define DPLL_CTRL_4                       0xc700
++
++#define DPLL_CTRL_5                       0xc73c
++
++#define DPLL_CTRL_6                       0xc780
++
++#define DPLL_CTRL_7                       0xc7bc
++
++#define SYS_DPLL_CTRL                     0xc800
++
++#define DPLL_PHASE_0                      0xc818
++
++/* Signed 42-bit FFO in units of 2^(-53) */
++#define DPLL_WR_PHASE                     0x0000
++
++#define DPLL_PHASE_1                      0xc81c
++
++#define DPLL_PHASE_2                      0xc820
++
++#define DPLL_PHASE_3                      0xc824
++
++#define DPLL_PHASE_4                      0xc828
++
++#define DPLL_PHASE_5                      0xc82c
++
++#define DPLL_PHASE_6                      0xc830
++
++#define DPLL_PHASE_7                      0xc834
++
++#define DPLL_FREQ_0                       0xc838
++
++/* Signed 42-bit FFO in units of 2^(-53) */
++#define DPLL_WR_FREQ                      0x0000
++
++#define DPLL_FREQ_1                       0xc840
++
++#define DPLL_FREQ_2                       0xc848
++
++#define DPLL_FREQ_3                       0xc850
++
++#define DPLL_FREQ_4                       0xc858
++
++#define DPLL_FREQ_5                       0xc860
++
++#define DPLL_FREQ_6                       0xc868
++
++#define DPLL_FREQ_7                       0xc870
++
++#define DPLL_PHASE_PULL_IN_0              0xc880
++#define PULL_IN_OFFSET                    0x0000 /* Signed 32 bit */
++#define PULL_IN_SLOPE_LIMIT               0x0004 /* Unsigned 24 bit */
++#define PULL_IN_CTRL                      0x0007
++
++#define DPLL_PHASE_PULL_IN_1              0xc888
++
++#define DPLL_PHASE_PULL_IN_2              0xc890
++
++#define DPLL_PHASE_PULL_IN_3              0xc898
++
++#define DPLL_PHASE_PULL_IN_4              0xc8a0
++
++#define DPLL_PHASE_PULL_IN_5              0xc8a8
++
++#define DPLL_PHASE_PULL_IN_6              0xc8b0
++
++#define DPLL_PHASE_PULL_IN_7              0xc8b8
++
++#define GPIO_CFG                          0xc8c0
++#define GPIO_CFG_GBL                      0x0000
++
++#define GPIO_0                            0xc8c2
++#define GPIO_DCO_INC_DEC                  0x0000
++#define GPIO_OUT_CTRL_0                   0x0001
++#define GPIO_OUT_CTRL_1                   0x0002
++#define GPIO_TOD_TRIG                     0x0003
++#define GPIO_DPLL_INDICATOR               0x0004
++#define GPIO_LOS_INDICATOR                0x0005
++#define GPIO_REF_INPUT_DSQ_0              0x0006
++#define GPIO_REF_INPUT_DSQ_1              0x0007
++#define GPIO_REF_INPUT_DSQ_2              0x0008
++#define GPIO_REF_INPUT_DSQ_3              0x0009
++#define GPIO_MAN_CLK_SEL_0                0x000a
++#define GPIO_MAN_CLK_SEL_1                0x000b
++#define GPIO_MAN_CLK_SEL_2                0x000c
++#define GPIO_SLAVE                        0x000d
++#define GPIO_ALERT_OUT_CFG                0x000e
++#define GPIO_TOD_NOTIFICATION_CFG         0x000f
++#define GPIO_CTRL                         0x0010
++#define GPIO_CTRL_V520                    0x0011
++
++#define GPIO_1                            0xc8d4
++
++#define GPIO_2                            0xc8e6
++
++#define GPIO_3                            0xc900
++
++#define GPIO_4                            0xc912
++
++#define GPIO_5                            0xc924
++
++#define GPIO_6                            0xc936
++
++#define GPIO_7                            0xc948
++
++#define GPIO_8                            0xc95a
++
++#define GPIO_9                            0xc980
++
++#define GPIO_10                           0xc992
++
++#define GPIO_11                           0xc9a4
++
++#define GPIO_12                           0xc9b6
++
++#define GPIO_13                           0xc9c8
++
++#define GPIO_14                           0xc9da
++
++#define GPIO_15                           0xca00
++
++#define OUT_DIV_MUX                       0xca12
++
++#define OUTPUT_0                          0xca14
++#define OUTPUT_0_V520                     0xca20
++/* FOD frequency output divider value */
++#define OUT_DIV                           0x0000
++#define OUT_DUTY_CYCLE_HIGH               0x0004
++#define OUT_CTRL_0                        0x0008
++#define OUT_CTRL_1                        0x0009
++/* Phase adjustment in FOD cycles */
++#define OUT_PHASE_ADJ                     0x000c
++
++#define OUTPUT_1                          0xca24
++#define OUTPUT_1_V520                     0xca30
++
++#define OUTPUT_2                          0xca34
++#define OUTPUT_2_V520                     0xca40
++
++#define OUTPUT_3                          0xca44
++#define OUTPUT_3_V520                     0xca50
++
++#define OUTPUT_4                          0xca54
++#define OUTPUT_4_V520                     0xca60
++
++#define OUTPUT_5                          0xca64
++#define OUTPUT_5_V520                     0xca80
++
++#define OUTPUT_6                          0xca80
++#define OUTPUT_6_V520                     0xca90
++
++#define OUTPUT_7                          0xca90
++#define OUTPUT_7_V520                     0xcaa0
++
++#define OUTPUT_8                          0xcaa0
++#define OUTPUT_8_V520                     0xcab0
++
++#define OUTPUT_9                          0xcab0
++#define OUTPUT_9_V520                     0xcac0
++
++#define OUTPUT_10                         0xcac0
++#define OUTPUT_10_V520                     0xcad0
++
++#define OUTPUT_11                         0xcad0
++#define OUTPUT_11_V520                    0xcae0
++
++#define SERIAL                            0xcae0
++#define SERIAL_V520                       0xcaf0
++
++#define PWM_ENCODER_0                     0xcb00
++
++#define PWM_ENCODER_1                     0xcb08
++
++#define PWM_ENCODER_2                     0xcb10
++
++#define PWM_ENCODER_3                     0xcb18
++
++#define PWM_ENCODER_4                     0xcb20
++
++#define PWM_ENCODER_5                     0xcb28
++
++#define PWM_ENCODER_6                     0xcb30
++
++#define PWM_ENCODER_7                     0xcb38
++
++#define PWM_DECODER_0                     0xcb40
++
++#define PWM_DECODER_1                     0xcb48
++#define PWM_DECODER_1_V520                0xcb4a
++
++#define PWM_DECODER_2                     0xcb50
++#define PWM_DECODER_2_V520                0xcb54
++
++#define PWM_DECODER_3                     0xcb58
++#define PWM_DECODER_3_V520                0xcb5e
++
++#define PWM_DECODER_4                     0xcb60
++#define PWM_DECODER_4_V520                0xcb68
++
++#define PWM_DECODER_5                     0xcb68
++#define PWM_DECODER_5_V520                0xcb80
++
++#define PWM_DECODER_6                     0xcb70
++#define PWM_DECODER_6_V520                0xcb8a
++
++#define PWM_DECODER_7                     0xcb80
++#define PWM_DECODER_7_V520                0xcb94
++
++#define PWM_DECODER_8                     0xcb88
++#define PWM_DECODER_8_V520                0xcb9e
++
++#define PWM_DECODER_9                     0xcb90
++#define PWM_DECODER_9_V520                0xcba8
++
++#define PWM_DECODER_10                    0xcb98
++#define PWM_DECODER_10_V520               0xcbb2
++
++#define PWM_DECODER_11                    0xcba0
++#define PWM_DECODER_11_V520               0xcbbc
++
++#define PWM_DECODER_12                    0xcba8
++#define PWM_DECODER_12_V520               0xcbc6
++
++#define PWM_DECODER_13                    0xcbb0
++#define PWM_DECODER_13_V520               0xcbd0
++
++#define PWM_DECODER_14                    0xcbb8
++#define PWM_DECODER_14_V520               0xcbda
++
++#define PWM_DECODER_15                    0xcbc0
++#define PWM_DECODER_15_V520               0xcbe4
++
++#define PWM_USER_DATA                     0xcbc8
++#define PWM_USER_DATA_V520                0xcbf0
++
++#define TOD_0                             0xcbcc
++#define TOD_0_V520                        0xcc00
++
++/* Enable TOD counter, output channel sync and even-PPS mode */
++#define TOD_CFG                           0x0000
++#define TOD_CFG_V520                      0x0001
++
++#define TOD_1                             0xcbce
++#define TOD_1_V520                        0xcc02
++
++#define TOD_2                             0xcbd0
++#define TOD_2_V520                        0xcc04
++
++#define TOD_3                             0xcbd2
++#define TOD_3_V520                        0xcc06
++
++
++#define TOD_WRITE_0                       0xcc00
++#define TOD_WRITE_0_V520                  0xcc10
++/* 8-bit subns, 32-bit ns, 48-bit seconds */
++#define TOD_WRITE                         0x0000
++/* Counter increments after TOD write is completed */
++#define TOD_WRITE_COUNTER                 0x000c
++/* TOD write trigger configuration */
++#define TOD_WRITE_SELECT_CFG_0            0x000d
++/* TOD write trigger selection */
++#define TOD_WRITE_CMD                     0x000f
++
++#define TOD_WRITE_1                       0xcc10
++#define TOD_WRITE_1_V520                  0xcc20
++
++#define TOD_WRITE_2                       0xcc20
++#define TOD_WRITE_2_V520                  0xcc30
++
++#define TOD_WRITE_3                       0xcc30
++#define TOD_WRITE_3_V520                  0xcc40
++
++#define TOD_READ_PRIMARY_0                0xcc40
++#define TOD_READ_PRIMARY_0_V520           0xcc50
++/* 8-bit subns, 32-bit ns, 48-bit seconds */
++#define TOD_READ_PRIMARY                  0x0000
++/* Counter increments after TOD write is completed */
++#define TOD_READ_PRIMARY_COUNTER          0x000b
++/* Read trigger configuration */
++#define TOD_READ_PRIMARY_SEL_CFG_0        0x000c
++/* Read trigger selection */
++#define TOD_READ_PRIMARY_CMD              0x000e
++#define TOD_READ_PRIMARY_CMD_V520         0x000f
++
++#define TOD_READ_PRIMARY_1                0xcc50
++#define TOD_READ_PRIMARY_1_V520           0xcc60
++
++#define TOD_READ_PRIMARY_2                0xcc60
++#define TOD_READ_PRIMARY_2_V520           0xcc80
++
++#define TOD_READ_PRIMARY_3                0xcc80
++#define TOD_READ_PRIMARY_3_V520           0xcc90
++
++#define TOD_READ_SECONDARY_0              0xcc90
++#define TOD_READ_SECONDARY_0_V520         0xcca0
++
++#define TOD_READ_SECONDARY_1              0xcca0
++#define TOD_READ_SECONDARY_1_V520         0xccb0
++
++#define TOD_READ_SECONDARY_2              0xccb0
++#define TOD_READ_SECONDARY_2_V520         0xccc0
++
++#define TOD_READ_SECONDARY_3              0xccc0
++#define TOD_READ_SECONDARY_3_V520         0xccd0
++
++#define OUTPUT_TDC_CFG                    0xccd0
++#define OUTPUT_TDC_CFG_V520               0xcce0
++
++#define OUTPUT_TDC_0                      0xcd00
++
++#define OUTPUT_TDC_1                      0xcd08
++
++#define OUTPUT_TDC_2                      0xcd10
++
++#define OUTPUT_TDC_3                      0xcd18
++
++#define INPUT_TDC                         0xcd20
++
++#define SCRATCH                           0xcf50
++#define SCRATCH_V520                      0xcf4c
++
++#define EEPROM                            0xcf68
++#define EEPROM_V520                       0xcf64
++
++#define OTP                               0xcf70
++
++#define BYTE                              0xcf80
++
++/* Bit definitions for the MAJ_REL register */
++#define MAJOR_SHIFT                       (1)
++#define MAJOR_MASK                        (0x7f)
++#define PR_BUILD                          BIT(0)
++
++/* Bit definitions for the USER_GPIO0_TO_7_STATUS register */
++#define GPIO0_LEVEL                       BIT(0)
++#define GPIO1_LEVEL                       BIT(1)
++#define GPIO2_LEVEL                       BIT(2)
++#define GPIO3_LEVEL                       BIT(3)
++#define GPIO4_LEVEL                       BIT(4)
++#define GPIO5_LEVEL                       BIT(5)
++#define GPIO6_LEVEL                       BIT(6)
++#define GPIO7_LEVEL                       BIT(7)
++
++/* Bit definitions for the USER_GPIO8_TO_15_STATUS register */
++#define GPIO8_LEVEL                       BIT(0)
++#define GPIO9_LEVEL                       BIT(1)
++#define GPIO10_LEVEL                      BIT(2)
++#define GPIO11_LEVEL                      BIT(3)
++#define GPIO12_LEVEL                      BIT(4)
++#define GPIO13_LEVEL                      BIT(5)
++#define GPIO14_LEVEL                      BIT(6)
++#define GPIO15_LEVEL                      BIT(7)
++
++/* Bit definitions for the GPIO0_TO_7_OUT register */
++#define GPIO0_DRIVE_LEVEL                 BIT(0)
++#define GPIO1_DRIVE_LEVEL                 BIT(1)
++#define GPIO2_DRIVE_LEVEL                 BIT(2)
++#define GPIO3_DRIVE_LEVEL                 BIT(3)
++#define GPIO4_DRIVE_LEVEL                 BIT(4)
++#define GPIO5_DRIVE_LEVEL                 BIT(5)
++#define GPIO6_DRIVE_LEVEL                 BIT(6)
++#define GPIO7_DRIVE_LEVEL                 BIT(7)
++
++/* Bit definitions for the GPIO8_TO_15_OUT register */
++#define GPIO8_DRIVE_LEVEL                 BIT(0)
++#define GPIO9_DRIVE_LEVEL                 BIT(1)
++#define GPIO10_DRIVE_LEVEL                BIT(2)
++#define GPIO11_DRIVE_LEVEL                BIT(3)
++#define GPIO12_DRIVE_LEVEL                BIT(4)
++#define GPIO13_DRIVE_LEVEL                BIT(5)
++#define GPIO14_DRIVE_LEVEL                BIT(6)
++#define GPIO15_DRIVE_LEVEL                BIT(7)
++
++/* Bit definitions for the DPLL_TOD_SYNC_CFG register */
++#define TOD_SYNC_SOURCE_SHIFT             (1)
++#define TOD_SYNC_SOURCE_MASK              (0x3)
++#define TOD_SYNC_EN                       BIT(0)
++
++/* Bit definitions for the DPLL_MODE register */
++#define WRITE_TIMER_MODE                  BIT(6)
++#define PLL_MODE_SHIFT                    (3)
++#define PLL_MODE_MASK                     (0x7)
++#define STATE_MODE_SHIFT                  (0)
++#define STATE_MODE_MASK                   (0x7)
++
++/* Bit definitions for the GPIO_CFG_GBL register */
++#define SUPPLY_MODE_SHIFT                 (0)
++#define SUPPLY_MODE_MASK                  (0x3)
++
++/* Bit definitions for the GPIO_DCO_INC_DEC register */
++#define INCDEC_DPLL_INDEX_SHIFT           (0)
++#define INCDEC_DPLL_INDEX_MASK            (0x7)
++
++/* Bit definitions for the GPIO_OUT_CTRL_0 register */
++#define CTRL_OUT_0                        BIT(0)
++#define CTRL_OUT_1                        BIT(1)
++#define CTRL_OUT_2                        BIT(2)
++#define CTRL_OUT_3                        BIT(3)
++#define CTRL_OUT_4                        BIT(4)
++#define CTRL_OUT_5                        BIT(5)
++#define CTRL_OUT_6                        BIT(6)
++#define CTRL_OUT_7                        BIT(7)
++
++/* Bit definitions for the GPIO_OUT_CTRL_1 register */
++#define CTRL_OUT_8                        BIT(0)
++#define CTRL_OUT_9                        BIT(1)
++#define CTRL_OUT_10                       BIT(2)
++#define CTRL_OUT_11                       BIT(3)
++#define CTRL_OUT_12                       BIT(4)
++#define CTRL_OUT_13                       BIT(5)
++#define CTRL_OUT_14                       BIT(6)
++#define CTRL_OUT_15                       BIT(7)
++
++/* Bit definitions for the GPIO_TOD_TRIG register */
++#define TOD_TRIG_0                        BIT(0)
++#define TOD_TRIG_1                        BIT(1)
++#define TOD_TRIG_2                        BIT(2)
++#define TOD_TRIG_3                        BIT(3)
++
++/* Bit definitions for the GPIO_DPLL_INDICATOR register */
++#define IND_DPLL_INDEX_SHIFT              (0)
++#define IND_DPLL_INDEX_MASK               (0x7)
++
++/* Bit definitions for the GPIO_LOS_INDICATOR register */
++#define REFMON_INDEX_SHIFT                (0)
++#define REFMON_INDEX_MASK                 (0xf)
++/* Active level of LOS indicator, 0=low 1=high */
++#define ACTIVE_LEVEL                      BIT(4)
++
++/* Bit definitions for the GPIO_REF_INPUT_DSQ_0 register */
++#define DSQ_INP_0                         BIT(0)
++#define DSQ_INP_1                         BIT(1)
++#define DSQ_INP_2                         BIT(2)
++#define DSQ_INP_3                         BIT(3)
++#define DSQ_INP_4                         BIT(4)
++#define DSQ_INP_5                         BIT(5)
++#define DSQ_INP_6                         BIT(6)
++#define DSQ_INP_7                         BIT(7)
++
++/* Bit definitions for the GPIO_REF_INPUT_DSQ_1 register */
++#define DSQ_INP_8                         BIT(0)
++#define DSQ_INP_9                         BIT(1)
++#define DSQ_INP_10                        BIT(2)
++#define DSQ_INP_11                        BIT(3)
++#define DSQ_INP_12                        BIT(4)
++#define DSQ_INP_13                        BIT(5)
++#define DSQ_INP_14                        BIT(6)
++#define DSQ_INP_15                        BIT(7)
++
++/* Bit definitions for the GPIO_REF_INPUT_DSQ_2 register */
++#define DSQ_DPLL_0                        BIT(0)
++#define DSQ_DPLL_1                        BIT(1)
++#define DSQ_DPLL_2                        BIT(2)
++#define DSQ_DPLL_3                        BIT(3)
++#define DSQ_DPLL_4                        BIT(4)
++#define DSQ_DPLL_5                        BIT(5)
++#define DSQ_DPLL_6                        BIT(6)
++#define DSQ_DPLL_7                        BIT(7)
++
++/* Bit definitions for the GPIO_REF_INPUT_DSQ_3 register */
++#define DSQ_DPLL_SYS                      BIT(0)
++#define GPIO_DSQ_LEVEL                    BIT(1)
++
++/* Bit definitions for the GPIO_TOD_NOTIFICATION_CFG register */
++#define DPLL_TOD_SHIFT                    (0)
++#define DPLL_TOD_MASK                     (0x3)
++#define TOD_READ_SECONDARY                BIT(2)
++#define GPIO_ASSERT_LEVEL                 BIT(3)
++
++/* Bit definitions for the GPIO_CTRL register */
++#define GPIO_FUNCTION_EN                  BIT(0)
++#define GPIO_CMOS_OD_MODE                 BIT(1)
++#define GPIO_CONTROL_DIR                  BIT(2)
++#define GPIO_PU_PD_MODE                   BIT(3)
++#define GPIO_FUNCTION_SHIFT               (4)
++#define GPIO_FUNCTION_MASK                (0xf)
++
++/* Bit definitions for the OUT_CTRL_1 register */
++#define OUT_SYNC_DISABLE                  BIT(7)
++#define SQUELCH_VALUE                     BIT(6)
++#define SQUELCH_DISABLE                   BIT(5)
++#define PAD_VDDO_SHIFT                    (2)
++#define PAD_VDDO_MASK                     (0x7)
++#define PAD_CMOSDRV_SHIFT                 (0)
++#define PAD_CMOSDRV_MASK                  (0x3)
++
++/* Bit definitions for the TOD_CFG register */
++#define TOD_EVEN_PPS_MODE                 BIT(2)
++#define TOD_OUT_SYNC_ENABLE               BIT(1)
++#define TOD_ENABLE                        BIT(0)
++
++/* Bit definitions for the TOD_WRITE_SELECT_CFG_0 register */
++#define WR_PWM_DECODER_INDEX_SHIFT        (4)
++#define WR_PWM_DECODER_INDEX_MASK         (0xf)
++#define WR_REF_INDEX_SHIFT                (0)
++#define WR_REF_INDEX_MASK                 (0xf)
++
++/* Bit definitions for the TOD_WRITE_CMD register */
++#define TOD_WRITE_SELECTION_SHIFT         (0)
++#define TOD_WRITE_SELECTION_MASK          (0xf)
++/* 4.8.7 */
++#define TOD_WRITE_TYPE_SHIFT              (4)
++#define TOD_WRITE_TYPE_MASK               (0x3)
++
++/* Bit definitions for the TOD_READ_PRIMARY_SEL_CFG_0 register */
++#define RD_PWM_DECODER_INDEX_SHIFT        (4)
++#define RD_PWM_DECODER_INDEX_MASK         (0xf)
++#define RD_REF_INDEX_SHIFT                (0)
++#define RD_REF_INDEX_MASK                 (0xf)
++
++/* Bit definitions for the TOD_READ_PRIMARY_CMD register */
++#define TOD_READ_TRIGGER_MODE             BIT(4)
++#define TOD_READ_TRIGGER_SHIFT            (0)
++#define TOD_READ_TRIGGER_MASK             (0xf)
++
++/* Bit definitions for the DPLL_CTRL_COMBO_MASTER_CFG register */
++#define COMBO_MASTER_HOLD                 BIT(0)
++
++/* Bit definitions for DPLL_SYS_STATUS register */
++#define DPLL_SYS_STATE_MASK               (0xf)
++
++/* Bit definitions for SYS_APLL_STATUS register */
++#define SYS_APLL_LOSS_LOCK_LIVE_MASK       BIT(0)
++#define SYS_APLL_LOSS_LOCK_LIVE_LOCKED     0
++#define SYS_APLL_LOSS_LOCK_LIVE_UNLOCKED   1
++
++/* Bit definitions for the DPLL0_STATUS register */
++#define DPLL_STATE_MASK                   (0xf)
++#define DPLL_STATE_SHIFT                  (0x0)
++
++/* Values of DPLL_N.DPLL_MODE.PLL_MODE */
++enum pll_mode {
++	PLL_MODE_MIN = 0,
++	PLL_MODE_NORMAL = PLL_MODE_MIN,
++	PLL_MODE_WRITE_PHASE = 1,
++	PLL_MODE_WRITE_FREQUENCY = 2,
++	PLL_MODE_GPIO_INC_DEC = 3,
++	PLL_MODE_SYNTHESIS = 4,
++	PLL_MODE_PHASE_MEASUREMENT = 5,
++	PLL_MODE_DISABLED = 6,
++	PLL_MODE_MAX = PLL_MODE_DISABLED,
++};
++
++enum hw_tod_write_trig_sel {
++	HW_TOD_WR_TRIG_SEL_MIN = 0,
++	HW_TOD_WR_TRIG_SEL_MSB = HW_TOD_WR_TRIG_SEL_MIN,
++	HW_TOD_WR_TRIG_SEL_RESERVED = 1,
++	HW_TOD_WR_TRIG_SEL_TOD_PPS = 2,
++	HW_TOD_WR_TRIG_SEL_IRIGB_PPS = 3,
++	HW_TOD_WR_TRIG_SEL_PWM_PPS = 4,
++	HW_TOD_WR_TRIG_SEL_GPIO = 5,
++	HW_TOD_WR_TRIG_SEL_FOD_SYNC = 6,
++	WR_TRIG_SEL_MAX = HW_TOD_WR_TRIG_SEL_FOD_SYNC,
++};
++
++enum scsr_read_trig_sel {
++	/* CANCEL CURRENT TOD READ; MODULE BECOMES IDLE - NO TRIGGER OCCURS */
++	SCSR_TOD_READ_TRIG_SEL_DISABLE = 0,
++	/* TRIGGER IMMEDIATELY */
++	SCSR_TOD_READ_TRIG_SEL_IMMEDIATE = 1,
++	/* TRIGGER ON RISING EDGE OF INTERNAL TOD PPS SIGNAL */
++	SCSR_TOD_READ_TRIG_SEL_TODPPS = 2,
++	/* TRGGER ON RISING EDGE OF SELECTED REFERENCE INPUT */
++	SCSR_TOD_READ_TRIG_SEL_REFCLK = 3,
++	/* TRIGGER ON RISING EDGE OF SELECTED PWM DECODER 1PPS OUTPUT */
++	SCSR_TOD_READ_TRIG_SEL_PWMPPS = 4,
++	SCSR_TOD_READ_TRIG_SEL_RESERVED = 5,
++	/* TRIGGER WHEN WRITE FREQUENCY EVENT OCCURS  */
++	SCSR_TOD_READ_TRIG_SEL_WRITEFREQUENCYEVENT = 6,
++	/* TRIGGER ON SELECTED GPIO */
++	SCSR_TOD_READ_TRIG_SEL_GPIO = 7,
++	SCSR_TOD_READ_TRIG_SEL_MAX = SCSR_TOD_READ_TRIG_SEL_GPIO,
++};
++
++/* Values STATUS.DPLL_SYS_STATUS.DPLL_SYS_STATE */
++enum dpll_state {
++	DPLL_STATE_MIN = 0,
++	DPLL_STATE_FREERUN = DPLL_STATE_MIN,
++	DPLL_STATE_LOCKACQ = 1,
++	DPLL_STATE_LOCKREC = 2,
++	DPLL_STATE_LOCKED = 3,
++	DPLL_STATE_HOLDOVER = 4,
++	DPLL_STATE_OPEN_LOOP = 5,
++	DPLL_STATE_MAX = DPLL_STATE_OPEN_LOOP,
++};
++
++/* 4.8.7 only */
++enum scsr_tod_write_trig_sel {
++	SCSR_TOD_WR_TRIG_SEL_DISABLE = 0,
++	SCSR_TOD_WR_TRIG_SEL_IMMEDIATE = 1,
++	SCSR_TOD_WR_TRIG_SEL_REFCLK = 2,
++	SCSR_TOD_WR_TRIG_SEL_PWMPPS = 3,
++	SCSR_TOD_WR_TRIG_SEL_TODPPS = 4,
++	SCSR_TOD_WR_TRIG_SEL_SYNCFOD = 5,
++	SCSR_TOD_WR_TRIG_SEL_GPIO = 6,
++	SCSR_TOD_WR_TRIG_SEL_MAX = SCSR_TOD_WR_TRIG_SEL_GPIO,
++};
++
++/* 4.8.7 only */
++enum scsr_tod_write_type_sel {
++	SCSR_TOD_WR_TYPE_SEL_ABSOLUTE = 0,
++	SCSR_TOD_WR_TYPE_SEL_DELTA_PLUS = 1,
++	SCSR_TOD_WR_TYPE_SEL_DELTA_MINUS = 2,
++	SCSR_TOD_WR_TYPE_SEL_MAX = SCSR_TOD_WR_TYPE_SEL_DELTA_MINUS,
++};
++#endif
+diff --git a/include/linux/mfd/rsmu.h b/include/linux/mfd/rsmu.h
+new file mode 100644
+index 000000000000..f8a4ba8dcc9d
+--- /dev/null
++++ b/include/linux/mfd/rsmu.h
+@@ -0,0 +1,42 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * Multi-function driver for the IDT ClockMatrix(TM) and 82p33xxx families of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++
++#ifndef __LINUX_MFD_RSMU_H
++#define __LINUX_MFD_RSMU_H
++
++/* We only support Clockmatrix and Sabre now */
++enum rsmu_type {
++	RSMU_CM		= 0,
++	RSMU_SABRE	= 1,
++	RSMU_NONE	= 2,
++};
++
++/**
++ *
++ * struct rsmu_pdata - platform data structure for MFD cell devices.
++ *
++ * @lock: Mutex used by cell devices to make sure a series of requests
++ * are not interrupted.
++ *
++ * @type: RSMU device type.
++ *
++ * @index: Device index.
++ */
++struct rsmu_pdata {
++	enum rsmu_type type;
++	struct mutex *lock;
++	u8 index;
++};
++
++/**
++ * NOTE: the functions below are not intended for use outside
++ * of the IDT synchronization management unit drivers
++ */
++extern int rsmu_write(struct device *dev, u16 reg, u8 *buf, u16 size);
++extern int rsmu_read(struct device *dev, u16 reg, u8 *buf, u16 size);
++#endif /*  __LINUX_MFD_RSMU_H */
+diff --git a/include/uapi/linux/rsmu.h b/include/uapi/linux/rsmu.h
+new file mode 100644
+index 000000000000..05b4dcbc8540
+--- /dev/null
++++ b/include/uapi/linux/rsmu.h
+@@ -0,0 +1,88 @@
++/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
++/*
++ * Driver for the IDT ClockMatrix(TM) and 82p33xxx families of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++
++#ifndef __UAPI_LINUX_RSMU_CDEV_H
++#define __UAPI_LINUX_RSMU_CDEV_H
++
++#include <linux/types.h>
++#include <linux/ioctl.h>
++
++/* Set dpll combomode */
++struct rsmu_combomode {
++	__u8 dpll;
++	__u8 mode;
++};
++
++/* Get dpll state */
++struct rsmu_get_state {
++	__u8 dpll;
++	__u8 state;
++};
++
++/* Get dpll ffo (fractional frequency offset) in ppqt*/
++struct rsmu_get_ffo {
++	__u8 dpll;
++	__s64 ffo;
++};
++
++/* Get reg value */
++struct rsmu_regval {
++	__u16 reg_addr;
++	__u32 value;
++};
++
++/*
++ * RSMU IOCTL List
++ */
++#define RSMU_MAGIC '?'
++
++/**
++ * @Description
++ * ioctl to set SMU combo mode.
++ *
++ * @Parameters
++ * pointer to struct rsmu_combomode that contains dpll combomode setting
++ */
++#define RSMU_SET_COMBOMODE  _IOW(RSMU_MAGIC, 1, struct rsmu_combomode)
++
++/**
++ * @Description
++ * ioctl to get SMU dpll state.
++ *
++ * @Parameters
++ * pointer to struct rsmu_get_state that contains dpll state
++ */
++#define RSMU_GET_STATE  _IOR(RSMU_MAGIC, 2, struct rsmu_get_state)
++
++/**
++ * @Description
++ * ioctl to get SMU dpll ffo.
++ *
++ * @Parameters
++ * pointer to struct rsmu_get_ffo that contains dpll ffo in ppqt
++ */
++#define RSMU_GET_FFO  _IOR(RSMU_MAGIC, 3, struct rsmu_get_ffo)
++
++/**
++ * @Description
++ * ioctl to get register value.
++ *
++ * @Parameters
++ * pointer to struct rsmu_regval that contains reg_addr and value
++ */
++#define RSMU_GET_REGVAL  _IOR(RSMU_MAGIC, 4, struct rsmu_regval)
++
++/**
++ * @Description
++ * ioctl to set register value.
++ *
++ * @Parameters
++ * pointer to struct rsmu_regval that contains reg_addr and value
++ */
++#define RSMU_SET_REGVAL     _IOR(RSMU_MAGIC, 5, struct rsmu_regval)
++#endif /* __UAPI_LINUX_RSMU_CDEV_H */
+-- 
+2.27.0
+

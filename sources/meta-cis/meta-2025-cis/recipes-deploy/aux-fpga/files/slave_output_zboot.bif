@@ -1,0 +1,7 @@
+//arch = zynqmp; split = false; format = BIN
+the_ROM_image:
+{
+	[bootloader, destination_cpu = a53-0]./zynqmp_fsbl_slave.elf
+	[pmufw_image]./pmufw_slave.elf
+	[destination_device=pl] ./slave_fpga.bit
+}

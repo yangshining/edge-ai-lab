@@ -1,0 +1,15 @@
+diff --git a/cmd/zboot.h b/cmd/zboot.h
+index 40dc07eccf..e8cb4d0506 100644
+--- a/cmd/zboot.h
++++ b/cmd/zboot.h
+@@ -30,9 +30,7 @@
+ #include <time.h>
+ #include <timer.h>
+ 
+-#define ZBOOT_VERSION "RXA"
+-#define ZBOOT_INFO "ORU622X_ZBOOT"
+-#define ZBOOT_DATE 20220811
++#include <zboot_info.h>
+ 
+ #define BUS			1
+ #define CS			0

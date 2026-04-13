@@ -1,0 +1,13 @@
+diff --git a/lib/sw_services/xilfpga/src/interface/zynqmp/xilfpga_pcap.c b/lib/sw_services/xilfpga/src/interface/zynqmp/xilfpga_pcap.c
+index 9f05e95e71..2a29c82d3f 100644
+--- a/lib/sw_services/xilfpga/src/interface/zynqmp/xilfpga_pcap.c
++++ b/lib/sw_services/xilfpga/src/interface/zynqmp/xilfpga_pcap.c
+@@ -381,7 +381,7 @@ static u32 XFpga_ValidateBitstreamImage(XFpga *InstancePtr)
+ 	}
+ 
+ 	if ((InstancePtr->WriteInfo.Flags & XFPGA_SECURE_FLAGS) == 0U) {
+-#ifndef XFPGA_SKIP_EFUSE_CHECK
++#if 0
+ 		/* eFUSE checks */
+ 		if ((XSecure_IsRsaEnabled() == XSECURE_ENABLED) ||
+ 		    (XSecure_IsEncOnlyEnabled() == XSECURE_ENABLED)) {

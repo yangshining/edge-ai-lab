@@ -1,0 +1,156 @@
+From 6cf63ce144cd703fd8f6f0c1dd05f5794af6c11a Mon Sep 17 00:00:00 2001
+From: Fan Wu <fan.wu@zillnk.com>
+Date: Mon, 8 Jul 2024 18:45:03 +0800
+Subject: [PATCH 1/3] adapt bootenv for zillnk
+
+---
+ board/xilinx/zynqmp/zynqmp.c    | 47 +++------------------------------
+ include/configs/xilinx_zynqmp.h |  2 ++
+ 2 files changed, 6 insertions(+), 43 deletions(-)
+
+diff --git a/board/xilinx/zynqmp/zynqmp.c b/board/xilinx/zynqmp/zynqmp.c
+index 4c09532a69..7a262385bc 100644
+--- a/board/xilinx/zynqmp/zynqmp.c
++++ b/board/xilinx/zynqmp/zynqmp.c
+@@ -527,6 +527,10 @@ static int reset_reason(void)
+ 
+ 	env_set("reset_reason", reason);
+ 
++	ret = zynqmp_mmio_write((ulong)&crlapb_base->reset_reason, ~0, ~0);
++	if (ret)
++		return -EINVAL;
++
+ 	return 0;
+ }
+ 
+@@ -573,24 +577,12 @@ int board_late_init(void)
+ 	struct udevice *dev;
+ 	int bootseq = -1;
+ 	int bootseq_len = 0;
+-	int env_targets_len = 0;
+-	const char *mode;
+-	char *new_targets;
+-	char *env_targets;
+ 	int ret;
+ 
+ #if defined(CONFIG_USB_ETHER) && !defined(CONFIG_USB_GADGET_DOWNLOAD)
+ 	usb_ether_init();
+ #endif
+ 
+-	if (!(gd->flags & GD_FLG_ENV_DEFAULT)) {
+-		debug("Saved variables - Skipping\n");
+-		return 0;
+-	}
+-
+-	if (!CONFIG_IS_ENABLED(ENV_VARS_UBOOT_RUNTIME_CONFIG))
+-		return 0;
+-
+ 	ret = set_fdtfile();
+ 	if (ret)
+ 		return ret;
+@@ -601,17 +593,14 @@ int board_late_init(void)
+ 	switch (bootmode) {
+ 	case USB_MODE:
+ 		puts("USB_MODE\n");
+-		mode = "usb_dfu0 usb_dfu1";
+ 		env_set("modeboot", "usb_dfu_spl");
+ 		break;
+ 	case JTAG_MODE:
+ 		puts("JTAG_MODE\n");
+-		mode = "jtag pxe dhcp";
+ 		env_set("modeboot", "jtagboot");
+ 		break;
+ 	case QSPI_MODE_24BIT:
+ 	case QSPI_MODE_32BIT:
+-		mode = "qspi0";
+ 		puts("QSPI_MODE\n");
+ 		env_set("modeboot", "qspiboot");
+ 		break;
+@@ -626,9 +615,7 @@ int board_late_init(void)
+ 		}
+ 		debug("mmc0 device found at %p, seq %d\n", dev, dev->seq);
+ 
+-		mode = "mmc";
+ 		bootseq = dev->seq;
+-		env_set("modeboot", "emmcboot");
+ 		break;
+ 	case SD_MODE:
+ 		puts("SD_MODE\n");
+@@ -641,7 +628,6 @@ int board_late_init(void)
+ 		}
+ 		debug("mmc0 device found at %p, seq %d\n", dev, dev->seq);
+ 
+-		mode = "mmc";
+ 		bootseq = dev->seq;
+ 		env_set("modeboot", "sdboot");
+ 		break;
+@@ -659,17 +645,14 @@ int board_late_init(void)
+ 		}
+ 		debug("mmc1 device found at %p, seq %d\n", dev, dev->seq);
+ 
+-		mode = "mmc";
+ 		bootseq = dev->seq;
+ 		env_set("modeboot", "sdboot");
+ 		break;
+ 	case NAND_MODE:
+ 		puts("NAND_MODE\n");
+-		mode = "nand0";
+ 		env_set("modeboot", "nandboot");
+ 		break;
+ 	default:
+-		mode = "";
+ 		printf("Invalid Boot Mode:0x%x\n", bootmode);
+ 		break;
+ 	}
+@@ -680,28 +663,6 @@ int board_late_init(void)
+ 		env_set_hex("bootseq", bootseq);
+ 	}
+ 
+-	/*
+-	 * One terminating char + one byte for space between mode
+-	 * and default boot_targets
+-	 */
+-	env_targets = env_get("boot_targets");
+-	if (env_targets)
+-		env_targets_len = strlen(env_targets);
+-
+-	new_targets = calloc(1, strlen(mode) + env_targets_len + 2 +
+-			     bootseq_len);
+-	if (!new_targets)
+-		return -ENOMEM;
+-
+-	if (bootseq >= 0)
+-		sprintf(new_targets, "%s%x %s", mode, bootseq,
+-			env_targets ? env_targets : "");
+-	else
+-		sprintf(new_targets, "%s %s", mode,
+-			env_targets ? env_targets : "");
+-
+-	env_set("boot_targets", new_targets);
+-
+ 	reset_reason();
+ 
+ 	return board_late_init_xilinx();
+diff --git a/include/configs/xilinx_zynqmp.h b/include/configs/xilinx_zynqmp.h
+index 2f74726815..a1e1fb667d 100644
+--- a/include/configs/xilinx_zynqmp.h
++++ b/include/configs/xilinx_zynqmp.h
+@@ -85,6 +85,7 @@
+ #define CONFIG_CLOCKS
+ 
+ #define ENV_MEM_LAYOUT_SETTINGS \
++	"initrd_high=0x38000000\0" \
+ 	"fdt_addr_r=0x40000000\0" \
+ 	"fdt_size_r=0x400000\0" \
+ 	"pxefile_addr_r=0x10000000\0" \
+@@ -95,6 +96,7 @@
+ 	"scriptaddr=0x20000000\0" \
+ 	"ramdisk_addr_r=0x02100000\0" \
+ 	"script_size_f=0x80000\0" \
++	"zboot=1\0" \
+ 
+ #if defined(CONFIG_MMC_SDHCI_ZYNQ)
+ # define BOOT_TARGET_DEVICES_MMC(func)	func(MMC, mmc, 0) func(MMC, mmc, 1)
+-- 
+2.27.0
+

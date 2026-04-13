@@ -1,0 +1,64 @@
+diff --git a/board/xilinx/zynqmp/zynqmp.c b/board/xilinx/zynqmp/zynqmp.c
+index 6652905f27..20976bd8a5 100644
+--- a/board/xilinx/zynqmp/zynqmp.c
++++ b/board/xilinx/zynqmp/zynqmp.c
+@@ -525,7 +525,13 @@ static int reset_reason(void)
+ 
+ 	puts("\n");
+ 
+-	env_set("reset_reason", reason);
++	const char *current_reason = env_get("reset_reason");
++	if (!current_reason || strcmp(current_reason, reason) != 0 )
++	{
++		printf("Set reset reason: %s, previous: %s.\n", reason, current_reason);
++		env_set("reset_reason", reason);
++		env_set("bootenv_save", "true"); //save env later;
++	}
+ 
+ 	ret = zynqmp_mmio_write((ulong)&crlapb_base->reset_reason, ~0, ~0);
+ 	if (ret)
+@@ -720,4 +726,4 @@ int mv88e61xx_hw_reset(struct phy_device *phydev)
+ 
+ 	return 0;
+ }
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/cmd/zboot.c b/cmd/zboot.c
+index 9854a10135..1ac3dbd9bb 100755
+--- a/cmd/zboot.c
++++ b/cmd/zboot.c
+@@ -360,11 +360,7 @@ static int do_zboot(struct cmd_tbl *cmdtp, int flag, int argc, char * const argv
+ 
+ 	image_addr = base_addr + sh->head_size + sh->kernel_offset;
+ 
+-	env_set("zboot_ver", ZBOOT_VERSION);
+-	env_set("zboot_info", ZBOOT_INFO);
+-	env_save();
+ 	/* boot kernel */
+-
+ 	to_bootm(image_addr);
+ 
+ 	return 0;
+diff --git a/include/configs/xilinx_zynqmp.h b/include/configs/xilinx_zynqmp.h
+index f399695670..8f33251f38 100644
+--- a/include/configs/xilinx_zynqmp.h
++++ b/include/configs/xilinx_zynqmp.h
+@@ -10,6 +10,8 @@
+ #ifndef __XILINX_ZYNQMP_H
+ #define __XILINX_ZYNQMP_H
+ 
++#include <zboot_info.h>
++
+ #define CONFIG_REMAKE_ELF
+ 
+ /* #define CONFIG_ARMV8_SWITCH_TO_EL1 */
+@@ -93,6 +95,8 @@
+ 	"scriptaddr=0x2000000\0" \
+ 	"ramdisk_addr_r=0x02100000\0" \
+ 	"script_size_f=0x20000\0" \
++	"zboot_info=" ZBOOT_INFO "\0" \
++	"zboot_ver=" ZBOOT_VERSION "\0" \
+ 	"zboot=1\0" \
+ 	"ethprime=eth1\0" \	
+ 

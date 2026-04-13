@@ -1,0 +1,187 @@
+From 9bf33962166242bf6d1b38fab557e1a8ac5f9362 Mon Sep 17 00:00:00 2001
+From: "fan.wu" <fan.wu@zillnk.com>
+Date: Thu, 1 Aug 2024 05:40:29 +0000
+Subject: [PATCH 4/9] fara support rs485 in uart 2023.2
+
+---
+ drivers/tty/serial/xilinx_uartps.c | 86 ++++++++++++++++++++++++++++++
+ 1 file changed, 86 insertions(+)
+
+diff --git a/drivers/tty/serial/xilinx_uartps.c b/drivers/tty/serial/xilinx_uartps.c
+index 1681e5fcea86..9d9b85bd4fc1 100644
+--- a/drivers/tty/serial/xilinx_uartps.c
++++ b/drivers/tty/serial/xilinx_uartps.c
+@@ -23,6 +23,7 @@
+ #include <linux/module.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/iopoll.h>
++#include <linux/of_gpio.h>
+ 
+ #define CDNS_UART_TTY_NAME	"ttyPS"
+ #define CDNS_UART_NAME		"xuartps"
+@@ -43,6 +44,8 @@ static int rx_timeout = 10;
+ module_param(rx_timeout, uint, 0444);
+ MODULE_PARM_DESC(rx_timeout, "Rx timeout, 1-255");
+ 
++void cdns_485_do_tasklet(unsigned long );
++
+ /* Register offsets for the UART. */
+ #define CDNS_UART_CR		0x00  /* Control Register */
+ #define CDNS_UART_MR		0x04  /* Mode Register */
+@@ -203,6 +206,8 @@ struct cdns_uart {
+ 	struct notifier_block	clk_rate_change_nb;
+ 	u32			quirks;
+ 	bool cts_override;
++	unsigned int			rts_gpio;
++	struct tasklet_struct s485_tasklet;
+ };
+ struct cdns_platform_data {
+ 	u32 quirks;
+@@ -210,6 +215,30 @@ struct cdns_platform_data {
+ #define to_cdns_uart(_nb) container_of(_nb, struct cdns_uart, \
+ 		clk_rate_change_nb)
+ 
++static int cdns_rs485_config(struct uart_port *port, struct ktermios *termios,
++				   struct serial_rs485 *rs485conf)
++{
++	struct cdns_uart *cdns_uart = port->private_data;
++
++	rs485conf->delay_rts_before_send = 0;
++	rs485conf->delay_rts_after_send = 0;
++
++	if (rs485conf->flags & SER_RS485_ENABLED) {
++		if (!gpio_is_valid(cdns_uart->rts_gpio)) {
++			return -EINVAL;
++		}
++
++		gpio_request(cdns_uart->rts_gpio, "s485_rts");
++		gpio_direction_output(cdns_uart->rts_gpio, 0);
++
++		tasklet_init(&cdns_uart->s485_tasklet, cdns_485_do_tasklet, (unsigned long)port);
++	}
++
++	port->rs485 = *rs485conf;
++
++	return 0;
++}
++
+ /**
+  * cdns_uart_handle_rx - Handle the received bytes along with Rx errors.
+  * @dev_id: Id of the UART port
+@@ -320,10 +349,13 @@ static void cdns_uart_handle_rx(void *dev_id, unsigned int isrstatus)
+ static void cdns_uart_handle_tx(void *dev_id)
+ {
+ 	struct uart_port *port = (struct uart_port *)dev_id;
++	struct cdns_uart *cdns_uart = port->private_data;
+ 	struct circ_buf *xmit = &port->state->xmit;
+ 	unsigned int numbytes;
+ 
+ 	if (uart_circ_empty(xmit)) {
++		if (port->rs485.flags & SER_RS485_ENABLED)
++			tasklet_hi_schedule(&cdns_uart->s485_tasklet);
+ 		writel(CDNS_UART_IXR_TXEMPTY, port->membase + CDNS_UART_IDR);
+ 		return;
+ 	}
+@@ -580,10 +612,15 @@ static int cdns_uart_clk_notifier_cb(struct notifier_block *nb,
+ static void cdns_uart_start_tx(struct uart_port *port)
+ {
+ 	unsigned int status;
++	struct cdns_uart *cdns_uart = port->private_data;
+ 
+ 	if (uart_tx_stopped(port))
+ 		return;
+ 
++	if (port->rs485.flags & SER_RS485_ENABLED) {
++		gpio_set_value(cdns_uart->rts_gpio, 1);
++	}
++
+ 	/*
+ 	 * Set the TX enable bit and clear the TX disable bit to enable the
+ 	 * transmitter.
+@@ -611,6 +648,15 @@ static void cdns_uart_start_tx(struct uart_port *port)
+ static void cdns_uart_stop_tx(struct uart_port *port)
+ {
+ 	unsigned int regval;
++	struct cdns_uart *cdns_uart = port->private_data;
++
++	/* in rs485 mode disable transmitter if shifter is empty */
++	if (port->rs485.flags & SER_RS485_ENABLED &&
++			gpio_is_valid(cdns_uart->rts_gpio)) {
++
++		gpio_set_value(cdns_uart->rts_gpio, 0);
++		gpio_free(cdns_uart->rts_gpio);
++	}
+ 
+ 	regval = readl(port->membase + CDNS_UART_CR);
+ 	regval |= CDNS_UART_CR_TX_DIS;
+@@ -1464,6 +1510,40 @@ MODULE_DEVICE_TABLE(of, cdns_uart_of_match);
+ /* Temporary variable for storing number of instances */
+ static int instances;
+ 
++// TODO: custom a new macro to avoid warnings
++#define cdns_container_of(ptr, type, member) ((type *)((char *)(ptr) - offsetof(type, member)))
++
++void cdns_485_do_tasklet(unsigned long param)
++{
++	struct uart_port *port;
++	struct uart_state *state;
++	struct tty_struct *tty;
++	struct ktermios termios;
++	unsigned int baud;
++	int bit_width;
++	struct cdns_uart *cdns_uart;
++
++	port = (struct uart_port *)param;
++	cdns_uart = port->private_data;
++
++	while (cdns_uart_tx_empty(port) != TIOCSER_TEMT)
++		cpu_relax();
++
++	state = cdns_container_of(port, struct uart_state, uart_port);
++	tty = cdns_container_of(state, struct tty_struct, driver_data);
++	termios = tty->termios;
++	baud = uart_get_baud_rate(port, &termios, NULL, 1200, 9600);
++	bit_width = (baud > 0) ? 1000000 / baud : 0;
++
++	/* Measured delay value is 50 us */
++	bit_width = (bit_width > 50) ? (bit_width - 50) : 0;
++
++	/* a stop bit */
++	udelay(bit_width);
++
++	gpio_set_value(cdns_uart->rts_gpio, 0);
++}
++
+ /**
+  * cdns_uart_probe - Platform driver probe
+  * @pdev: Pointer to the platform device structure
+@@ -1477,6 +1557,7 @@ static int cdns_uart_probe(struct platform_device *pdev)
+ 	struct resource *res;
+ 	struct cdns_uart *cdns_uart_data;
+ 	const struct of_device_id *match;
++	struct device_node *np = pdev->dev.of_node;
+ 
+ 	cdns_uart_data = devm_kzalloc(&pdev->dev, sizeof(*cdns_uart_data),
+ 			GFP_KERNEL);
+@@ -1523,6 +1604,10 @@ static int cdns_uart_probe(struct platform_device *pdev)
+ 		cdns_uart_data->quirks = data->quirks;
+ 	}
+ 
++	if (!of_property_read_u32(np, "rts-gpio", &cdns_uart_data->rts_gpio)) {
++		dev_err(&pdev->dev, "rts pin : %d\n", cdns_uart_data->rts_gpio);
++	}
++
+ 	cdns_uart_data->pclk = devm_clk_get(&pdev->dev, "pclk");
+ 	if (PTR_ERR(cdns_uart_data->pclk) == -EPROBE_DEFER) {
+ 		rc = PTR_ERR(cdns_uart_data->pclk);
+@@ -1593,6 +1678,7 @@ static int cdns_uart_probe(struct platform_device *pdev)
+ 	port->fifosize	= CDNS_UART_FIFO_SIZE;
+ 	port->has_sysrq = IS_ENABLED(CONFIG_SERIAL_XILINX_PS_UART_CONSOLE);
+ 	port->line	= id;
++	port->rs485_config  = cdns_rs485_config;
+ 
+ 	/*
+ 	 * Register the port.
+-- 
+2.25.1
+

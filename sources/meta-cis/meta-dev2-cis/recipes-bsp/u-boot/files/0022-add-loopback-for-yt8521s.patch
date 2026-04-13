@@ -1,0 +1,156 @@
+diff --git a/drivers/net/phy/motorcomm.c b/drivers/net/phy/motorcomm.c
+index 8a13a0a7f1..19ca7253e5 100644
+--- a/drivers/net/phy/motorcomm.c
++++ b/drivers/net/phy/motorcomm.c
+@@ -37,6 +37,7 @@
+ #include <errno.h>
+ #include <linux/err.h>
+ 
++#define PHY_ID_YT8521S                  0x0000011a
+ #define PHY_ID_YT8531                   0x4f51e91b
+ #define PHY_ID_YT8531S                  0x4f51e91a
+ #define PHY_ID_MASK                     0xffffffff
+@@ -324,8 +325,10 @@ static int yt8521_adjust_status(struct phy_device *phydev, int val, int is_utp)
+ 
+ int yt8521S_loopback(struct phy_device *phydev)
+ {
+-	int val;
+ 	int ret = 0;
++
++#if 1 //seems ext loop back mode need write these reg
++	int val;
+ 	val = yt_read_ext(phydev, 0x27);
+ 	val &= ~(1<<15);
+ 	ret = yt_write_ext(phydev, 0x27, val);
+@@ -340,7 +343,17 @@ int yt8521S_loopback(struct phy_device *phydev)
+ 		printf("yt_write_ext 0x0A fail:%d.\n", ret);
+ 		return ret;
+ 	}
+-	phy_write(phydev, MDIO_DEVAD_NONE, MII_BMCR, 0x8140);
++#endif
++
++	if (phy_read(phydev, MDIO_DEVAD_NONE, MII_BMCR) == 0x40)
++		return 0;
++
++	ret = phy_write(phydev, MDIO_DEVAD_NONE, MII_BMCR, 0x8140);
++	if (ret < 0) {
++		printf("%s: phy_write addr[0x%x] val[0x%x] failed.\n", __func__, MII_BMCR, 0x8040);
++		return ret;
++	}
++
+ 	return 0;
+ }
+ 
+@@ -348,11 +361,24 @@ int yt8521S_loopback_exit(struct phy_device *phydev)
+ {
+ 	int ret = 0;
+ 	printf("yt8521S_loopback_exit\n");
++
++#if 1 //seems ext loop back mode need write these reg
+ 	ret = yt_write_ext(phydev, 0xa0c0, 0x8000);
+ 	if (ret < 0){
+ 		printf("yt_write_ext 0xa0c0 fail:%d.\n", ret);
+ 		return ret;
+ 	}
++#endif
++
++	if (phy_read(phydev, MDIO_DEVAD_NONE, MII_BMCR) == 0x1000)
++		return 0;
++
++	ret = phy_write(phydev, MDIO_DEVAD_NONE, MII_BMCR, 0x9000);
++	if (ret < 0) {
++		printf("%s: phy_write addr[0x%x] val[0x%x] failed.\n", __func__, MII_BMCR, 0x9000);
++		return ret;
++	}
++
+ 	return 0;
+ }
+ 
+@@ -487,7 +513,7 @@ static int yt8521S_startup(struct phy_device *phydev)
+ 	mode = loopback_mode();
+ 	printf("Get loopback mode:%d\n", mode);
+ #endif
+-	msleep(1000);
++	//msleep(1000); //need this
+ 	if (mode) { //loopback mode
+ 		yt8521S_loopback(phydev);
+ 		phydev->speed = SPEED_1000;
+@@ -554,6 +580,17 @@ static int yt8521S_startup(struct phy_device *phydev)
+ 	return 0;
+ }
+ 
++static struct phy_driver YT8521S_driver = {
++    .name          = "YT8521S Gigabit Ethernet",
++    .uid           = PHY_ID_YT8521S,
++    .mask          = PHY_ID_MASK,
++    .features      = PHY_GBIT_FEATURES,
++    .probe         = &yt8521S_probe,
++    .config        = &yt8521S_config,
++    .startup       = &yt8521S_startup,
++    .shutdown      = &genphy_shutdown,    
++};
++
+ static struct phy_driver YT8531_driver = {
+ 	.name          = "YT8531 Gigabit Ethernet",
+ 	.uid           = PHY_ID_YT8531,
+@@ -577,6 +614,7 @@ static struct phy_driver YT8531S_driver = {
+ 
+ int phy_yt_init(void)
+ {
++	phy_register(&YT8521S_driver);
+ 	phy_register(&YT8531_driver);
+ 	phy_register(&YT8531S_driver);
+ 
+diff --git a/net/loopback.c b/net/loopback.c
+index 7c8ff857d5..64490c69a0 100644
+--- a/net/loopback.c
++++ b/net/loopback.c
+@@ -54,16 +54,23 @@ static void loopback_handler(uchar *packet, unsigned int dport,
+ 			     struct in_addr sip, unsigned int sport,
+ 			     unsigned int len)
+ {
++	const char *loopback_val = env_get("Loopback");
+ 	if ((dport != WELL_PORT) || (sport != WELL_PORT) ||
+ 			(len != PACK_SIZE))
+ 		return;
+ 
+ 	if (memcmp(str_r, packet, PACK_SIZE) == 0) {
+-		env_set("Loopback", "yes");
++		if (!loopback_val || strcmp(loopback_val, "yes") != 0) {
++			env_set("Loopback", "yes");
++			env_set("bootenv_save", "true"); //save env later;
++		}
+ 		printf("Loopback detected!\n");
+ 	}
+ 	else{
+-		env_set("Loopback", "no");
++		if (!loopback_val || strcmp(loopback_val, "no") != 0) {
++			env_set("Loopback", "no");
++			env_set("bootenv_save", "true"); //save env later;
++		}
+ 		printf("Loopback NOT detected!\n");
+ 	}
+ 
+@@ -115,4 +122,4 @@ void loopback_start_server(void)
+ 							send_len);
+ 		mdelay(50);
+ 	}
+-}
+\ No newline at end of file
++}
+diff --git a/net/net.c b/net/net.c
+index 153aa270b4..7dcc2cf963 100644
+--- a/net/net.c
++++ b/net/net.c
+@@ -445,7 +445,10 @@ int net_loop(enum proto_t protocol)
+ 		eth_set_current();
+ 		ret = eth_init();
+ 		if (ret < 0) {
+-			env_set("Loopback", "no");
++			if (!env_get("Loopback") || strcmp(env_get("Loopback"), "no") != 0) {
++				env_set("Loopback", "no");
++				env_set("bootenv_save", "true"); //save env later;
++			}
+ 			printf("Loopback NOT detected!\n");
+ 			eth_halt();
+ 			return ret;

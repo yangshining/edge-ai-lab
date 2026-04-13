@@ -1,0 +1,36 @@
+--- a/src/uboot_env.c	+0800
++++ b/scr/uboot_env.c	+0800
+@@ -735,7 +735,7 @@ static int mtdwrite(struct uboot_flash_e
+ 			/*
+ 			 * unlock could fail, no check
+ 			 */
+-			ioctl(dev->fd, MEMUNLOCK, &erase);
++			//ioctl(dev->fd, MEMUNLOCK, &erase);
+ 			if (ioctl(dev->fd, MEMERASE, &erase) != 0) {
+ 				ret =-EIO;
+ 				goto devwrite_out;
+@@ -748,7 +748,7 @@ static int mtdwrite(struct uboot_flash_e
+ 				ret =-EIO;
+ 				goto devwrite_out;
+ 			}
+-			ioctl(dev->fd, MEMLOCK, &erase);
++			//ioctl(dev->fd, MEMLOCK, &erase);
+ 			start += dev->sectorsize;
+ 			buf += blocksize;
+ 			count -= blocksize;
+@@ -828,13 +828,13 @@ static int set_obsolete_flag(struct uboo
+ 	}
+ 	erase.start = dev->offset;
+ 	erase.length = dev->sectorsize;
+-	ioctl(dev->fd, MEMUNLOCK, &erase);
++	//ioctl(dev->fd, MEMUNLOCK, &erase);
+ 	ret = write(dev->fd, &flag, sizeof(flag));
+ 	if (ret == sizeof(flag))
+ 		ret = 0;
+ 	else if (ret >= 0)
+ 		ret = -EIO;
+-	ioctl (dev->fd, MEMLOCK, &erase);
++	//ioctl (dev->fd, MEMLOCK, &erase);
+ 	close(dev->fd);
+ 
+ 	return ret;

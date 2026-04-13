@@ -1,0 +1,118 @@
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.c b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.c
+index 0b6aac4624..e7079da72c 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.c
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.c
+@@ -69,6 +69,8 @@ static u8 TxBfrPtr __attribute__ ((aligned(32)));
+ static u8 ReadBuffer[10] __attribute__ ((aligned(32)));
+ static u8 WriteBuffer[10] __attribute__ ((aligned(32)));
+ static u32 MacronixFlash = 0U;
++u8 MultiDie = (u8)FALSE;
++
+ /******************************************************************************
+ *
+ * This function reads serial FLASH ID connected to the SPI interface.
+@@ -134,6 +136,10 @@ static u32 FlashReadID(XQspiPsu *QspiPsuPtr)
+ 	} else if(ReadBuffer[0] == ISSI_ID) {
+ 		QspiFlashMake = ISSI_ID;
+ 		XFsbl_Printf(DEBUG_INFO, "ISSI ");
++	}
++	else if (ReadBuffer[0] == GIGADEVICE_ID) {
++		QspiFlashMake = GIGADEVICE_ID;
++		XFsbl_Printf(DEBUG_INFO, "GIGADEVICE ");
+ 	} else {
+ 		UStatus = XFSBL_ERROR_UNSUPPORTED_QSPI;
+ 		XFsbl_Printf(DEBUG_GENERAL,"XFSBL_ERROR_UNSUPPORTED_QSPI\r\n");
+@@ -176,6 +182,11 @@ static u32 FlashReadID(XQspiPsu *QspiPsuPtr)
+ 			|| (ReadBuffer[2] == MACRONIX_FLASH_SIZE_ID_2G)
+ 			|| (ReadBuffer[2] == MACRONIX_FLASH_1_8_V_SIZE_ID_2G)) {
+                 QspiFlashSize = FLASH_SIZE_2G;
++		if ((QspiFlashMake == WINBOND_ID) ||
++			(QspiFlashMake == GIGADEVICE_ID) ||
++			(QspiFlashMake == MICRON_ID)) {
++			MultiDie = (u8)TRUE;
++		}
+                 XFsbl_Printf(DEBUG_INFO, "2G Bits\r\n");
+ 	}else {
+ 		UStatus = XFSBL_ERROR_UNSUPPORTED_QSPI;
+@@ -1193,6 +1204,9 @@ u32 XFsbl_Qspi32Copy(u32 SrcAddress, PTRSIZE DestAddress, u32 Length)
+ 	u32 TransferBytes;
+ 	u32 DiscardByteCnt;
+ 	u32 UStatus;
++	u32 BankSize;
++	u32 BankMask;
++	u32 OrigAddr;
+ 
+ 	XFsbl_Printf(DEBUG_INFO,"QSPI Reading Src 0x%0lx, Dest %0lx, Length %0lx\r\n",
+ 			SrcAddress, DestAddress, Length);
+@@ -1207,7 +1221,20 @@ u32 XFsbl_Qspi32Copy(u32 SrcAddress, PTRSIZE DestAddress, u32 Length)
+ 		goto END;
+ 	}
+ 
++	if (MultiDie == (u8)TRUE) {
++		BankSize = BANKSIZE_64MB;
++		BankMask = BANKMASK_64MB;
++	}
++	else {
++		BankSize = BANKSIZE;
++		BankMask = BANKMASK;
++	}
+ 
++	if (QspiPsuInstance.Config.ConnectionMode ==
++	    XQSPIPSU_CONNECTION_MODE_PARALLEL){
++		BankSize *=  2U;
++		BankMask *=  2U;
++	}
+ 	/**
+ 	 * Update no of bytes to be copied
+ 	 */
+@@ -1227,6 +1254,29 @@ u32 XFsbl_Qspi32Copy(u32 SrcAddress, PTRSIZE DestAddress, u32 Length)
+ 		 * If stacked assert the slave select based on address
+ 		 */
+ 		QspiAddr = XFsbl_GetQspiAddr((u32 )SrcAddress);
++		if (MultiDie == (u8)TRUE) {
++			/**
++			 * Multiply address by 2 in case of Dual Parallel
++			 * This address is used to calculate the bank crossing
++			 * condition
++			 */
++			if (QspiPsuInstance.Config.ConnectionMode ==
++				XQSPIPSU_CONNECTION_MODE_PARALLEL){
++				OrigAddr = QspiAddr * 2U;
++			} else {
++				OrigAddr = QspiAddr;
++			}
++			/**
++			 * If data to be read spans beyond the current die, then
++			 * calculate Transfer Bytes in current die. Else
++			 * transfer bytes are same
++			 */
++			if ((OrigAddr & BankMask) != ((OrigAddr + TransferBytes)
++					& BankMask)) {
++				TransferBytes = (OrigAddr & BankMask) + BankSize
++					- OrigAddr;
++			}
++		}
+ 
+ 		XFsbl_Printf(DEBUG_INFO,".");
+ 		XFsbl_Printf(DEBUG_DETAILED,
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.h b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.h
+index b37a657690..3eb7b31322 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.h
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.h
+@@ -126,6 +126,8 @@ extern "C" {
+ #define FLASH_SIZE_16MB			(0x1000000U)
+ #define BANKSIZE			(FLASH_SIZE_16MB)
+ #define SINGLEBANKSIZE			BANKSIZE
++#define BANKSIZE_64MB			(0x4000000U)
++#define BANKMASK_64MB			(~(BANKSIZE_64MB - 1U))
+ 
+ /*
+  * Bank mask
+@@ -152,6 +154,7 @@ extern "C" {
+ #define WINBOND_ID		(0xEFU)
+ #define MACRONIX_ID		(0xC2U)
+ #define ISSI_ID			(0x9DU)
++#define GIGADEVICE_ID	(0xC8U)
+ 
+ #define FLASH_SIZE_ID_8M		(0x14U)
+ #define FLASH_SIZE_ID_16M		(0x15U)

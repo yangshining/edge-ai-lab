@@ -1,0 +1,16 @@
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_main.c b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_main.c
+index d38f799e91..7e730c8bae 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_main.c
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_main.c
+@@ -120,7 +120,10 @@ int main(void )
+ 				/* Get Start time for Boot Device init. */
+ 				XTime_GetTime(&tCur);
+ #endif
+-
++				XFsbl_Printf(DEBUG_INFO,
++						"FSBL system error! Initialization failed 0x%0lx\n\r", XFSBL_STAGE_ERR);
++				FsblStatus = XFSBL_STAGE_ERR;
++				return -1;
+ 				XFsbl_Printf(DEBUG_INFO,
+ 						"================= In Stage 2 ============ \n\r");
+ 

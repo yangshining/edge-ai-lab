@@ -1,0 +1,97 @@
+diff --git a/arch/arm/mach-versal/include/mach/hardware.h b/arch/arm/mach-versal/include/mach/hardware.h
+index 000af974e8..094bc82221 100644
+--- a/arch/arm/mach-versal/include/mach/hardware.h
++++ b/arch/arm/mach-versal/include/mach/hardware.h
+@@ -97,3 +97,25 @@ struct crp_regs {
+ #define MIO_PIN_12	0xF1060030
+ #define BANK0_OUTPUT	0xF1020040
+ #define BANK0_TRI	0xF1060200
++
++/* Reset Reason Mask */
++/*
++ * PMC_GLOBAL Base Address
++ */
++#ifndef PMC_GLOBAL_BASEADDR
++#define PMC_GLOBAL_BASEADDR     (0XF1110000U)
++#endif
++/*
++ * Register: PMC_GLOBAL_PERS_GEN_STORAGE2
++ */
++#define PMC_GLOBAL_PERS_GEN_STORAGE2	(PMC_GLOBAL_BASEADDR + 0X00000058U)
++
++ #define RESET_REASON_MASK				(0x0000FFFFU)
++#define RESET_REASON_SLR_SYS			BIT(10)
++#define RESET_REASON_SW_SYS				BIT(9)
++#define RESET_REASON_ERR_SYS			BIT(8)
++#define RESET_REASON_DAP_SYS			BIT(7)
++#define RESET_REASON_ERR_POR			BIT(3)
++#define RESET_REASON_SLR_POR			BIT(2)
++#define RESET_REASON_SW_POR				BIT(1)
++#define RESET_REASON_EXTERNAL_POR		BIT(0)
+diff --git a/board/xilinx/versal/board.c b/board/xilinx/versal/board.c
+index 933058adf9..3203f38f1f 100644
+--- a/board/xilinx/versal/board.c
++++ b/board/xilinx/versal/board.c
+@@ -125,6 +125,53 @@ static u8 versal_get_bootmode(void)
+ 	return bootmode;
+ }
+ 
++static const struct {
++	u32 bit;
++	const char *name;
++} reset_reasons[] = {
++	{ RESET_REASON_SLR_SYS, "SLR" },
++	{ RESET_REASON_SW_SYS, "SOFT" },
++	{ RESET_REASON_ERR_SYS, "PMU" },
++	{ RESET_REASON_DAP_SYS, "DAP" },
++	{ RESET_REASON_ERR_POR, "PMC_POR" },
++	{ RESET_REASON_SLR_POR, "SLR_POR" },
++	{ RESET_REASON_SW_POR, "SW_POR" },
++	{ RESET_REASON_EXTERNAL_POR, "EXTERNAL" },
++	{}
++};
++
++static int reset_reason(void)
++{
++	u32 reg;
++	int i, ret;
++	const char *reason = NULL;
++
++	/* Reset reason reg was handled by plm and store reset reason value in PMC_GLOBAL_PERS_GEN_STORAGE2 */
++	reg = readl((ulong)PMC_GLOBAL_PERS_GEN_STORAGE2);
++
++	puts("Reset reason:\t");
++
++	for (i = 0; i < ARRAY_SIZE(reset_reasons); i++) {
++		if (reg & reset_reasons[i].bit) {
++			reason = reset_reasons[i].name;
++			printf("%s ", reset_reasons[i].name);
++			break;
++		}
++	}
++
++	puts("\n");
++
++	const char *current_reason = env_get("reset_reason");
++	if (!current_reason || strcmp(current_reason, reason) != 0 )
++	{
++		printf("Set reset reason: %s, previous: %s.\n", reason, current_reason);
++		env_set("reset_reason", reason);
++		env_set("bootenv_save", "true"); //save env later;
++	}
++
++	return 0;
++}
++
+ int board_late_init(void)
+ {
+ 	u8 bootmode;
+@@ -246,6 +293,8 @@ int board_late_init(void)
+ 		env_set("boot_targets", new_targets);
+ 	}
+ 
++	reset_reason();
++
+ 	return board_late_init_xilinx();
+ }
+ 

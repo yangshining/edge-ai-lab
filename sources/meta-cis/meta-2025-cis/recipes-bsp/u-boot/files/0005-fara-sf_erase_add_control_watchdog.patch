@@ -1,0 +1,58 @@
+diff --git a/cmd/sf.c b/cmd/sf.c
+index ee7bad595e..7fa1e52e1f 100644
+--- a/cmd/sf.c
++++ b/cmd/sf.c
+@@ -21,6 +21,8 @@
+ 
+ #include <asm/io.h>
+ #include <dm/device-internal.h>
++#include <wdt.h>
++#include <watchdog.h>
+ 
+ #include "legacy-mtd-utils.h"
+ 
+@@ -602,10 +604,17 @@ static int do_spi_flash(struct cmd_tbl *cmdtp, int flag, int argc,
+ 	}
+ 
+ 	if (strcmp(cmd, "read") == 0 || strcmp(cmd, "write") == 0 ||
+-	    strcmp(cmd, "update") == 0)
+-		ret = do_spi_flash_read_write(argc, argv);
+-	else if (strcmp(cmd, "erase") == 0)
+-		ret = do_spi_flash_erase(argc, argv);
++	    strcmp(cmd, "update") == 0) {
++#if CONFIG_IS_ENABLED(WDT)
++		wdt_stop_all();
++#endif
++ 		ret = do_spi_flash_read_write(argc, argv);
++	}	else if (strcmp(cmd, "erase") == 0) {
++#if CONFIG_IS_ENABLED(WDT)
++		wdt_stop_all();
++#endif
++ 		ret = do_spi_flash_erase(argc, argv);
++	}
+ 	else if (strcmp(cmd, "protect") == 0)
+ 		ret = do_spi_protect(argc, argv);
+ 	else if (IS_ENABLED(CONFIG_CMD_SF_TEST) && !strcmp(cmd, "test"))
+@@ -613,6 +622,10 @@ static int do_spi_flash(struct cmd_tbl *cmdtp, int flag, int argc,
+ 	else
+ 		ret = -1;
+ 
++#if CONFIG_IS_ENABLED(WDT)
++		initr_watchdog();
++		init_func_watchdog_reset();
++#endif
+ done:
+ 	if (ret != -1)
+ 		return ret;
+diff --git a/drivers/watchdog/wdt-uclass.c b/drivers/watchdog/wdt-uclass.c
+index 509896a1b8..80638534e8 100644
+--- a/drivers/watchdog/wdt-uclass.c
++++ b/drivers/watchdog/wdt-uclass.c
+@@ -187,6 +187,7 @@ int wdt_stop_all(void)
+ 			ret = err;
+ 	}
+ 
++	printf("WDT:   All stopped\n");
+ 	return ret;
+ }
+ 

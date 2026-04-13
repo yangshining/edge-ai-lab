@@ -1,0 +1,45 @@
+diff --git a/drivers/net/ethernet/xilinx/xilinx_axienet_main.c b/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
+index ae0a94de3..9369da963 100644
+--- a/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
++++ b/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
+@@ -79,6 +79,8 @@
+ #define MSG_TYPE_PDELAY_RESP_FLAG	((PTP_TYPE_PDELAY_RESP + 1) << \
+ 									 MSG_TYPE_SHIFT)
+ 
++void __iomem *g_mcdma_regs = NULL;
++
+ #ifdef CONFIG_XILINX_TSN_PTP
+ int axienet_phc_index = -1;
+ EXPORT_SYMBOL(axienet_phc_index);
+@@ -886,7 +888,7 @@ static void axienet_rx_hwtstamp(struct axienet_local *lp,
+ 		dev_info(lp->dev, "Did't get FIFO rx interrupt %d\n", val);
+ 		return;
+ 	}
+-
++	//dev_info(lp->dev, "get FIFO rx interrupt success %d\n", val);
+ 	val = axienet_rxts_ior(lp, XAXIFIFO_TXTS_RFO);
+ 	if (!val)
+ 		return;
+@@ -2792,11 +2794,17 @@ static int __maybe_unused axienet_mcdma_probe(struct platform_device *pdev,
+ 		lp->dma_mask = XAE_DMA_MASK_MIN;
+ 	}
+ 
+-	lp->mcdma_regs = devm_ioremap_resource(&pdev->dev, &dmares);
+-	if (IS_ERR(lp->mcdma_regs)) {
+-		dev_err(&pdev->dev, "iormeap failed for the dma\n");
+-		ret = PTR_ERR(lp->mcdma_regs);
+-		return ret;
++	if (g_mcdma_regs) {
++		lp->mcdma_regs = g_mcdma_regs;
++		g_mcdma_regs = NULL;
++	} else {
++		lp->mcdma_regs = devm_ioremap_resource(&pdev->dev, &dmares);
++		if (IS_ERR(lp->mcdma_regs)) {
++			dev_err(&pdev->dev, "iormeap failed for the dma\n");
++			ret = PTR_ERR(lp->mcdma_regs);
++			return ret;
++		}
++		g_mcdma_regs = lp->mcdma_regs;
+ 	}
+ 
+ 	axienet_mcdma_tx_probe(pdev, np, lp);

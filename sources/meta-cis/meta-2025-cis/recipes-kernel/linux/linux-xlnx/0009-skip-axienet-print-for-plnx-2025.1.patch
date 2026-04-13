@@ -1,0 +1,26 @@
+From 99d110b165afbdd99e4262e0231bd2b0b71bb950 Mon Sep 17 00:00:00 2001
+From: Fan Wu <fan.wu@zillnk.com>
+Date: Tue, 18 Mar 2025 17:22:23 +0800
+Subject: [PATCH] skip axienet print for petalinux 2025.1
+
+---
+ drivers/net/ethernet/xilinx/xilinx_axienet_main.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/ethernet/xilinx/xilinx_axienet_main.c b/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
+index 8415a295335c..561a76466c07 100644
+--- a/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
++++ b/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
+@@ -3909,7 +3909,8 @@ static int axienet_ethtools_get_ts_info(struct net_device *ndev,
+ 		if (timer)
+ 			info->phc_index = timer->phc_index;
+ 		else if (!timer)
+-			netdev_warn(ndev, "PTP timer node not found\n");
++			;
++			//netdev_warn(ndev, "PTP timer node not found\n");
+ 
+ 		of_node_put(np);
+ 		platform_device_put(ptpnode);
+-- 
+2.34.1
+

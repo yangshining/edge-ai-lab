@@ -1,0 +1,148 @@
+From c90c816f2a34e4ee30b1dc77928719e903f5f5a6 Mon Sep 17 00:00:00 2001
+From: Fan Wu <fan.wu@zillnk.com>
+Date: Tue, 2 Jul 2024 19:18:55 +0800
+Subject: [PATCH 4/4] spi modify, maybe used for debug
+
+---
+ drivers/spi/spi-cadence.c      |  2 +-
+ drivers/spi/spi-xilinx.c       | 41 ++++++++++++++++++++++++++++------
+ drivers/spi/spi-zynqmp-gqspi.c |  3 ++-
+ 3 files changed, 37 insertions(+), 9 deletions(-)
+
+diff --git a/drivers/spi/spi-cadence.c b/drivers/spi/spi-cadence.c
+index 20b1ea76e7d5..e1f6056a1226 100644
+--- a/drivers/spi/spi-cadence.c
++++ b/drivers/spi/spi-cadence.c
+@@ -457,7 +457,7 @@ static int cdns_unprepare_transfer_hardware(struct spi_master *master)
+ {
+ 	struct cdns_spi *xspi = spi_master_get_devdata(master);
+ 
+-	cdns_spi_write(xspi, CDNS_SPI_ER, CDNS_SPI_ER_DISABLE);
++	// cdns_spi_write(xspi, CDNS_SPI_ER, CDNS_SPI_ER_DISABLE);
+ 
+ 	return 0;
+ }
+diff --git a/drivers/spi/spi-xilinx.c b/drivers/spi/spi-xilinx.c
+index 8c9a28a286b3..e34b1792ce86 100644
+--- a/drivers/spi/spi-xilinx.c
++++ b/drivers/spi/spi-xilinx.c
+@@ -92,6 +92,17 @@
+ /* Command used for Dummy read Id */
+ #define SPI_READ_ID		0x9F
+ 
++/* Used to identify the maximum number of slaves */
++#define MAX_SLAVE_NUM	4
++
++/**
++ * struct slave - This definition define slave_spi instance
++ * @para:		indicates whether to enable the slave
++ * @n_para:		number of parameters passed in
++ */
++static int para[MAX_SLAVE_NUM];
++static int n_para;
++
+ /**
+  * struct xilinx_spi - This definition define spi driver instance
+  * @regs:		virt. address of the control registers
+@@ -186,6 +197,8 @@ static void xspi_fill_tx_fifo_##size(struct xilinx_spi *xqspi)		\
+ 		xqspi->tx_ptr += count;					\
+ }
+ 
++module_param_array(para, int, &n_para, S_IRUGO);
++
+ XSPI_FIFO_READ(8, u8)
+ XSPI_FIFO_READ(16, u16)
+ XSPI_FIFO_READ(32, u32)
+@@ -642,14 +655,28 @@ static int xilinx_spi_probe(struct platform_device *pdev)
+ {
+ 	struct xilinx_spi *xspi;
+ 	struct resource *res;
+-	int ret;
+-	u32 num_cs = 0, bits_per_word = 8;
++	int ret, i;
++	u32 num_cs = 0, id = 0, bits_per_word = 8;
+ 	u32 cs_num;
+ 	struct spi_master *master;
+ 	struct device_node *nc;
+ 	u32 tmp, rx_bus_width, fifo_size;
+ 	bool startup_block;
+ 
++	printk("1\n");
++
++	of_property_read_u32(pdev->dev.of_node, "label", &id);
++
++	for (i = 0; i < n_para; i++) {
++		if (id == para[i]) {
++			id = 1;
++			break;
++		}
++	}
++
++	if (id != 1)
++		return -EINVAL;
++	printk("2\n");
+ 	if (of_property_read_u32(pdev->dev.of_node, "num-cs", &num_cs))
+ 		dev_info(&pdev->dev,
+ 			 "Missing num-cs optional property, assuming default as <1>\n");
+@@ -666,7 +693,7 @@ static int xilinx_spi_probe(struct platform_device *pdev)
+ 	master = spi_alloc_master(&pdev->dev, sizeof(struct xilinx_spi));
+ 	if (!master)
+ 		return -ENODEV;
+-
++	printk("3\n");
+ 	xspi = spi_master_get_devdata(master);
+ 	master->dev.of_node = pdev->dev.of_node;
+ 	platform_set_drvdata(pdev, master);
+@@ -687,7 +714,7 @@ static int xilinx_spi_probe(struct platform_device *pdev)
+ 				 &bits_per_word))
+ 		dev_info(&pdev->dev,
+ 			 "Missing bits-per-word optional property, assuming default as <8>\n");
+-
++	printk("4\n");
+ 	xspi->rx_bus_width = XSPI_ONE_BITS_PER_WORD;
+ 	for_each_available_child_of_node(pdev->dev.of_node, nc) {
+ 		if (startup_block) {
+@@ -703,7 +730,7 @@ static int xilinx_spi_probe(struct platform_device *pdev)
+ 			break;
+ 		}
+ 	}
+-
++	printk("5\n");
+ 	xspi->axi_clk = devm_clk_get(&pdev->dev, "axi_clk");
+ 	if (IS_ERR(xspi->axi_clk)) {
+ 		if (PTR_ERR(xspi->axi_clk) != -ENOENT) {
+@@ -717,7 +744,7 @@ static int xilinx_spi_probe(struct platform_device *pdev)
+ 		 */
+ 		xspi->axi_clk = NULL;
+ 	}
+-
++	printk("6\n");
+ 	ret = clk_prepare(xspi->axi_clk);
+ 	if (ret) {
+ 		dev_err(&pdev->dev, "Failed to prepare AXI clock\n");
+@@ -737,7 +764,7 @@ static int xilinx_spi_probe(struct platform_device *pdev)
+ 		 */
+ 		xspi->axi4_clk = NULL;
+ 	}
+-
++	printk("7\n");
+ 	ret = clk_prepare(xspi->axi4_clk);
+ 	if (ret) {
+ 		dev_err(&pdev->dev, "Failed to prepare AXI4 clock\n");
+diff --git a/drivers/spi/spi-zynqmp-gqspi.c b/drivers/spi/spi-zynqmp-gqspi.c
+index f502477284bf..25ecae3a47e4 100644
+--- a/drivers/spi/spi-zynqmp-gqspi.c
++++ b/drivers/spi/spi-zynqmp-gqspi.c
+@@ -1057,7 +1057,8 @@ static int __maybe_unused zynqmp_runtime_suspend(struct device *dev)
+  */
+ static int __maybe_unused zynqmp_runtime_resume(struct device *dev)
+ {
+-	struct zynqmp_qspi *xqspi = (struct zynqmp_qspi *)dev_get_drvdata(dev);
++	struct spi_controller *ctlr = dev_get_drvdata(dev);
++	struct zynqmp_qspi *xqspi = spi_controller_get_devdata(ctlr);
+ 	int ret;
+ 
+ 	ret = clk_enable(xqspi->pclk);
+-- 
+2.27.0
+

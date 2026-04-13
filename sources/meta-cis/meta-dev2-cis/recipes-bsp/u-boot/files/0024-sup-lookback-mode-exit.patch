@@ -1,0 +1,104 @@
+diff --git a/cmd/ethloop.c b/cmd/ethloop.c
+index c40de435ad..4b54d502a2 100644
+--- a/cmd/ethloop.c
++++ b/cmd/ethloop.c
+@@ -16,6 +16,7 @@ static int do_loopback_assert(int argc, char *const argv[])
+ 	loopback_state_set(1);
+ 	net_loop(LOOPBACK);
+ 	loopback_state_set(0);
++	net_loop(LOOPBACKEXIT);
+ 
+ 	return CMD_RET_SUCCESS;
+ }
+diff --git a/drivers/net/phy/motorcomm.c b/drivers/net/phy/motorcomm.c
+index 19ca7253e5..510ab3d177 100644
+--- a/drivers/net/phy/motorcomm.c
++++ b/drivers/net/phy/motorcomm.c
+@@ -350,7 +350,7 @@ int yt8521S_loopback(struct phy_device *phydev)
+ 
+ 	ret = phy_write(phydev, MDIO_DEVAD_NONE, MII_BMCR, 0x8140);
+ 	if (ret < 0) {
+-		printf("%s: phy_write addr[0x%x] val[0x%x] failed.\n", __func__, MII_BMCR, 0x8040);
++		printf("%s: phy_write addr[0x%x] val[0x%x] failed.\n", __func__, MII_BMCR, 0x8140);
+ 		return ret;
+ 	}
+ 
+@@ -363,16 +363,21 @@ int yt8521S_loopback_exit(struct phy_device *phydev)
+ 	printf("yt8521S_loopback_exit\n");
+ 
+ #if 1 //seems ext loop back mode need write these reg
+-	ret = yt_write_ext(phydev, 0xa0c0, 0x8000);
++	//ret = yt_write_ext(phydev, 0xa0c0, 0x8000);
++	//if (ret < 0){
++	//	printf("yt_write_ext 0xa0c0 fail:%d.\n", ret);
++	//	return ret;
++	//}
++	int val;
++	val = yt_read_ext(phydev, 0x0A);
++	val &= ~(1<<4);
++	ret = yt_write_ext(phydev, 0x0A, val);
+ 	if (ret < 0){
+-		printf("yt_write_ext 0xa0c0 fail:%d.\n", ret);
++		printf("yt_write_ext 0x0A fail:%d.\n", ret);
+ 		return ret;
+ 	}
+ #endif
+ 
+-	if (phy_read(phydev, MDIO_DEVAD_NONE, MII_BMCR) == 0x1000)
+-		return 0;
+-
+ 	ret = phy_write(phydev, MDIO_DEVAD_NONE, MII_BMCR, 0x9000);
+ 	if (ret < 0) {
+ 		printf("%s: phy_write addr[0x%x] val[0x%x] failed.\n", __func__, MII_BMCR, 0x9000);
+diff --git a/include/net.h b/include/net.h
+index d4cea9290c..13f1b8a5c4 100644
+--- a/include/net.h
++++ b/include/net.h
+@@ -561,7 +561,7 @@ extern int		net_restart_wrap;	/* Tried all network devices */
+ 
+ enum proto_t {
+ 	BOOTP, RARP, ARP, TFTPGET, DHCP, PING, PING6, DNS, NFS, CDP, NETCONS,
+-	SNTP, TFTPSRV, TFTPPUT, LINKLOCAL, FASTBOOT, WOL, UDP, NCSI, WGET, LOOPBACK
++	SNTP, TFTPSRV, TFTPPUT, LINKLOCAL, FASTBOOT, WOL, UDP, NCSI, WGET, LOOPBACK, LOOPBACKEXIT
+ };
+ 
+ extern char	net_boot_file_name[1024];/* Boot File name */
+diff --git a/net/net.c b/net/net.c
+index 9f1ff2fb63..3dafc9ac9c 100644
+--- a/net/net.c
++++ b/net/net.c
+@@ -445,6 +445,12 @@ int net_loop(enum proto_t protocol)
+ 		eth_set_current();
+ 		ret = eth_init();
+ 		if (ret < 0) {
++#ifdef CONFIG_LOOP_BACK_ASSERT
++			if (protocol == LOOPBACKEXIT) {
++				printf("%s: act loopback mode exit!\n", __func__);
++				return ret;
++			}
++#endif
+ 			if (!env_get("Loopback") || strcmp(env_get("Loopback"), "no") != 0) {
+ 				env_set("Loopback", "no");
+ 				env_set("bootenv_save", "true"); //save env later;
+@@ -509,6 +515,9 @@ restart:
+ 		case LOOPBACK:
+ 			loopback_start_server();
+ 			break;
++		case LOOPBACKEXIT:
++			printf("%s: do loopback mode exit!\n", __func__);
++			break;
+ #endif
+ #if defined(CONFIG_CMD_DHCP)
+ 		case DHCP:
+@@ -1451,6 +1460,11 @@ static int net_check_prereq(enum proto_t protocol)
+ 		}
+ 		goto common;
+ #endif
++#if defined(CONFIG_LOOP_BACK_ASSERT)
++	case LOOPBACKEXIT:
++		printf("%s: loopback mode exit!\n", __func__);
++		return 1;
++#endif
+ #if defined(CONFIG_CMD_PING6)
+ 	case PING6:
+ 		if (ip6_is_unspecified_addr(&net_ping_ip6)) {

@@ -1,0 +1,48 @@
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c
+index 39a219efe0..175018a958 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c
+@@ -276,6 +276,16 @@ u32 XFsbl_Initialize(XFsblPs * FsblInstancePtr)
+ 		{0U};
+ #endif
+ 
++#if 0
++	/* enable jtag in secure mode*/
++	Xil_Out32(0xffca0038,0x3F);
++	Xil_Out32(0xffca003C,0xFF);
++	Xil_Out32(0xffca0030,0x3);
++	Xil_Out32(0xFF5E00B0,0x01002002);
++	Xil_Out32(0xFF5E0240,0x0);
++	Xil_Out32(0xFFCA3000,0x1);
++#endif
++
+ 	/**
+ 	 * Place AES and SHA engines in reset
+ 	 */
+@@ -687,6 +697,7 @@ static u32 XFsbl_ResetValidation(void)
+ #ifdef XFSBL_WDT_PRESENT
+ 	ResetReasonValue = XFsbl_In32(CRL_APB_RESET_REASON);
+ 
++	//XFsbl_Printf(DEBUG_GENERAL,"ZILLNK SHOW ResetReasonValue[0x%08x]=0x%08x\n\r", CRL_APB_RESET_REASON, ResetReasonValue);
+ 	/**
+ 	 * Check if the reset is due to system WDT during
+ 	 * previous FSBL execution
+@@ -694,6 +705,7 @@ static u32 XFsbl_ResetValidation(void)
+ 	if ((ResetReasonValue & CRL_APB_RESET_REASON_PMU_SYS_RESET_MASK)
+ 			== CRL_APB_RESET_REASON_PMU_SYS_RESET_MASK) {
+ 		ErrStatusRegValue = XFsbl_In32(PMU_GLOBAL_ERROR_STATUS_1);
++		//XFsbl_Printf(DEBUG_GENERAL,"ZILLNK SHOW XFSBL_ERROR_SYSTEM_WDT_RESET ErrStatusRegValue[0x%08x]=0x%08x\n\r", PMU_GLOBAL_ERROR_STATUS_1, ErrStatusRegValue);
+ 		if(((ErrStatusRegValue & XFSBL_WDT_MASK) == XFSBL_WDT_MASK) &&
+ 			(FsblErrorStatus == XFSBL_RUNNING)) {
+ 			/* Clear the SWDT0/1 reset error */
+@@ -704,7 +716,9 @@ static u32 XFsbl_ResetValidation(void)
+ 		 */
+ 		Status = XFSBL_ERROR_SYSTEM_WDT_RESET;
+ 		XFsbl_Printf(DEBUG_GENERAL,"XFSBL_ERROR_SYSTEM_WDT_RESET\n\r");
+-		goto END;
++		//XFsbl_Printf(DEBUG_GENERAL,"WUFAN SKIP XFSBL_ERROR_SYSTEM_WDT_RESET\n\r");
++		/* Don't do fallback */
++		//goto END;
+ 		}
+ 	}
+ #endif

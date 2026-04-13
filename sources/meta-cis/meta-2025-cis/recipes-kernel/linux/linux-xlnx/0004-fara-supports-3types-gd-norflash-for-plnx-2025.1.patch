@@ -1,0 +1,39 @@
+From 8079c0e2ad62f82ecc2a17e861f563b5adc8747a Mon Sep 17 00:00:00 2001
+From: Fan Wu <fan.wu@zillnk.com>
+Date: Tue, 26 Aug 2025 06:41:42 +0000
+Subject: [PATCH] fara supports 3types gd norflash in petalinux 2025.1
+
+---
+ drivers/mtd/spi-nor/gigadevice.c | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/mtd/spi-nor/gigadevice.c b/drivers/mtd/spi-nor/gigadevice.c
+index 352a09a686c6..1ce8bdfc8602 100644
+--- a/drivers/mtd/spi-nor/gigadevice.c
++++ b/drivers/mtd/spi-nor/gigadevice.c
+@@ -300,7 +300,21 @@ static const struct flash_info gigadevice_nor_parts[] = {
+ 		.no_sfdp_flags = SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ,
+ 		.fixup_flags = SPI_NOR_4B_OPCODES,
+ 		.fixups = &gd25b512_fixups,
+-	}
++	}, {
++		.id = SNOR_ID(0xc8, 0x47, 0x1b),
++		.name = "gd55b01ge",
++		.size = SZ_128M,
++		.flags = SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB,
++		.no_sfdp_flags = SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ,
++		.fixup_flags = SPI_NOR_4B_OPCODES,
++	}, {
++		.id = SNOR_ID(0xc8, 0x47, 0x1c),
++		.name = "gd55b02ge",
++		.size = SZ_256M,
++		.flags = SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB,
++		.no_sfdp_flags = SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ,
++		.fixup_flags = SPI_NOR_4B_OPCODES,
++	},
+ };
+ 
+ const struct spi_nor_manufacturer spi_nor_gigadevice = {
+-- 
+2.34.1
+

@@ -1,0 +1,16 @@
+diff --git a/lib/sw_services/xilloader/src/common/xloader_qspi.c b/lib/sw_services/xilloader/src/common/xloader_qspi.c
+index 1da80cdacd..f4678fd47f 100644
+--- a/lib/sw_services/xilloader/src/common/xloader_qspi.c
++++ b/lib/sw_services/xilloader/src/common/xloader_qspi.c
+@@ -123,6 +123,11 @@ static int FlashReadID(XQspiPsu *QspiPsuPtr)
+ 		goto END;
+ 	}
+ 
++	if ((ReadBuffer[0U] != XLOADER_MICRON_ID) || (ReadBuffer[1U] != 0xBB) || (ReadBuffer[2U] != 0x22)) {
++		ReadBuffer[0U] = 0xff;
++		ReadBuffer[1U] = 0xff;
++		ReadBuffer[2U] = 0xff;
++	}
+ 	XLoader_Printf(DEBUG_GENERAL,
+ 		"FlashID=0x%x 0x%x 0x%x\n\r",
+ 		ReadBuffer[0U], ReadBuffer[1U], ReadBuffer[2U]);

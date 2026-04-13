@@ -1,0 +1,485 @@
+diff --git a/cmd/Kconfig b/cmd/Kconfig
+index 6d171126e35..e8648aefe93 100644
+--- a/cmd/Kconfig
++++ b/cmd/Kconfig
+@@ -1070,6 +1070,12 @@ config CLU_INIT
+ 	  The CLU c is configured through spi
+ endmenu
+ 
++config LOOP_BACK_ASSERT
++	bool "LoopBack assert - zillnk RU ETH loopback check"
++	help
++	  This enables the command "lbcheck" which enables the zillnk RU
++	  ETH LoopBack check for the platform.
++
+ config ZBOOT_RSA_BITSTREAM
+ 	bool "loads rsa bit"
+ 	depends on CMD_ZBOOT_Z
+diff --git a/cmd/Makefile b/cmd/Makefile
+index 9fd1a85f1f5..b512aee1f36 100644
+--- a/cmd/Makefile
++++ b/cmd/Makefile
+@@ -207,6 +207,7 @@ obj-$(CONFIG_CMD_VIDCONSOLE) += video.o
+ obj-$(CONFIG_CMD_FASTBOOT) += fastboot.o
+ obj-$(CONFIG_CMD_FS_UUID) += fs_uuid.o
+ 
++obj-$(CONFIG_LOOP_BACK_ASSERT) += ethloop.o
+ obj-$(CONFIG_CMD_ZBOOT_Z) += zboot.o
+ obj-$(CONFIG_CMD_CLU_Z) += clu.o
+ obj-$(CONFIG_CMD_USB_MASS_STORAGE) += usb_mass_storage.o
+diff --git a/cmd/ethloop.c b/cmd/ethloop.c
+new file mode 100644
+index 00000000000..c40de435adf
+--- /dev/null
++++ b/cmd/ethloop.c
+@@ -0,0 +1,32 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * (C) Copyright 2022 Zillnk, Ltd.
++ * Author: Chun Ma <chun.ma@zillnk.com>
++ *
++ */
++#include <command.h>
++#include <search.h>
++#include <console.h>
++#include <net.h>
++#include <net/loopback.h>
++
++static int do_loopback_assert(int argc, char *const argv[])
++{
++	loopback_state_set(1);
++	net_loop(LOOPBACK);
++	loopback_state_set(0);
++
++	return CMD_RET_SUCCESS;
++}
++
++static int do_ethloop(struct cmd_tbl *cmdtp, int flag, int argc,
++		       char *const argv[])
++{
++	return do_loopback_assert(argc, argv);
++}
++
++U_BOOT_CMD(
++	ethloop, 1, 0, do_ethloop,
++	"network loopback check",
++	"<NULL>\n"
++);
+\ No newline at end of file
+diff --git a/drivers/net/phy/mars.c b/drivers/net/phy/mars.c
+index bf4e95b2552..0eb4e920c9a 100644
+--- a/drivers/net/phy/mars.c
++++ b/drivers/net/phy/mars.c
+@@ -18,6 +18,8 @@
+ #include <config.h>
+ #include <errno.h>
+ #include <phy.h>
++#include <net/loopback.h>
++#include <linux/delay.h>
+ 
+ #define CTC_PHY_REG_SPACE  0
+ #define CTC_SDS_REG_SPACE 1
+@@ -30,8 +32,10 @@
+ #define CTC_PHY_ID_MARS1S           0x01E04013
+ #define CTC_PHY_ID_MARS1P_V1        0x00782011
+ #define CTC_PHY_ID_MARS1P           0x01E04011
++#define SLEEP_MODE		BIT(15)
++#define EXT_REG_BIT4	BIT(4)
+ 
+-#if 0
++#if 1
+ static int mars_ext_read(struct phy_device *phydev, u32 regnum)
+ {
+ 	int ret;
+@@ -55,6 +59,44 @@ static int mars_ext_write(struct phy_device *phydev, u32 regnum, u16 val)
+ 	return phy_write(phydev, MDIO_DEVAD_NONE, 0x1f, val);
+ }
+ 
++void mars_loopback(struct phy_device *phydev)
++{
++	int val;
++
++	val = mars_ext_read(phydev, 0x27);
++	val &= ~(SLEEP_MODE);
++	mars_ext_write(phydev, 0x27, val);
++
++	val = mars_ext_read(phydev, 0xa);
++	val |= EXT_REG_BIT4;
++	mars_ext_write(phydev, 0xa, val);
++
++	val = phy_read(phydev, MDIO_DEVAD_NONE, MII_BMCR);
++	val &= ~(BMCR_CTST | BMCR_ANRESTART | BMCR_ANENABLE | BMCR_SPEED100);
++	val |= (BMCR_FULLDPLX | BMCR_SPEED1000 | BMCR_RESET);
++
++	phy_write(phydev, MDIO_DEVAD_NONE, MII_BMCR, val);
++}
++
++void mars_loopback_off(struct phy_device *phydev)
++{
++	int val;
++
++	val = mars_ext_read(phydev, 0x27);
++	val |= SLEEP_MODE;
++	mars_ext_write(phydev, 0x27, val);
++
++	val = mars_ext_read(phydev, 0xa);
++	val &= ~(EXT_REG_BIT4);
++	mars_ext_write(phydev, 0xa, val);
++
++	val = phy_read(phydev, MDIO_DEVAD_NONE, MII_BMCR);
++	val |= (BMCR_ANENABLE | BMCR_ANRESTART | BMCR_RESET);
++	val &= ~(BMCR_ISOLATE);
++
++	phy_write(phydev, MDIO_DEVAD_NONE, MII_BMCR, val);
++}
++
+ static int mars_select_reg_space(struct phy_device *phydev, int space)
+ {
+ 	int ret;
+@@ -68,6 +110,14 @@ static int mars_select_reg_space(struct phy_device *phydev, int space)
+ 	return ret;
+ }
+ 
++static void led_setup(struct phy_device *phydev)
++{
++	mars_ext_write(phydev, 0xa00d, 0xde00);
++	mars_ext_write(phydev, 0xa00e, 0xd800);
++
++	return;
++}
++
+ static int mars_set_link_timer_2_6ms(struct phy_device *phydev)
+ {
+ 	int ret=0;
+@@ -105,6 +155,7 @@ int mars_config(struct phy_device *phydev)
+ 			| SUPPORTED_AUI | SUPPORTED_FIBRE |
+ 			SUPPORTED_BNC);
+ 
++    led_setup(phydev);
+ 	/* Do we support autonegotiation? */
+ 	val = phy_read(phydev, MDIO_DEVAD_NONE, MII_BMSR);
+ 
+@@ -165,17 +216,57 @@ int mars1p_config(struct phy_device *phydev)
+ 
+ int mars_startup(struct phy_device *phydev)
+ {
+-	int ret;
++	unsigned int mii_reg;
++	int i = 0;
++	int mode = 0;
+ 
+ 	mars_select_reg_space(phydev, CTC_SDS_REG_SPACE);
+ 	mars_ext_write(phydev, 0x3, 0x670);
+ 	mars_select_reg_space(phydev, CTC_PHY_REG_SPACE);
+ 
+-	ret = genphy_update_link(phydev);
+-	if (ret)
+-		return ret;
+-
+-	return genphy_parse_link(phydev);
++#ifdef CONFIG_LOOP_BACK_ASSERT
++	mode = loopback_mode();
++#endif
++	if (mode) {
++		mars_loopback(phydev);
++
++		phydev->asym_pause = 0;
++		phydev->pause = 0;
++		phydev->duplex =DUPLEX_FULL;
++		phydev->speed = SPEED_1000;
++		phydev->link = 1;
++
++		/* fixed link must not be reset by core phy code */
++		phydev->flags |= PHY_FLAG_BROKEN_RESET;
++
++		mii_reg = phy_read(phydev, MDIO_DEVAD_NONE, MII_BMSR);
++		/*
++		 * If we already saw the link up, and it hasn't gone down, then
++		 * we don't need to wait for autoneg again
++		 */
++		if (phydev->link && mii_reg & BMSR_LSTATUS){
++			return 0;
++		}
++
++		while (!(mii_reg & BMSR_LSTATUS)) {
++			/*
++			 * Timeout reached ?
++			 */
++			if (i > 50) {
++				phydev->link = 0;
++				return -ETIMEDOUT;
++			}
++			i++;
++			mii_reg = phy_read(phydev, MDIO_DEVAD_NONE, MII_BMSR);
++			mdelay(50);
++		}
++
++		return 0;
++	}
++	else {
++		mars_loopback_off(phydev);
++		return genphy_startup(phydev);
++	}
+ }
+ 
+ U_BOOT_PHY_DRIVER(mars1s) = {
+diff --git a/include/net-legacy.h b/include/net-legacy.h
+index 1f62ebff51d..0885e778004 100644
+--- a/include/net-legacy.h
++++ b/include/net-legacy.h
+@@ -305,7 +305,7 @@ extern int		net_restart_wrap;	/* Tried all network devices */
+ enum proto_t {
+ 	BOOTP, RARP, ARP, TFTPGET, DHCP, DHCP6, PING, PING6, DNS, NFS, CDP,
+ 	NETCONS, SNTP, TFTPSRV, TFTPPUT, LINKLOCAL, FASTBOOT_UDP, FASTBOOT_TCP,
+-	WOL, UDP, NCSI, WGET, RS
++	WOL, UDP, NCSI, WGET, RS, LOOPBACK
+ };
+ 
+ /* Indicates whether the file name was specified on the command line */
+diff --git a/include/net/loopback.h b/include/net/loopback.h
+new file mode 100644
+index 00000000000..07effc18645
+--- /dev/null
++++ b/include/net/loopback.h
+@@ -0,0 +1,32 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * (C) Copyright 2022 Zillnk, Ltd.
++ * Author: Chun Ma <chun.ma@zillnk.com>
++ *
++ */
++#ifndef __NET_LOOPBACK_H__
++#define __NET_LOOPBACK_H__
++
++/**********************************************************************/
++/*
++ *	Global functions and variables.
++ */
++
++/**
++ * Get loopback mode.
++ */
++int loopback_mode(void);
++
++/**
++ * Set loopback state.
++ */
++void loopback_state_set(int state);
++
++/**
++ * Wait for incoming loopback comands.
++ */
++void loopback_start_server(void);
++
++/**********************************************************************/
++
++#endif /* __NET_LOOPBACK_H__ */
+\ No newline at end of file
+diff --git a/net/Makefile b/net/Makefile
+index 209377aeb26..3298c8916b7 100644
+--- a/net/Makefile
++++ b/net/Makefile
+@@ -30,6 +30,7 @@ obj-$(CONFIG_CMD_WOL)  += wol.o
+ obj-$(CONFIG_PROT_UDP) += udp.o
+ obj-$(CONFIG_PROT_TCP) += tcp.o
+ obj-$(CONFIG_CMD_WGET) += wget.o
++obj-$(CONFIG_LOOP_BACK_ASSERT) += loopback.o
+ 
+ # Disable this warning as it is triggered by:
+ # sprintf(buf, index ? "foo%d" : "foo", index)
+diff --git a/net/eth-uclass.c b/net/eth-uclass.c
+index 5555f82f23e..a3bd1cc56ae 100644
+--- a/net/eth-uclass.c
++++ b/net/eth-uclass.c
+@@ -23,6 +23,10 @@
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+ 
++#ifdef CONFIG_LOOP_BACK_ASSERT
++#define SKIP_ROTATE_FOR_LOOPBACK -0x100b
++#endif
++
+ /**
+  * struct eth_device_priv - private structure for each Ethernet device
+  *
+@@ -297,7 +301,12 @@ int eth_start_udev(struct udevice *dev)
+ 
+ 	ret = eth_get_ops(dev)->start(dev);
+ 	if (ret < 0)
++#ifdef CONFIG_LOOP_BACK_ASSERT
++		/* Do't try to connect to other net device when using loop back assert */
++		return SKIP_ROTATE_FOR_LOOPBACK;
++#else
+ 		return ret;
++#endif
+ 
+ 	priv->state = ETH_STATE_ACTIVE;
+ 	priv->running = true;
+@@ -350,6 +359,10 @@ int eth_init(void)
+ 			debug("Trying %s\n", current->name);
+ 
+ 			ret = eth_start_udev(current);
++#ifdef CONFIG_LOOP_BACK_ASSERT
++			if (SKIP_ROTATE_FOR_LOOPBACK == ret)
++				return ret;
++#endif
+ 			if (ret < 0)
+ 				ret = eth_errno;
+ 			else
+diff --git a/net/loopback.c b/net/loopback.c
+new file mode 100644
+index 00000000000..7c8ff857d56
+--- /dev/null
++++ b/net/loopback.c
+@@ -0,0 +1,117 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * (C) Copyright 2022 Zillnk, Ltd.
++ * Author: Chun Ma <chun.ma@zillnk.com>
++ *
++ */
++#include <net.h>
++#include <net/loopback.h>
++#include <malloc.h>
++#include <linux/delay.h>
++
++/* wait timeout */
++#define WAIT_TIMEOUT 1500
++/* loopback port # defined in spec */
++#define WELL_PORT 1133
++
++#define PACK_SIZE	8
++
++static int loopback_state = 0;
++unsigned char *str_r;
++
++static void loopback_timeout_handler(void)
++{
++	loopback_state_set(0);
++	net_set_udp_handler(NULL);
++	net_set_arp_handler(NULL);
++	net_set_timeout_handler(0, NULL);
++	eth_halt();
++	/* Invalidate the last protocol */
++	eth_set_last_protocol(BOOTP);
++	net_start_again();
++}
++
++static inline void random_str(uchar *addr, u8 len)
++{
++	int i;
++	unsigned int seed = get_ticks();
++
++	for (i = 0; i < len; i++)
++		addr[i] = rand_r(&seed);
++}
++
++/**
++ * loopback_handler() - Incoming UDP packet handler.
++ *
++ * @packet: Pointer to incoming UDP packet
++ * @dport: Destination UDP port
++ * @sip: Source IP address
++ * @sport: Source UDP port
++ * @len: Packet length
++ */
++static void loopback_handler(uchar *packet, unsigned int dport,
++			     struct in_addr sip, unsigned int sport,
++			     unsigned int len)
++{
++	if ((dport != WELL_PORT) || (sport != WELL_PORT) ||
++			(len != PACK_SIZE))
++		return;
++
++	if (memcmp(str_r, packet, PACK_SIZE) == 0) {
++		env_set("Loopback", "yes");
++		printf("Loopback detected!\n");
++	}
++	else{
++		env_set("Loopback", "no");
++		printf("Loopback NOT detected!\n");
++	}
++
++	loopback_timeout_handler();
++}
++
++int loopback_mode(void)
++{
++	return loopback_state;
++}
++
++void loopback_state_set(int state)
++{
++	loopback_state = state;
++}
++
++void loopback_start_server(void)
++{
++	int i = 10;
++	int send_len = 0;
++	struct in_addr local_ip;
++	uchar *send_packet;
++	uchar *send_packet_base;
++
++	net_set_timeout_handler(WAIT_TIMEOUT, loopback_timeout_handler);
++	net_set_udp_handler(loopback_handler);
++
++	local_ip.s_addr = 0;
++	send_packet = net_tx_packet + net_eth_hdr_size() + IP_UDP_HDR_SIZE;
++	send_packet_base = send_packet;
++
++	str_r = malloc(PACK_SIZE);
++	if (!str_r) {
++		printf("Can't allocate memory to decrypt\n");
++		return;
++	}
++	random_str(str_r, PACK_SIZE);
++
++	memcpy(send_packet, str_r, PACK_SIZE);
++	send_packet += PACK_SIZE;
++	send_len = send_packet - send_packet_base;
++
++	/* zero out server ether in case the server ip has changed */
++	memset(net_server_ethaddr, 0, 6);
++
++	while (i--) {
++		net_send_udp_packet(net_server_ethaddr, local_ip,
++							WELL_PORT, WELL_PORT,
++							send_len);
++		mdelay(50);
++	}
++}
+\ No newline at end of file
+diff --git a/net/net.c b/net/net.c
+index f47e9fbe33a..1bb194d4d99 100644
+--- a/net/net.c
++++ b/net/net.c
+@@ -96,6 +96,7 @@
+ #include <net/fastboot_tcp.h>
+ #include <net/tftp.h>
+ #include <net/ncsi.h>
++#include <net/loopback.h>
+ #if defined(CONFIG_CMD_PCAP)
+ #include <net/pcap.h>
+ #endif
+@@ -462,6 +463,8 @@ int net_loop(enum proto_t protocol)
+ 		eth_set_current();
+ 		ret = eth_init();
+ 		if (ret < 0) {
++			env_set("Loopback", "no");
++			printf("Loopback NOT detected!\n");
+ 			eth_halt();
+ 			return ret;
+ 		}
+@@ -525,6 +528,11 @@ restart:
+ 			fastboot_tcp_start_server();
+ 			break;
+ #endif
++#ifdef CONFIG_LOOP_BACK_ASSERT
++		case LOOPBACK:
++			loopback_start_server();
++			break;
++#endif
+ #if defined(CONFIG_CMD_DHCP)
+ 		case DHCP:
+ 			bootp_reset();

@@ -1,0 +1,102 @@
+diff --git a/common/main.c b/common/main.c
+index b0b6e74f5d3..67b4a32052d 100644
+--- a/common/main.c
++++ b/common/main.c
+@@ -19,6 +19,13 @@
+ #include <net.h>
+ #include <version_string.h>
+ #include <efi_loader.h>
++#include <asm/gpio.h>
++#include <errno.h>
++#include <linux/err.h>
++#include <dm/ofnode.h>
++
++#define DEFAULT_NMR_GPIO 31
++DECLARE_GLOBAL_DATA_PTR;
+ 
+ static void run_preboot_environment_command(void)
+ {
+@@ -38,6 +45,74 @@ static void run_preboot_environment_command(void)
+ 	}
+ }
+ 
++static int clu_fdt_get_reset_gpio(void){
++	void *blob = (void *)gd->fdt_blob;
++	int pnode;
++	int ret;
++	u32 gpio[3];
++	u32 reset_gpio = DEFAULT_NMR_GPIO;
++
++	pnode = fdt_node_offset_by_compatible(blob, -1,
++					      "idt,8a34000");
++	if (pnode < 0){
++		printf("idt,8a34000 not found.\n");
++		return -EINVAL;
++	}
++
++	ret = fdtdec_get_int_array(blob, pnode,
++				   "reset-gpio", gpio, ARRAY_SIZE(gpio));
++	if (ret < 0){
++		printf("get clu reset-gpio failed\n");
++		return -EINVAL;
++	}
++	reset_gpio = gpio[1];
++	printf("get clu reset gpio: %d\n", reset_gpio);
++	return reset_gpio;
++}
++
++/*
++ * reset clu at startup to prevent soft reset 
++ * access to fpga registers causing system hang
++ */
++static int clu_reset(void){
++	int gpio = 0;
++	int value = 0;
++	int ret;
++	int nval;
++	gpio = clu_fdt_get_reset_gpio();
++	if (gpio < 0){
++		printf("Invalid clu nmr gpio: '%d'\n", gpio);
++		return -1;
++	}
++	ret = gpio_request(gpio, "nmr_gpio");
++	if (ret && ret != -EBUSY) {
++		printf("gpio: requesting clu nmr pin %u failed\n", gpio);
++		return -1;
++	}
++	gpio_direction_output(gpio, value);
++
++	if (!IS_ERR_VALUE(value)) {
++		nval = gpio_get_value(gpio);
++
++		if (IS_ERR_VALUE(nval)) {
++			printf("   Warning: no access to GPIO output value\n");
++			goto err;
++		} else if (nval != value) {
++			printf("   Warning: value of pin is still %d\n", nval);
++			goto err;
++		}
++	}
++	printf("CLU: reset successfully\n");
++	if (ret != -EBUSY)
++		gpio_free(gpio);
++	return 0;
++err:
++	printf("CLU: reset failed, nMR GPIO: '%d'\n", gpio);
++	if (ret != -EBUSY)
++		gpio_free(gpio);
++	return -1;
++}
++
+ /* We come here after U-Boot is initialised and ready to process commands */
+ void main_loop(void)
+ {
+@@ -50,6 +125,8 @@ void main_loop(void)
+ 
+ 	cli_init();
+ 
++	clu_reset();
++
+ 	if (IS_ENABLED(CONFIG_USE_PREBOOT))
+ 		run_preboot_environment_command();
+ 

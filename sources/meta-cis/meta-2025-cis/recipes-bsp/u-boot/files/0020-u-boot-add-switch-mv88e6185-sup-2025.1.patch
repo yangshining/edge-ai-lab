@@ -1,0 +1,836 @@
+diff --git a/board/xilinx/versal/board.c b/board/xilinx/versal/board.c
+index c0f6fda4316..ef87c5c2238 100644
+--- a/board/xilinx/versal/board.c
++++ b/board/xilinx/versal/board.c
+@@ -30,6 +30,7 @@
+ #include <versalpl.h>
+ #include <zynqmp_firmware.h>
+ #include "../common/board.h"
++#include <asm/gpio.h>
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+ 
+@@ -418,6 +419,19 @@ enum env_location env_get_location(enum env_operation op, int prio)
+ }
+ #endif
+ 
++#ifdef CONFIG_MV88E61XX_SWITCH
++int mv88e61xx_hw_reset(struct phy_device *phydev)
++{
++	/* Ensure the 88e6185 gets at least 20ms Reset
++	 */
++    gpio_direction_output(54, 1);
++    mdelay(20);
++    gpio_direction_output(54, 0);
++
++	return 0;
++}
++#endif
++
+ #if defined(CONFIG_SET_DFU_ALT_INFO)
+ 
+ #define DFU_ALT_BUF_LEN		SZ_1K
+diff --git a/drivers/net/phy/Kconfig b/drivers/net/phy/Kconfig
+index 0fbab1de7c3..eaa022249c6 100644
+--- a/drivers/net/phy/Kconfig
++++ b/drivers/net/phy/Kconfig
+@@ -370,6 +370,12 @@ config PHY_NCSI
+ 	bool "NC-SI based PHY"
+ 	depends on NET
+ 
++config SWITCH_ETH
++	bool "Switch-Link PHY"
++	depends on DM_ETH
++	help
++	  Marvell MV88E6185 Ethernet switch PHY support.
++
+ config PHY_CTC
+ 	bool "Centec Ethernet PHYs support"
+ 
+diff --git a/drivers/net/phy/Makefile b/drivers/net/phy/Makefile
+index 8c78efcfe5f..50025d2133a 100644
+--- a/drivers/net/phy/Makefile
++++ b/drivers/net/phy/Makefile
+@@ -25,6 +25,7 @@ obj-$(CONFIG_PHY_MICREL_KSZ8XXX) += micrel_ksz8xxx.o
+ obj-$(CONFIG_PHY_MICREL_KSZ90X1) += micrel_ksz90x1.o
+ obj-$(CONFIG_PHY_MESON_GXL) += meson-gxl.o
+ obj-$(CONFIG_PHY_MOTORCOMM) += motorcomm.o
++obj-$(CONFIG_SWITCH_ETH) += switch-link.o
+ obj-$(CONFIG_PHY_NATSEMI) += natsemi.o
+ obj-$(CONFIG_PHY_NXP_C45_TJA11XX) += nxp-c45-tja11xx.o
+ obj-$(CONFIG_PHY_NXP_TJA11XX) += nxp-tja11xx.o
+diff --git a/drivers/net/phy/mv88e61xx.c b/drivers/net/phy/mv88e61xx.c
+index ecc10f788af..64cd5ddff3c 100644
+--- a/drivers/net/phy/mv88e61xx.c
++++ b/drivers/net/phy/mv88e61xx.c
+@@ -38,6 +38,7 @@
+ #include <malloc.h>
+ #include <miiphy.h>
+ #include <netdev.h>
++#include <asm/gpio.h>
+ 
+ #define PHY_AUTONEGOTIATE_TIMEOUT	5000
+ 
+@@ -174,6 +175,7 @@
+ #define PORT_SWITCH_ID_6097		0x0990
+ #define PORT_SWITCH_ID_6172		0x1720
+ #define PORT_SWITCH_ID_6176		0x1760
++#define PORT_SWITCH_ID_6185		0x2800
+ #define PORT_SWITCH_ID_6220		0x2200
+ #define PORT_SWITCH_ID_6240		0x2400
+ #define PORT_SWITCH_ID_6250		0x2500
+@@ -418,6 +420,19 @@ static int mv88e61xx_port_read(struct phy_device *phydev, u8 port, u8 reg)
+ 	return mv88e61xx_reg_read(phydev, priv->port_reg_base + port, reg);
+ }
+ 
++static int mv88e6185_port_read(struct phy_device *phydev, u8 port, u8 reg)
++{
++	struct mv88e61xx_phy_priv *priv = phydev->priv;
++	struct mii_dev *bus;
++	int data;
++	const char *devname;
++    
++	devname = miiphy_get_current_dev();
++	mdelay(10);
++	miiphy_read(devname, priv->port_reg_base + port, reg, &data);
++	return data;
++}
++
+ static int mv88e61xx_port_write(struct phy_device *phydev, u8 port, u8 reg,
+ 								u16 val)
+ {
+@@ -427,6 +442,18 @@ static int mv88e61xx_port_write(struct phy_device *phydev, u8 port, u8 reg,
+ 				   reg, val);
+ }
+ 
++static int mv88e6185_port_write(struct phy_device *phydev, u8 port, u8 reg,
++								u16 val)
++{
++	struct mv88e61xx_phy_priv *priv = phydev->priv;
++	struct mii_dev *bus;
++	const char	*devname;
++
++	devname = miiphy_get_current_dev();
++	mdelay(10);
++	return miiphy_write(devname, priv->port_reg_base + port, reg, val);
++}
++
+ static int mv88e61xx_set_page(struct phy_device *phydev, u8 phy, u8 page)
+ {
+ 	return mv88e61xx_phy_write(phydev, phy, PHY_REG_PAGE, page);
+@@ -748,6 +775,65 @@ static int mv88e61xx_fixed_port_setup(struct phy_device *phydev, u8 port)
+ 	return mv88e61xx_port_write(phydev, port, PORT_REG_PHYS_CTRL,
+ 				   val);
+ }
++ 
++static int mv88e6185_fixed_port_setup(struct phy_device *phydev, u8 port)
++{
++	struct mv88e61xx_phy_priv *priv = phydev->priv;
++	int val;
++ 
++	val = mv88e6185_port_read(phydev, port, PORT_REG_STATUS);
++	val |= SMI_CMD_CLAUSE_22;
++
++	mv88e6185_port_write(phydev, port, PORT_REG_STATUS, val);
++
++	val = mv88e6185_port_read(phydev, port, PORT_REG_PHYS_CTRL);
++	if (val < 0)
++		return val;
++
++	val &= ~(PORT_REG_PHYS_CTRL_SPD_MASK |
++		PORT_REG_PHYS_CTRL_FC_VALUE |
++		PORT_REG_PHYS_CTRL_FC_FORCE);
++
++	val |= PORT_REG_PHYS_CTRL_PCS_AN_EN |
++		PORT_REG_PHYS_CTRL_PCS_AN_RST |
++		PORT_REG_PHYS_CTRL_SPD1000;
++
++	return mv88e6185_port_write(phydev, port, PORT_REG_PHYS_CTRL, val);
++}
++
++static int mv88e6185_set_cpu_port(struct phy_device *phydev)
++{
++	struct mv88e61xx_phy_priv *priv = phydev->priv;
++	int val;
++
++	/* Set CPUDest */
++	val = mv88e61xx_reg_read(phydev, priv->global1, GLOBAL1_MON_CTRL);
++	if (val < 0)
++		return val;
++	val = bitfield_replace(val, GLOBAL1_MON_CTRL_CPUDEST_SHIFT,
++			       GLOBAL1_MON_CTRL_CPUDEST_WIDTH,
++			       CONFIG_MV88E61XX_CPU_PORT);
++	val = mv88e61xx_reg_write(phydev, priv->global1,
++				  GLOBAL1_MON_CTRL, val);
++	if (val < 0)
++		return val;
++
++	/* Enable CPU port */
++	val = mv88e61xx_port_enable(phydev, CONFIG_MV88E61XX_CPU_PORT);
++	if (val < 0)
++		return val;
++
++	val = mv88e61xx_read_port_config(phydev, CONFIG_MV88E61XX_CPU_PORT);
++	if (val < 0)
++		return val;
++
++	val = mv88e6185_fixed_port_setup(phydev,
++					 CONFIG_MV88E61XX_CPU_PORT);
++	if (val < 0)
++		return val;
++
++	return 0;
++}
+ 
+ static int mv88e61xx_set_cpu_port(struct phy_device *phydev)
+ {
+@@ -803,6 +889,23 @@ static int mv88e61xx_set_cpu_port(struct phy_device *phydev)
+ 	return 0;
+ }
+ 
++static int mv88e6185_switch_init(struct phy_device *phydev)
++{
++	static int init;
++	int res;
++
++	if (init)
++		return 0;
++
++	res = mv88e61xx_switch_reset(phydev);
++	if (res < 0)
++		return res;
++
++	init = 1;
++
++	return 0;
++}
++
+ static int mv88e61xx_switch_init(struct phy_device *phydev)
+ {
+ 	static int init;
+@@ -877,6 +980,36 @@ static int mv88e61xx_phy_config_port(struct phy_device *phydev, u8 phy)
+ 	return 0;
+ }
+ 
++/*
++ * This function is used to pre-configure the required register
++ * offsets, so that the indirect register access to the PHY registers
++ * is possible. This is necessary to be able to read the PHY ID
++ * while driver probing or in get_phy_id(). The globalN register
++ * offsets must be initialized correctly for a detected switch,
++ * otherwise detection of the PHY ID won't work!
++ */
++static int mv88e6185_priv_reg_offs_pre_init(struct phy_device *phydev)
++{
++	struct mv88e61xx_phy_priv *priv = phydev->priv;
++
++	/*
++	 * Initial 'port_reg_base' value must be an offset of existing
++	 * port register, then reading the ID should succeed. First, try
++	 * to read via port registers with device address 0x10 (88E6096
++	 * and compatible switches).
++	 */
++	priv->port_reg_base = 0x10;
++	priv->id = mv88e61xx_get_switch_id(phydev);
++	if (priv->id != 0xfff0) {
++		priv->global1 = 0x1A;
++		priv->global2 = 0x1B;
++		return 0;
++	}
++
++	debug("%s Unknown ID 0x%x\n", __func__, priv->id);
++	return -ENODEV;
++}
++
+ /*
+  * This function is used to pre-configure the required register
+  * offsets, so that the indirect register access to the PHY registers
+@@ -919,6 +1052,36 @@ static int mv88e61xx_priv_reg_offs_pre_init(struct phy_device *phydev)
+ 	return -ENODEV;
+ }
+ 
++/*
++ * This function is used to pre-configure the required register
++ * offsets, so that the indirect register access to the PHY registers
++ * is possible. This is necessary to be able to read the PHY ID
++ * while driver probing or in get_phy_id(). The globalN register
++ * offsets must be initialized correctly for a detected switch,
++ * otherwise detection of the PHY ID won't work!
++ */
++static int mv88e6185_priv_reg_offs_pre_init(struct phy_device *phydev)
++{
++	struct mv88e61xx_phy_priv *priv = phydev->priv;
++
++	/*
++	 * Initial 'port_reg_base' value must be an offset of existing
++	 * port register, then reading the ID should succeed. First, try
++	 * to read via port registers with device address 0x10 (88E6096
++	 * and compatible switches).
++	 */
++	priv->port_reg_base = 0x10;
++	priv->id = mv88e61xx_get_switch_id(phydev);
++	if (priv->id != 0xfff0) {
++		priv->global1 = 0x1A;
++		priv->global2 = 0x1B;
++		return 0;
++	}
++
++	debug("%s Unknown ID 0x%x\n", __func__, priv->id);
++	return -ENODEV;
++}
++
+ static int mv88e61xx_probe(struct phy_device *phydev)
+ {
+ 	struct mii_dev *smi_wrapper;
+@@ -1021,6 +1184,36 @@ static int mv88e61xx_probe(struct phy_device *phydev)
+ 	return 0;
+ }
+ 
++static int mv88e6185_phy_config(struct phy_device *phydev)
++{
++	struct mv88e61xx_phy_priv *priv = phydev->priv;
++	int res;
++	int i;
++	int ret = -1;
++
++	res = mv88e6185_switch_init(phydev);
++	if (res < 0)
++		return res;
++
++	for (i = 0; i < priv->port_count; i++) {
++		if ((1 << i) & CONFIG_MV88E61XX_PHY_PORTS) {
++			phydev->addr = i;
++            /* TODO: functions that require subsequent implementation */
++
++			/* Return success if any PHY succeeds */
++			ret = 0;
++		} else if ((1 << i) & CONFIG_MV88E61XX_FIXED_PORTS) {
++			res = mv88e6185_fixed_port_setup(phydev, i);
++			if (res < 0) {
++				printf("Error configuring port %i\n", i);
++				continue;
++			}
++		}
++	}
++
++	return 0;
++}
++
+ static int mv88e61xx_phy_config(struct phy_device *phydev)
+ {
+ 	struct mv88e61xx_phy_priv *priv = phydev->priv;
+@@ -1093,6 +1286,12 @@ static int mv88e61xx_phy_is_connected(struct phy_device *phydev)
+ 	return (val & PHY_REG_STATUS1_ENERGY) == 0;
+ }
+ 
++static int mv88e6185_phy_startup(struct phy_device *phydev)
++{
++    /* TODO: functions that require subsequent implementation */
++	return 0;
++}
++
+ static int mv88e61xx_phy_startup(struct phy_device *phydev)
+ {
+ 	struct mv88e61xx_phy_priv *priv = phydev->priv;
+@@ -1159,6 +1358,18 @@ U_BOOT_PHY_DRIVER(mv88e6071) = {
+ 	.shutdown = &genphy_shutdown,
+ };
+ 
++U_BOOT_PHY_DRIVER(mv88e6185) = {
++	.name = "Marvell MV88E6185",
++	.uid = 0x28022803,
++	.mask = 0xfffffff0,
++	.features = PHY_GBIT_FEATURES,
++	.probe = mv88e6185_probe,
++	.config = mv88e6185_phy_config,
++	.startup = mv88e6185_phy_startup,
++	.shutdown = &genphy_shutdown,
++};
++
++
+ /*
+  * Overload weak get_phy_id definition since we need non-standard functions
+  * to read PHY registers
+diff --git a/drivers/net/phy/phy.c b/drivers/net/phy/phy.c
+index 7da90adc756..4f2a59d4558 100644
+--- a/drivers/net/phy/phy.c
++++ b/drivers/net/phy/phy.c
+@@ -926,6 +926,28 @@ static struct phy_device *phy_connect_fixed(struct mii_dev *bus,
+ }
+ #endif
+ 
++#ifdef CONFIG_SWITCH_ETH
++static struct phy_device *phy_connect_switch(struct mii_dev *bus,
++					    struct udevice *dev)
++{
++	struct phy_device *phydev = NULL;
++	int sn;
++	const char *name;
++
++	sn = fdt_first_subnode(gd->fdt_blob, dev_of_offset(dev));
++	while (sn > 0) {
++		name = fdt_get_name(gd->fdt_blob, sn, NULL);
++		if (name && strcmp(name, "switch-link") == 0) {
++			phydev = phy_device_create(bus, sn, PHY_SWITCH_ID, false);
++			break;
++		}
++		sn = fdt_next_subnode(gd->fdt_blob, sn);
++	}
++
++	return phydev;
++}
++#endif
++
+ struct phy_device *phy_connect(struct mii_dev *bus, int addr,
+ 			       struct udevice *dev,
+ 			       phy_interface_t interface)
+@@ -933,8 +955,13 @@ struct phy_device *phy_connect(struct mii_dev *bus, int addr,
+ 	struct phy_device *phydev = NULL;
+ 	uint mask = (addr >= 0) ? (1 << addr) : 0xffffffff;
+ 
++#ifdef CONFIG_SWITCH_ETH
++	phydev = phy_connect_switch(bus, dev);
++#endif
++
+ #ifdef CONFIG_PHY_FIXED
+-	phydev = phy_connect_fixed(bus, dev);
++	if (!phydev)
++			phydev = phy_connect_fixed(bus, dev);
+ #endif
+ 
+ #ifdef CONFIG_PHY_NCSI
+diff --git a/drivers/net/phy/switch-link.c b/drivers/net/phy/switch-link.c
+new file mode 100644
+index 00000000000..d3282576e58
+--- /dev/null
++++ b/drivers/net/phy/switch-link.c
+@@ -0,0 +1,402 @@
++//SPDX-License-Identifier: GPL-2.0+
++/*
++ * switch-Link phy
++ *
++ * Copyright 2022 zillnk
++ */
++
++#include <config.h>
++#include <phy.h>
++#include <dm.h>
++#include <fdt_support.h>
++#include <asm/gpio.h>
++#include <zynqmp_firmware.h>
++#include <linux/delay.h>
++
++DECLARE_GLOBAL_DATA_PTR;
++
++#define CTC21101							0x782013
++#define TST0101								0x00011a
++#define RTL8211F							0x1cc916
++
++#define CTC21101_CDR_REG_VAL				0x750
++
++#define MIIM_RTL8211F_PAGE_SELECT			0x1f
++#define MIIM_RTL8211F_TX_DELAY				0x100
++
++#define MV88E6185_GLOBAL1_ADDR				0x1b
++#define MV88E6185_PORT_BASE_ADDR			0x10
++#define MV88E6185_NUM_PORTS					0x0a
++#define MV88E6185_PORT_SWITCH_ID			0x03
++#define MV88E6185_GLOBAL1_CTLl				0x04
++
++#define MV88E6185_PORT_SWITCH_ID_PROD_MASK	0xfff0
++#define MV88E6185_PORT_SWITCH_ID_PROD_6185	0x1a70
++
++#define MV88E6185_PORT_STS					0x0000
++#define MV88E6185_PORT_STS_PHY_DETECT		0x1000
++
++#define MV88E6185_PORT_MAC_CTL				0x0001
++#define MV88E6185_PORT_MAC_CTL_LINK_UP		0x0020
++#define MV88E6185_PORT_MAC_CTL_FORCE_LINK	0x0010
++#define MV88E6185_PORT_MAC_CTL_DUPLEX_FULL	0x0008
++#define MV88E6185_PORT_MAC_CTL_FORCE_DUPLEX	0x0004
++#define MV88E6185_PORT_MAC_CTL_SPEED_1000	0x0002
++
++#define MV88E6185_G1_CTL1_PPU_ENABLE		0x4000
++#define MV88E6185_G1_STS_PPU_STATE_MASK		0xc000
++#define MV88E6185_G1_STS_PPU_STATE_DISABLED	0x8000
++#define MV88E6185_G1_STS_PPU_STATE_POLLING	0xc000
++#define MV88E6185_G1_STS_PPU_STATE_BUSY		0x0000
++
++
++static inline int mv88e6185_port_read(struct phy_device *phydev, u8 port, u8 reg)
++{
++	struct mii_dev *bus = phydev->bus;
++	int val = bus->read(bus, (MV88E6185_PORT_BASE_ADDR + port), MDIO_DEVAD_NONE, reg);printf("------Enter [%s] bus[%s] port[0x%x] reg[0x%x] is [0x%x]\n", __func__, bus->name, (MV88E6185_PORT_BASE_ADDR + port), reg, val); return val;
++}
++
++static inline int mv88e6185_port_write(struct phy_device *phydev, u8 port, u8 reg, u16 val)
++{
++	struct mii_dev *bus = phydev->bus;printf("------Enter [%s] bus[%s] port[0x%x] reg[0x%x] is [0x%x]\n", __func__, bus->name, (MV88E6185_PORT_BASE_ADDR + port), reg, val);
++	return bus->write(bus, (MV88E6185_PORT_BASE_ADDR + port), MDIO_DEVAD_NONE, reg, val);
++}
++
++static inline void mv88e6xxx_wait_mask(struct phy_device *phydev, u16 mask, u16 val)
++{
++	int i;
++	u16 buf;
++	struct mii_dev *bus = phydev->bus;
++
++	/* There's no bus specific operation to wait for a mask */
++	for (i = 0; i < 16; i++) {
++		buf = bus->read(bus, MV88E6185_GLOBAL1_ADDR, MDIO_DEVAD_NONE,
++		MV88E6185_G1_STS_PPU_STATE_BUSY);
++
++		if ((buf & mask) == val)
++			return;
++
++		mdelay(1);
++	}
++}
++
++static inline void mv88e6185_g1_wait_ppu_disabled(struct phy_device *phydev)
++{
++	mv88e6xxx_wait_mask(phydev, MV88E6185_G1_STS_PPU_STATE_MASK,
++	MV88E6185_G1_STS_PPU_STATE_DISABLED);
++}
++
++static inline void mv88e6185_g1_wait_ppu_polling(struct phy_device *phydev)
++{
++	mv88e6xxx_wait_mask(phydev, MV88E6185_G1_STS_PPU_STATE_MASK,
++	MV88E6185_G1_STS_PPU_STATE_POLLING);
++}
++
++static inline void mv88e6185_g1_ppu_disable(struct phy_device *phydev)
++{
++	u16 val;
++	struct mii_dev *bus = phydev->bus;
++
++	val =  bus->read(bus, MV88E6185_GLOBAL1_ADDR, MDIO_DEVAD_NONE, MV88E6185_GLOBAL1_CTLl);
++	val &= ~MV88E6185_G1_CTL1_PPU_ENABLE;
++	bus->write(bus, MV88E6185_GLOBAL1_ADDR, MDIO_DEVAD_NONE, MV88E6185_GLOBAL1_CTLl, val);
++	mv88e6185_g1_wait_ppu_disabled(phydev);
++}
++
++static inline void mv88e6185_g1_ppu_enable(struct phy_device *phydev)
++{
++	u16 val;
++	struct mii_dev *bus = phydev->bus;
++
++	val =  bus->read(bus, MV88E6185_GLOBAL1_ADDR, MDIO_DEVAD_NONE, MV88E6185_GLOBAL1_CTLl);
++	val |= MV88E6185_G1_CTL1_PPU_ENABLE;
++	bus->write(bus, MV88E6185_GLOBAL1_ADDR, MDIO_DEVAD_NONE, MV88E6185_GLOBAL1_CTLl, val);
++	mv88e6185_g1_wait_ppu_polling(phydev);
++}
++
++static inline int mv88e6185_phy_read(struct phy_device *phydev, u8 port, u8 reg)
++{
++	u16 val;
++	struct mii_dev *bus = phydev->bus;
++
++	mv88e6185_g1_ppu_disable(phydev);
++	val = bus->read(bus, port, MDIO_DEVAD_NONE, reg);printf("------Enter [%s] bus[%s] port[%d] reg[0x%x] is [0x%x]\n", __func__, bus->name, port, reg, val);
++	mv88e6185_g1_ppu_enable(phydev);
++	return val;
++}
++
++static inline int mv88e6185_phy_write(struct phy_device *phydev, u8 port, u8 reg, u16 val)
++{
++	u16 ret;
++	struct mii_dev *bus = phydev->bus;
++
++	mv88e6185_g1_ppu_disable(phydev);
++	ret = bus->write(bus, port, MDIO_DEVAD_NONE, reg, val);printf("------Enter [%s] bus[%s] port[%d] reg[0x%x] is [0x%x]\n", __func__, bus->name, port, reg, val);
++	mv88e6185_g1_ppu_enable(phydev);
++	return ret;
++}
++
++static inline int mars_ext_write(struct phy_device *phydev, u8 addr, u32 reg, u16 val)
++{
++	int ret;
++
++	ret = mv88e6185_phy_write(phydev, addr, 0x1e, reg);
++	if (ret < 0)
++		return ret;
++
++	return mv88e6185_phy_write(phydev, addr, 0x1f, val);
++}
++
++static void rtl8211f_phy_setup(struct phy_device *phydev, u8 addr)
++{
++	u16 ctl;
++
++	mv88e6185_phy_write(phydev, addr, MII_BMCR, BMCR_RESET);
++
++	mv88e6185_phy_write(phydev, addr, MIIM_RTL8211F_PAGE_SELECT, 0xd08);
++	ctl = mv88e6185_phy_read(phydev, addr, 0x11);
++	ctl &= ~MIIM_RTL8211F_TX_DELAY;
++
++	mv88e6185_phy_write(phydev, addr, 0x11, ctl);
++	/* restore to default page 0 */
++	mv88e6185_phy_write(phydev, addr, MIIM_RTL8211F_PAGE_SELECT, 0x0);
++
++	/* Set green LED for Link, yellow LED for Active */
++	mv88e6185_phy_write(phydev, addr, MIIM_RTL8211F_PAGE_SELECT, 0xd04);
++	mv88e6185_phy_write(phydev, addr, 0x10, 0x617f);
++	mv88e6185_phy_write(phydev, addr, MIIM_RTL8211F_PAGE_SELECT, 0x0);
++
++	ctl = mv88e6185_port_read(phydev, addr, MV88E6185_PORT_STS);
++	ctl |= MV88E6185_PORT_STS_PHY_DETECT;
++	mv88e6185_port_write(phydev, addr, MV88E6185_PORT_STS, ctl);
++
++	ctl = mv88e6185_phy_read(phydev, addr, MII_CTRL1000);
++	ctl &= ~(ADVERTISE_1000FULL | ADVERTISE_1000HALF);
++	ctl |= ADVERTISE_1000FULL;
++	mv88e6185_phy_write(phydev, addr, MII_CTRL1000, ctl);
++
++	ctl = mv88e6185_phy_read(phydev, addr, MII_BMCR);
++	ctl |= (BMCR_ANENABLE | BMCR_ANRESTART | BMCR_RESET);
++	ctl &= ~(BMCR_ISOLATE);
++
++	mv88e6185_phy_write(phydev, addr, MII_BMCR, ctl);
++}
++
++static void ctc21101_phy_setup(struct phy_device *phydev, u8 addr)
++{
++	u16 ctl;
++
++	mars_ext_write(phydev, addr, 0xa005, 0x0);
++
++	mars_ext_write(phydev, addr, 0xa00d, 0xde00);
++	mars_ext_write(phydev, addr, 0xa00e, 0xd800);
++
++	mars_ext_write(phydev, addr, 0xa000, 0x2);
++	mars_ext_write(phydev, addr, 0x3, CTC21101_CDR_REG_VAL);
++
++	mars_ext_write(phydev, addr, 0xa000, 0x0);
++
++	ctl = mv88e6185_port_read(phydev, addr, MV88E6185_PORT_STS);
++	ctl |= MV88E6185_PORT_STS_PHY_DETECT;
++	mv88e6185_port_write(phydev, addr, MV88E6185_PORT_STS, ctl);
++
++	ctl = mv88e6185_phy_read(phydev, addr, MII_CTRL1000);
++	ctl &= ~(ADVERTISE_1000FULL | ADVERTISE_1000HALF);
++	ctl |= ADVERTISE_1000FULL;
++	mv88e6185_phy_write(phydev, addr, MII_CTRL1000, ctl);
++
++	ctl = mv88e6185_phy_read(phydev, addr, MII_BMCR);
++	ctl |= (BMCR_ANENABLE | BMCR_ANRESTART | BMCR_RESET);
++	ctl &= ~(BMCR_ISOLATE);
++
++	mv88e6185_phy_write(phydev, addr, MII_BMCR, ctl);
++}
++
++static void mii_phy_setup(struct phy_device *phydev, u8 addr)
++{
++	u16 ctl;
++	printf("------Enter [%s] bus[%s] addr[0x%x]\n", __func__,  phydev->bus->name, addr);
++	ctl = mv88e6185_port_read(phydev, addr, MV88E6185_PORT_STS);
++	ctl |= MV88E6185_PORT_STS_PHY_DETECT;
++	mv88e6185_port_write(phydev, addr, MV88E6185_PORT_STS, ctl);
++
++	ctl = mv88e6185_phy_read(phydev, addr, MII_CTRL1000);
++	ctl &= ~(ADVERTISE_1000FULL | ADVERTISE_1000HALF);
++	ctl |= ADVERTISE_1000FULL;
++	mv88e6185_phy_write(phydev, addr, MII_CTRL1000, ctl);
++
++	ctl = mv88e6185_phy_read(phydev, addr, MII_BMCR);
++	ctl |= (BMCR_ANENABLE | BMCR_ANRESTART | BMCR_RESET);
++	ctl &= ~(BMCR_ISOLATE);
++	mv88e6185_phy_write(phydev, addr, MII_BMCR, ctl);
++}
++
++static int mv88e6185_phy_port_setup(struct phy_device *phydev, u8 port)
++{
++	u16 val;
++	u32 phy_id;
++
++	val = mv88e6185_phy_read(phydev, port, MII_PHYSID1);
++	phy_id = val;
++	val = mv88e6185_phy_read(phydev, port, MII_PHYSID2);
++	phy_id = (phy_id << 16);
++	phy_id |= val;
++	printf("------Enter [%s] bus[%s] port[%d] phyid is [0x%x]\n", __func__,  phydev->bus->name, port, phy_id);
++	if (phy_id == ~((u32)0U))
++		return -ENOMEM;
++
++	if (phy_id == RTL8211F) {
++		rtl8211f_phy_setup(phydev, port);
++	}
++	else if (phy_id == CTC21101 || phy_id == TST0101) {
++		ctc21101_phy_setup(phydev, port);
++	}
++	else
++		mii_phy_setup(phydev, port);
++
++	return 0;
++}
++
++static void mv88e6185_fixed_port_setup(struct phy_device *phydev, u8 port)
++{
++	u16 val;
++	u16 ctl = 0;
++
++	val = mv88e6185_port_read(phydev, port, MV88E6185_PORT_STS);
++
++	val &= ~(MV88E6185_PORT_STS_PHY_DETECT);
++	mv88e6185_port_write(phydev, port, MV88E6185_PORT_STS, val);
++
++	ctl |= MV88E6185_PORT_MAC_CTL_LINK_UP | MV88E6185_PORT_MAC_CTL_FORCE_LINK |
++		 MV88E6185_PORT_MAC_CTL_DUPLEX_FULL | MV88E6185_PORT_MAC_CTL_FORCE_DUPLEX |
++		 MV88E6185_PORT_MAC_CTL_SPEED_1000;
++	mv88e6185_port_write(phydev, port, MV88E6185_PORT_MAC_CTL, ctl);
++}
++
++static int mv88e6185_hw_reset(struct phy_device *phydev)
++{
++	int ret;
++	struct gpio_desc gpio;
++	u32 reset_gpio;
++	int node = phydev->addr;
++	printf("--------Enter %s---------\n", __func__);
++	ret = gpio_request_by_name_nodev(offset_to_ofnode(node),
++		  "reset-gpios", 0, &gpio, GPIOD_IS_OUT | GPIOD_IS_OUT_ACTIVE);
++	if (ret) {
++		printf("%s: unable to reset switch device", __func__);
++		return ret;
++	}
++
++	reset_gpio = PMIO_NODE_ID_BASE + gpio.offset;
++	printf("--------Enter %s, Request for pin--------\n", __func__);
++	/* Request for pin */
++	xilinx_pm_request(PM_PINCTRL_REQUEST, reset_gpio, 0, 0, 0, NULL);
++	printf("--------Enter %s, Enable hysteresis in cmos receiver--------\n", __func__);
++	/* Enable hysteresis in cmos receiver */
++	xilinx_pm_request(PM_PINCTRL_CONFIG_PARAM_SET, reset_gpio,
++			  PM_PINCTRL_CONFIG_SCHMITT_CMOS,
++			  PM_PINCTRL_INPUT_TYPE_SCHMITT, 0, NULL);
++	printf("--------Enter %s, Disable Tri-state--------\n", __func__);
++	/* Disable Tri-state */
++	xilinx_pm_request(PM_PINCTRL_CONFIG_PARAM_SET, reset_gpio,
++			  PM_PINCTRL_CONFIG_TRI_STATE,
++			  PM_PINCTRL_TRI_STATE_DISABLE, 0, NULL);
++	udelay(1);
++	printf("--------Enter %s, set gpio value 0--------\n", __func__);
++	/* Set value 0 to pin */
++	dm_gpio_set_value(&gpio, 0);
++	mdelay(20);
++	printf("--------Enter %s, set gpio value 1--------\n", __func__);
++	/* Set value 1 to pin */
++	dm_gpio_set_value(&gpio, 1);
++	mdelay(300);printf("--------Enter %s, return--------\n", __func__);
++	return 0;
++}
++
++int switchphy_probe(struct phy_device *phydev)
++{
++	int i, ret = 0;
++	u32 fixed, phy;
++	struct fixed_link *priv;
++	int ofnode = phydev->addr;
++	unsigned int prod_num;
++
++	priv = malloc(sizeof(*priv));
++	if (!priv)
++		return -ENOMEM;
++	memset(priv, 0, sizeof(*priv));
++
++	phydev->priv = priv;
++	priv->link_speed = SPEED_1000;
++	priv->duplex = DUPLEX_FULL;
++	priv->pause = false;
++	priv->asym_pause = false;
++
++	/* not be reset by core phy code */
++	phydev->flags |= PHY_FLAG_BROKEN_RESET;
++
++	if (mv88e6185_hw_reset(phydev) != 0) {
++		printf("Error on mv88e6185_hw_reset!\n");
++		return -EINVAL;
++	}
++
++	fixed = fdt_getprop_u32_default_node(gd->fdt_blob,
++					   ofnode, 0, "fixed-ports", 0);
++
++	phy = fdt_getprop_u32_default_node(gd->fdt_blob,
++					   ofnode, 0, "phy-ports", 0);
++	if (fixed > 0x1fff || phy > 0x1fff)
++		return -EINVAL;
++
++	ret = mv88e6185_port_read(phydev, 0, MV88E6185_PORT_SWITCH_ID);
++	prod_num = ret & MV88E6185_PORT_SWITCH_ID_PROD_MASK;
++
++	if (prod_num != MV88E6185_PORT_SWITCH_ID_PROD_6185) {
++		printf("Warning: No switch chip!\n");
++		return -EINVAL;
++	}
++
++	for (i = 0; i < MV88E6185_NUM_PORTS; i++) {
++		if ((1 << i) & fixed)
++			mv88e6185_fixed_port_setup(phydev, i);
++
++		if ((1 << i) & phy)
++			mv88e6185_phy_port_setup(phydev, i);
++	}
++
++	return 0;
++}
++
++int switchphy_startup(struct phy_device *phydev)
++{
++	struct fixed_link *priv = phydev->priv;
++
++	phydev->asym_pause = priv->asym_pause;
++	phydev->pause = priv->pause;
++	phydev->duplex = priv->duplex;
++	phydev->speed = priv->link_speed;
++	phydev->link = 1;
++
++	return 0;
++}
++
++int switchphy_shutdown(struct phy_device *phydev)
++{
++	return 0;
++}
++
++static struct phy_driver switchphy_driver = {
++	.uid		= PHY_SWITCH_ID,
++	.mask		= 0xffffffff,
++	.name		= "SWITCH PHY",
++	.features	= PHY_GBIT_FEATURES | SUPPORTED_MII,
++	.probe		= switchphy_probe,
++	.startup	= switchphy_startup,
++	.shutdown	= switchphy_shutdown,
++};
++
++int phy_switch_init(void)
++{
++	phy_register(&switchphy_driver);
++	return 0;
++}
+\ No newline at end of file
+diff --git a/drivers/net/zynq_gem.c b/drivers/net/zynq_gem.c
+index 461805ae53f..fc6c7467c17 100644
+--- a/drivers/net/zynq_gem.c
++++ b/drivers/net/zynq_gem.c
+@@ -533,7 +533,8 @@ static int zynq_gem_init(struct udevice *dev)
+ 		 * Must be written after PCS_SEL is set in nwconfig,
+ 		 * otherwise writes will not take effect.
+ 		 */
+-		if (priv->phydev->phy_id != PHY_FIXED_ID) {
++		if (priv->phydev->phy_id != PHY_FIXED_ID &&
++			priv->phydev->phy_id != PHY_SWITCH_ID) {
+ 			writel(readl(&regs->pcscntrl) | ZYNQ_GEM_PCS_CTL_ANEG_ENBL,
+ 			       &regs->pcscntrl);
+ 			/*
+diff --git a/include/phy.h b/include/phy.h
+index 36785031eeb..3d918d3436f 100644
+--- a/include/phy.h
++++ b/include/phy.h
+@@ -24,6 +24,7 @@ struct udevice;
+ 
+ #define PHY_FIXED_ID		0xa5a55a5a
+ #define PHY_NCSI_ID            0xbeefcafe
++#define PHY_SWITCH_ID		0x5a5aa5a5
+ 
+ /*
+  * There is no actual id for this.

@@ -1,0 +1,15 @@
+ZULU patches based on petalinux 2021.1 linux-kernel basement:
+	0001-zulu-sport-uio-driver.patch
+	0002-zulu-add-rsmu-driver-and-adjust-ptp-timer.patch
+	0003-zulu-support-switch-chip-mv88e6185.patch
+	0004-zulu-spi-modify-maybe-used-for-debug.patch
+
+FARA patches based on petalinux 2021.2 linux-kernel basement:
+	0001-fara-support-uio-driver.patch
+	0002-fara-support-centec-phy.patch
+	0003-fara-modify-axienet-driver.patch
+	0004-fara-support-chip-mx66l2g45g.patch
+	0005-fara-support-rs485-in-uart.patch
+
+MEGA maint branch 2021.1 linux baseline extracted in 2025.4.1:
+        0001-mega-maint-br20211-krnl-migration.patch

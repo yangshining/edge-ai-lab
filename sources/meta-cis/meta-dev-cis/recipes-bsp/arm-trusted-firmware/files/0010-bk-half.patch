@@ -1,0 +1,12 @@
+diff --git a/bl31/bl31_main.c b/bl31/bl31_main.c
+index 6de9ee68c..5072e738d 100644
+--- a/bl31/bl31_main.c
++++ b/bl31/bl31_main.c
+@@ -105,6 +105,7 @@ void bl31_setup(u_register_t arg0, u_register_t arg1, u_register_t arg2,
+ void bl31_main(void)
+ {
+ 	NOTICE("BL31: %s\n", version_string);
++	return;
+ 	NOTICE("BL31: %s\n", build_message);
+ 
+ #ifdef SUPPORT_UNKNOWN_MPID

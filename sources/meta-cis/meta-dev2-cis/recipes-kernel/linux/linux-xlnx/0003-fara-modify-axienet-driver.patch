@@ -1,0 +1,27 @@
+From 6f0171405d1b91aa2b816cf59fa81110a7daf7b9 Mon Sep 17 00:00:00 2001
+From: Fan Wu <fan.wu@zillnk.com>
+Date: Wed, 3 Jul 2024 14:48:07 +0800
+Subject: [PATCH 3/9] fara modify axienet driver
+
+---
+ drivers/net/ethernet/xilinx/xilinx_axienet_main.c | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/drivers/net/ethernet/xilinx/xilinx_axienet_main.c b/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
+index 256c4f050bce..ed310385f00d 100644
+--- a/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
++++ b/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
+@@ -1062,9 +1062,7 @@ static int axienet_create_tsheader(u8 *buf, u8 msg_type,
+ 	cur_p = &q->tx_bd_v[q->tx_bd_tail];
+ #endif
+ 
+-	if ((msg_type & 0xF) == TX_TS_OP_NOOP) {
+-		buf[0] = TX_TS_OP_NOOP;
+-	} else if ((msg_type & 0xF) == TX_TS_OP_ONESTEP) {
++	if ((msg_type & 0xF) == TX_TS_OP_ONESTEP) {
+ 		if (lp->axienet_config->mactype == XAXIENET_MRMAC) {
+ 			/* For Sync Packet */
+ 			if ((msg_type & 0xF0) == MSG_TYPE_SYNC_FLAG) {
+-- 
+2.25.1
+

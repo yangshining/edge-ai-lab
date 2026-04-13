@@ -1,0 +1,38 @@
+diff --git a/cmd/zboot.c b/cmd/zboot.c
+index 7fc87b144b..6f8584d9ad 100644
+--- a/cmd/zboot.c
++++ b/cmd/zboot.c
+@@ -286,33 +286,6 @@ static int parse_head_data(uint32_t base_addr)
+ 	printf("%s: head_size: %#x\t zboot_offset: %#x\t mbr_offset: %#x\n", __func__, head_data.head_size, head_data.zboot_offset, head_data.mbr_offset);
+ #endif
+ 
+-	if (mask & 0x2)
+-	{
+-		uint32_t zboot_date = 0;
+-		if (mask & 0x1)
+-			zboot_date = (*(uint32_t *)(head_data.reserve3 + *(uint8_t *)(head_data.reserve3 + 2) + 3));
+-		else
+-			zboot_date = (*(uint32_t *)(head_data.reserve3 + 2));
+-
+-		zboot_date = (zboot_date >> 8) & 0xffffff;
+-		if (zboot_date > ZBOOT_DATE)
+-			printf("zboot %d -> %d!\n", ZBOOT_DATE, zboot_date);
+-		else
+-			return 0;
+-		uint32_t zboot_size = head_data.bit_offset - head_data.zboot_offset;
+-		//sf probe 0 0 0 && sf erase 0x0 0x1c0000 && sf write 0x8000000 0x0 ${filesize}
+-		ret |= run_command("sf probe 0 0 0", 0);
+-		ret |= run_command("sf erase 0x0 0x1c0000", 0);
+-		if (ret)
+-			return -1;
+-
+-		snprintf(cmd, sizeof(cmd), "sf write %#x 0x0 %#x", base_addr + head_data.head_size + head_data.zboot_offset, zboot_size);
+-		printf("cmd : %s\n", cmd);
+-		ret |= run_command(cmd, 0);
+-		if (ret)
+-			return -1;
+-		run_command("reset", 0);
+-	}
+ }
+ 
+ static int to_bootm(uint32_t image_addr)

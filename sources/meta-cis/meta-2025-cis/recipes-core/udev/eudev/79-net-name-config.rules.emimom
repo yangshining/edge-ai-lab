@@ -1,0 +1,2 @@
+ACTION=="add", SUBSYSTEM=="net", ENV{DEVPATH}=="/devices/platform/axi/ff0c0000.ethernet/*", NAME="debug"
+ACTION=="add", SUBSYSTEM=="net", ENV{DEVPATH}=="/devices/platform/axi/ff0d0000.ethernet/*", NAME="switch"

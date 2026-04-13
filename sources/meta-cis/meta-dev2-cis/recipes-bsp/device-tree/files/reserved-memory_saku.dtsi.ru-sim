@@ -1,0 +1,19 @@
+/ {
+    reserved-memory {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+        reserved: buffer@0 {
+            compatible = "shared-dma-pool";
+            no-map;
+            reg = <0x0 0xC000000 0x0 0x4000000>;
+        };
+
+        // log system and RACD reserved
+        rmdom0domain: rmdom0domain@22000000 {
+            reg = <0x0 0x22000000 0x0 0xE000000>; // 224MB conflict with bootscript loading at 0x20000000,shift it
+            no-map;
+        };
+    };
+};

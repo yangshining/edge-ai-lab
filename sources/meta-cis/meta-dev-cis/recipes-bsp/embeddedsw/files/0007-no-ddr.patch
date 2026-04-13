@@ -1,0 +1,22 @@
+diff --git a/lib/sw_apps/zynqmp_pmufw/misc/xparameters.h b/lib/sw_apps/zynqmp_pmufw/misc/xparameters.h
+index 8befe3d58c..8337bdd2f3 100644
+--- a/lib/sw_apps/zynqmp_pmufw/misc/xparameters.h
++++ b/lib/sw_apps/zynqmp_pmufw/misc/xparameters.h
+@@ -556,7 +556,7 @@
+ #define XPAR_PSU_CTRL_IPI_S_AXI_BASEADDR 0xFF380000
+ #define XPAR_PSU_CTRL_IPI_S_AXI_HIGHADDR 0xFF3FFFFF
+ 
+-
++#if 0
+ /* Definitions for peripheral PSU_DDR_0 */
+ #define XPAR_PSU_DDR_0_S_AXI_BASEADDR 0x00000000
+ #define XPAR_PSU_DDR_0_S_AXI_HIGHADDR 0x7FFFFFFF
+@@ -600,7 +600,7 @@
+ /* Definitions for peripheral PSU_DDR_XMPU5_CFG */
+ #define XPAR_PSU_DDR_XMPU5_CFG_S_AXI_BASEADDR 0xFD050000
+ #define XPAR_PSU_DDR_XMPU5_CFG_S_AXI_HIGHADDR 0xFD05FFFF
+-
++#endif
+ 
+ /* Definitions for peripheral PSU_EFUSE */
+ #define XPAR_PSU_EFUSE_S_AXI_BASEADDR 0xFFCC0000

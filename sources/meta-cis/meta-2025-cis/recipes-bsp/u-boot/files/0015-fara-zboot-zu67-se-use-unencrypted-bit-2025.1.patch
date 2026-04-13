@@ -1,0 +1,30 @@
+diff --git a/cmd/Kconfig b/cmd/Kconfig
+index d0c06cddd99..732f702ac27 100644
+--- a/cmd/Kconfig
++++ b/cmd/Kconfig
+@@ -1088,6 +1088,12 @@ config ZU67_SELECTION
+ 	help
+ 	  Automatically loads the zu67 limited and standard bit files.
+ 
++config ZU67_SE_FPGA_LOAD
++	bool "zu67-se fpga load"
++	depends on CMD_ZBOOT_Z
++	help
++	  zu67-se does not use encrypted bit files.
++
+ menu "Device access commands"
+ 
+ config CMD_ARMFFA
+diff --git a/cmd/zboot.c b/cmd/zboot.c
+index fd80a874c44..ceb1b3c8b03 100644
+--- a/cmd/zboot.c
++++ b/cmd/zboot.c
+@@ -219,7 +219,7 @@ static int do_fpga_loadb(uint32_t fpgadata, uint32_t datasize)
+ 		return -1;
+ 	}
+ 
+-#ifdef CONFIG_ZBOOT_RSA_BITSTREAM
++#if defined(CONFIG_ZBOOT_RSA_BITSTREAM) && !defined(CONFIG_ZU67_SE_FPGA_LOAD)
+ 	return do_fpga_loads_rsa_bitstream(dev, fpgadata, datasize);
+ #else
+ 	return fpga_loadbitstream(dev, (void *)fpgadata, datasize, BIT_FULL);

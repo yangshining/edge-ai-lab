@@ -1,0 +1,102 @@
+# This is a boot script for U-Boot
+# Generate boot.scr:
+# mkimage -c none -A arm -T script -d boot.cmd.default boot.scr
+#
+################
+@@PRE_BOOTENV@@
+
+ipconfig
+if test "${chip}" = "19"; then
+	if test "${reset_reason}" = "PMU"; then
+		echo "Boot backup partition.";
+		sf probe 0 0 0;
+		sf read @@FIT_IMAGE_LOAD_ADDRESS@@ 0x5E0000 0x3A20000;
+		if test "${runing}" != "0"; then
+			setenv runing 0;
+			setenv bootenv_save true
+		fi
+		if test "${bootenv_save}" = "true"; then
+			setenv bootenv_save false;
+			saveenv;
+		fi
+		zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x3A20000;		
+		exit;
+	fi
+	if test "${zboot}" = "1"; then
+		echo "Boot partition 1.";
+		ext4load mmc 0:1 @@FIT_IMAGE_LOAD_ADDRESS@@ image_19.bin;
+		if test "${runing}" != "1"; then
+			setenv runing 1;
+			setenv bootenv_save true
+		fi
+		if test "${bootenv_save}" = "true"; then
+			setenv bootenv_save false;
+			saveenv;
+		fi
+		zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x6400000;
+		echo "Boot backup partition.";
+		sf probe 0 0 0;
+		sf read @@FIT_IMAGE_LOAD_ADDRESS@@ 0x5E0000 0x3A20000;
+		if test "${runing}" != "0" || test "${state1}" != "1"; then
+			setenv runing 0;
+			setenv state1 1;
+			setenv bootenv_save true;
+		fi
+		if test "${bootenv_save}" = "true"; then
+			setenv bootenv_save false;
+			saveenv;
+		fi
+		zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x3A20000;
+		exit;
+	fi
+	if test "${zboot}" = "2"; then
+		echo "Boot partition 2.";
+		ext4load mmc 0:2 @@FIT_IMAGE_LOAD_ADDRESS@@ image_19.bin;
+		if test "${runing}" != "2"; then
+			setenv runing 2;
+			setenv bootenv_save true
+		fi
+		if test "${bootenv_save}" = "true"; then
+			setenv bootenv_save false;
+			saveenv;
+		fi
+		zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x6400000;
+		echo "Boot backup partition.";
+		sf probe 0 0 0;
+		sf read @@FIT_IMAGE_LOAD_ADDRESS@@ 0x5E0000 0x3A20000;
+		if test "${runing}" != "0" || test "${state2}" != "1"; then
+			setenv runing 0;
+			setenv state2 1;
+			setenv bootenv_save true;
+		fi
+		if test "${bootenv_save}" = "true"; then
+			setenv bootenv_save false;
+			saveenv;
+		fi
+		zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x3A20000;
+		exit;
+	fi
+	echo "Boot backup partition.";
+	sf probe 0 0 0;
+	sf read @@FIT_IMAGE_LOAD_ADDRESS@@ 0x5E0000 0x3A20000;
+	if test "${runing}" != "0"; then
+		setenv runing 0;
+		setenv bootenv_save true
+	fi
+	if test "${bootenv_save}" = "true"; then
+		setenv bootenv_save false;
+		saveenv;
+	fi
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x3A20000;
+fi
+if test "${chip}" = "49"; then
+	if test "${reset_reason}" = "EXTERNAL"; then
+		exit;
+	fi
+	for i in $(seq 1 3)
+	do
+		tftpboot @@FIT_IMAGE_LOAD_ADDRESS@@ image_49.bin;
+		zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x3200000;
+	done
+	exit;
+fi

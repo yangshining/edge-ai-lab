@@ -1,0 +1,13 @@
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_handoff.c b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_handoff.c
+index 7c632bd1ea..2dfe321641 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_handoff.c
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_handoff.c
+@@ -550,6 +550,8 @@ void XFsbl_HandoffExit(u64 HandoffAddress, u32 Flags)
+ 	RegVal |= XFSBL_EXEC_COMPLETED;
+ 	XFsbl_Out32(PMU_GLOBAL_GLOB_GEN_STORAGE5, RegVal);
+ 
++	XFsbl_Printf(DEBUG_GENERAL,"FPGA PL reg 0x1006[0x%08x], 0x1007[0x%08x]. \n\r", XFsbl_In32(0xa0004018), XFsbl_In32(0xa000401c));
++	XFsbl_Printf(DEBUG_GENERAL,"HandoffAddress: 0x%016x, Flags: %d.\n\r", HandoffAddress, Flags);
+ 	XFsbl_Printf(DEBUG_GENERAL,"Exit from FSBL \n\r");
+ 
+ 	/**

@@ -1,0 +1,225 @@
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.c b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.c
+index d58456becf..8d42b60f40 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.c
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.c
+@@ -59,6 +59,7 @@ static u32 FlashReadID(XQspiPsu *QspiPsuPtr);
+ static u32 MacronixEnable4B(XQspiPsu *QspiPsuPtr);
+ static u32 MacronixEnableQPIMode(XQspiPsu *QspiPsuPtr, int Enable);
+ static u32 GigadeviceEnableQPIMode(XQspiPsu *QspiPsuPtr, int Enable);
++static u32 Qspi_ReadWriteReg(XQspiPsu *QspiPsuPtr, u8 Cmd, u8 *Data, u8 Length, u8 isWrite);
+ 
+ /************************** Variable Definitions *****************************/
+ static XQspiPsu QspiPsuInstance;
+@@ -366,6 +367,27 @@ u32 XFsbl_Qspi24Init(u32 DeviceFlags)
+ 		QspiFlashSize = 2 * QspiFlashSize;
+ 	}
+ 
++	if (QspiFlashMake==ISSI_ID) {
++		u8 Data = 0;
++
++		//Enable QUAD SPI for 4 bit mode
++		if (QspiPsuInstance.Config.BusWidth == XFSBL_QSPI_BUSWIDTH_FOUR) {
++			Data = 0;
++			Qspi_ReadWriteReg(&QspiPsuInstance, READ_STATUS_CMD, &Data, 1, READ_FLAG);
++			XFsbl_Printf(DEBUG_INFO, "Read status REG Cmd[0x%02X] = [0x%02X]\r\n", READ_STATUS_CMD, Data);
++
++			if (!(Data & QUAD_MODE_ENABLE_BIT)) {
++				Data = QUAD_MODE_ENABLE_BIT;
++				Qspi_ReadWriteReg(&QspiPsuInstance, WRITE_STATUS_CMD, &Data, 1, WRITE_FLAG);
++				XFsbl_Printf(DEBUG_INFO, "Write status REG Cmd[0x%02X] = [0x%02X]\r\n", WRITE_STATUS_CMD, Data);
++
++				Data=0;
++				Qspi_ReadWriteReg(&QspiPsuInstance, READ_STATUS_CMD, &Data, 1, READ_FLAG);
++				XFsbl_Printf(DEBUG_INFO, "Read status REG Cmd[0x%02X] = [0x%02X]\r\n", READ_STATUS_CMD, Data);
++			}
++		}
++	}
++
+ END:
+ 	return UStatus;
+ }
+@@ -1074,6 +1096,94 @@ u32 XFsbl_Qspi32Init(u32 DeviceFlags)
+ 		QspiFlashSize = 2 * QspiFlashSize;
+ 	}
+ 
++	if (QspiFlashMake==ISSI_ID) {
++		u8 Data = 0;
++
++		//Enable QUAD SPI for 4 bit mode
++		if (QspiPsuInstance.Config.BusWidth == XFSBL_QSPI_BUSWIDTH_FOUR) {
++			Data = 0;
++			Qspi_ReadWriteReg(&QspiPsuInstance, READ_STATUS_CMD, &Data, 1, READ_FLAG);
++			XFsbl_Printf(DEBUG_INFO, "Read status REG Cmd[0x%02X] = [0x%02X]\r\n", READ_STATUS_CMD, Data);
++
++			if (!(Data & QUAD_MODE_ENABLE_BIT)) {
++				Data = QUAD_MODE_ENABLE_BIT;
++				Qspi_ReadWriteReg(&QspiPsuInstance, WRITE_STATUS_CMD, &Data, 1, WRITE_FLAG);
++				XFsbl_Printf(DEBUG_INFO, "Write status REG Cmd[0x%02X] = [0x%02X]\r\n", WRITE_STATUS_CMD, Data);
++
++				Data=0;
++				Qspi_ReadWriteReg(&QspiPsuInstance, READ_STATUS_CMD, &Data, 1, READ_FLAG);
++				XFsbl_Printf(DEBUG_INFO, "Read status REG Cmd[0x%02X] = [0x%02X]\r\n", READ_STATUS_CMD, Data);
++			}
++		}
++
++		//Enable Non-volatile 4 Byte address for QSPI32bit mode
++		Data = 0;
++		Qspi_ReadWriteReg(&QspiPsuInstance, BANK_REG_RD_CMD, &Data, 1, READ_FLAG);
++		XFsbl_Printf(DEBUG_INFO,"Read Bank Addr REG Cmd[0x%02X] = [0x%02X]\r\n", BANK_REG_RD_CMD, Data);
++
++		if (!(Data & ADD_4BYTE_ENABLE_BIT)) {
++			Data = ADD_4BYTE_ENABLE_BIT;
++			Qspi_ReadWriteReg(&QspiPsuInstance, BANK_REG_WR_NV_CMD, &Data, 1, WRITE_FLAG);
++			XFsbl_Printf(DEBUG_INFO,"Write Bank Addr REG Cmd[0x%02X] = [0x%02X]\r\n", BANK_REG_WR_NV_CMD, Data);
++
++			Data=0;
++			Qspi_ReadWriteReg(&QspiPsuInstance, BANK_REG_RD_CMD, &Data, 1, READ_FLAG);
++			XFsbl_Printf(DEBUG_INFO,"Read Bank Addr REG Cmd[0x%02X] = [0x%02X]\r\n", BANK_REG_RD_CMD, Data);
++		}
++
++#if 0
++		Qspi_ReadWriteReg(&QspiPsuInstance, READ_STATUS_CMD, &Data, 1, 0);
++		XFsbl_Printf(DEBUG_INFO,"Read REG [0x%02X] [0x%02X]  ", READ_STATUS_CMD, Data);
++		Data=0;
++		Qspi_ReadWriteReg(&QspiPsuInstance, BANK_REG_RD_CMD, &Data, 1, 0);
++		XFsbl_Printf(DEBUG_INFO,"[0x%02X] [0x%02X]\r\n", BANK_REG_RD_CMD, Data);
++		Tmp = Data;
++
++		//Test BANK_REG_WR_CMD
++		Data = 0x80;
++		Qspi_ReadWriteReg(&QspiPsuInstance, BANK_REG_WR_CMD, &Data, 1, 1);
++		XFsbl_Printf(DEBUG_INFO,"Write Bank Addr REG Cmd[0x%02X] = [0x%02X]\r\n", BANK_REG_WR_CMD, Data);
++		Data=0;
++		Qspi_ReadWriteReg(&QspiPsuInstance, BANK_REG_RD_CMD, &Data, 1, 0);
++		XFsbl_Printf(DEBUG_INFO,"Read Bank Addr REG Cmd[0x%02X] = [0x%02X]\r\n", BANK_REG_RD_CMD, Data);
++
++		Data = 0;
++		Qspi_ReadWriteReg(&QspiPsuInstance, BANK_REG_WR_CMD, &Data, 1, 1);
++		XFsbl_Printf(DEBUG_INFO,"Write Bank Addr REG Cmd[0x%02X] = [0x%02X]\r\n", BANK_REG_WR_CMD, Data);
++		Data=0;
++		Qspi_ReadWriteReg(&QspiPsuInstance, BANK_REG_RD_CMD, &Data, 1, 0);
++		XFsbl_Printf(DEBUG_INFO,"Read Bank Addr REG Cmd[0x%02X] = [0x%02X]\r\n", BANK_REG_RD_CMD, Data);
++
++		//Test BANK_REG_WR_NV_CMD
++		Data = 0x80;
++		Qspi_ReadWriteReg(&QspiPsuInstance, BANK_REG_WR_NV_CMD, &Data, 1, 1);
++		XFsbl_Printf(DEBUG_INFO,"Write Bank Addr REG Cmd[0x%02X] = [0x%02X]\r\n", BANK_REG_WR_NV_CMD, Data);
++		Data=0;
++		Qspi_ReadWriteReg(&QspiPsuInstance, BANK_REG_RD_CMD, &Data, 1, 0);
++		XFsbl_Printf(DEBUG_INFO,"Read Bank Addr REG Cmd[0x%02X] = [0x%02X]\r\n", BANK_REG_RD_CMD, Data);
++
++		Data = 0;
++		Qspi_ReadWriteReg(&QspiPsuInstance, BANK_REG_WR_NV_CMD, &Data, 1, 1);
++		XFsbl_Printf(DEBUG_INFO,"Write Bank Addr REG Cmd[0x%02X] = [0x%02X]\r\n", BANK_REG_WR_NV_CMD, Data);
++		Data=0;
++		Qspi_ReadWriteReg(&QspiPsuInstance, BANK_REG_RD_CMD, &Data, 1, 0);
++		XFsbl_Printf(DEBUG_INFO,"Read Bank Addr REG Cmd[0x%02X] = [0x%02X]\r\n", BANK_REG_RD_CMD, Data);
++
++		//Test EN4B_CMD/EX4B_CMD
++		Qspi_ReadWriteReg(&QspiPsuInstance, EN4B_CMD, NULL, 0, 1);
++		XFsbl_Printf(DEBUG_INFO,"Write Bank Addr REG Cmd[0x%02X] = [0x%02X]\r\n", EN4B_CMD, 0);
++		Data=0;
++		Qspi_ReadWriteReg(&QspiPsuInstance, READ_ID_CMD, ReadBuffer, 4, 0);
++		XFsbl_Printf(DEBUG_INFO,"Read ID REG Cmd[0x%02X] = [0x%02X 0x%02X 0x%02X 0x%02X]\r\n", READ_ID_CMD, ReadBuffer[0], ReadBuffer[1], ReadBuffer[2], ReadBuffer[3]);
++		Data=0;
++		Qspi_ReadWriteReg(&QspiPsuInstance, WRITE_STATUS_CMD, &Data, 1, 1);
++		XFsbl_Printf(DEBUG_INFO,"Write status REG Cmd[0x%02X] = [0x%02X]\r\n", WRITE_STATUS_CMD, Data);
++		Data=0;
++		Qspi_ReadWriteReg(&QspiPsuInstance, READ_STATUS_CMD, &Data, 1, 0);
++		XFsbl_Printf(DEBUG_INFO,"Read status REG Cmd[0x%02X] = [0x%02X]\r\n", READ_STATUS_CMD, Data);
++#endif
++	}
++
+ END:
+ 	return UStatus;
+ }
+@@ -1131,6 +1241,66 @@ END:
+ 	return UStatus;
+ }
+ 
++static u32 Qspi_ReadWriteReg(XQspiPsu *QspiPsuPtr, u8 Cmd, u8 *Data, u8 Length, u8 isWrite)
++{
++	s32 Status;
++	u32 UStatus;
++
++	//XFsbl_Printf(DEBUG_GENERAL,"MACRONIX_FLASH_MODE\r\n");
++	if (isWrite) {
++		/*Enable register write*/
++		TxBfrPtr = WRITE_ENABLE_CMD;
++		FlashMsg[0].TxBfrPtr = &TxBfrPtr;
++		FlashMsg[0].RxBfrPtr = NULL;
++		FlashMsg[0].ByteCount = 1;
++		FlashMsg[0].BusWidth = XQSPIPSU_SELECT_MODE_SPI;
++		FlashMsg[0].Flags = XQSPIPSU_MSG_FLAG_TX;
++
++		Status = XQspiPsu_PolledTransfer(QspiPsuPtr, &FlashMsg[0], 1);
++		if (Status != XFSBL_SUCCESS) {
++			UStatus = XFSBL_FAILURE;
++			goto END;
++		}
++	}
++
++	/*
++	 * Write/Read Status register
++	 */
++	FlashMsg[0].TxBfrPtr = &Cmd;
++	FlashMsg[0].RxBfrPtr = NULL;
++	FlashMsg[0].ByteCount = 1;
++	FlashMsg[0].BusWidth = XQSPIPSU_SELECT_MODE_SPI;
++	FlashMsg[0].Flags = XQSPIPSU_MSG_FLAG_TX;
++
++	if (Data) {
++		if (isWrite) {
++			FlashMsg[1].TxBfrPtr = Data;
++			FlashMsg[1].RxBfrPtr = NULL;
++			FlashMsg[1].ByteCount = Length;
++			FlashMsg[1].BusWidth = XQSPIPSU_SELECT_MODE_SPI;
++			FlashMsg[1].Flags = XQSPIPSU_MSG_FLAG_TX;
++		} else {
++			FlashMsg[1].TxBfrPtr = NULL;
++			FlashMsg[1].RxBfrPtr = Data;
++			FlashMsg[1].ByteCount = Length;
++			FlashMsg[1].BusWidth = XQSPIPSU_SELECT_MODE_SPI;
++			FlashMsg[1].Flags = XQSPIPSU_MSG_FLAG_RX;
++		}
++	}
++
++	Status = XQspiPsu_PolledTransfer(QspiPsuPtr, &FlashMsg[0], (Data ? 2 : 1));
++	if (Status != XFSBL_SUCCESS) {
++		UStatus = XFSBL_FAILURE;
++		goto END;
++	}
++	//XFsbl_Printf(DEBUG_GENERAL,"%s Reg CMD[0x%02x] done\r\n", (isWrite?"Write":"Read"), Cmd);
++
++	UStatus = XFSBL_SUCCESS;
++
++END:
++	return UStatus;
++}
++
+ /******************************************************************************
+ *
+ * Static API used for Macronix flash to enable or disable QPI mode
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.h b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.h
+index 388b40a687..97876c8659 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.h
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.h
+@@ -65,9 +65,18 @@ extern "C" {
+ 
+ 
+ #define WRITE_STATUS_CMD	(0x01U)
++#define READ_STATUS_CMD		(0x05U)
+ #define WRITE_ENABLE_CMD	(0x06U)
+ #define BANK_REG_RD_CMD		(0x16U)
+ #define BANK_REG_WR_CMD		(0x17U)
++#define BANK_REG_WR_NV_CMD	(0x18U)
++#define EN4B_CMD			(0xB7U)
++#define EX4B_CMD			(0x29U)
++
++#define QUAD_MODE_ENABLE_BIT	(0x40U)
++#define ADD_4BYTE_ENABLE_BIT	(0x80U)
++#define WRITE_FLAG	(0x1U)
++#define READ_FLAG	(0x0U)
+ 
+ /* For Gigadevice Flash */
+ #define WRITE_STATUS_REG_2_CMD	(0x31U)

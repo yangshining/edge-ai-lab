@@ -1,0 +1,57 @@
+From ba4b98017aa26f5dc54f7c3b46811b8be139adfe Mon Sep 17 00:00:00 2001
+From: hexi <xi.he@zillnk.com>
+Date: Thu, 29 Dec 2022 16:34:17 +0800
+Subject: [PATCH 1/1] fix auto negotiation gigabit of the debug port
+
+Change-Id: I4ac5271cf0435b8a9712dbe714f3f70fc4975c0c
+---
+ drivers/net/phy/mars.c | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/drivers/net/phy/mars.c b/drivers/net/phy/mars.c
+index 8ec7bfa3e..cb9153675 100644
+--- a/drivers/net/phy/mars.c
++++ b/drivers/net/phy/mars.c
+@@ -73,6 +73,8 @@
+ #define CTC_MARS_WOL_TYPE               BIT(0)
+ /* WOL Enable */
+ #define CTC_MARS_WOL_EN                 BIT(3)
++/* External Loopback */
++#define CTC_MARS_EXTERNAL_LOOPBACK      BIT(4)
+ /* WOL Event Interrupt Enable */
+ #define CTC_MARS_WOL_INTR_SEL           BIT(6)
+ /* WOL Pulse Width */
+@@ -711,6 +713,21 @@ static int mars_get_port_type(struct phy_device *phydev)
+ 	return 0;
+ }
+ 
++void mars_loopback_exit(struct phy_device *phydev)
++{
++	int val;
++
++	val = mars_ext_read(phydev, 0xa);
++	val &= ~(CTC_MARS_EXTERNAL_LOOPBACK);
++	mars_ext_write(phydev, 0xa, val);
++
++	val = phy_read(phydev, MII_BMCR);
++	val |= (BMCR_ANENABLE | BMCR_ANRESTART | BMCR_RESET);
++	val &= ~(BMCR_ISOLATE);
++
++	phy_write(phydev, MII_BMCR, val);
++}
++
+ int mars_config_init(struct phy_device *phydev)
+ {
+ 	int val;
+@@ -724,6 +741,8 @@ int mars_config_init(struct phy_device *phydev)
+ 
+ 	phy_write(phydev, MII_BMCR, BMCR_RESET);
+ 
++	mars_loopback_exit(phydev);
++
+ 	mars_set_link_timer_2_6ms(phydev);
+ 
+ 	features = (SUPPORTED_TP | SUPPORTED_MII
+-- 
+2.31.1
+

@@ -1,0 +1,40 @@
+language: c
+
+dist: xenial
+
+addons:
+  apt:
+    sources:
+      - sourceline: 'ppa:neovim-ppa/stable'
+    packages:
+      - libev-dev
+      - libpcre3-dev
+      - libmsgpack-dev
+
+os:
+  - linux
+  - osx
+
+compiler:
+  - gcc
+  - clang
+
+matrix:
+  exclude:
+    - os: osx
+      compiler: gcc
+  allow_failures:
+    - os: osx
+      compiler: clang
+
+before_install:
+  - if test "$TRAVIS_OS_NAME" = "osx" ; then brew install libev || true ; fi
+  - if test "$TRAVIS_OS_NAME" = "osx" ; then brew install pcre || true ; fi
+  - if test "$TRAVIS_OS_NAME" = "osx" ; then brew install msgpack || true ; fi
+
+script:
+  - ./autogen.sh
+  - ./configure
+  - make
+
+sudo: false

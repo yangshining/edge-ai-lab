@@ -1,0 +1,152 @@
+diff --git a/drivers/net/phy/switch-link.c b/drivers/net/phy/switch-link.c
+index 2f4d953663..6da0cc0be1 100644
+--- a/drivers/net/phy/switch-link.c
++++ b/drivers/net/phy/switch-link.c
+@@ -50,16 +50,22 @@ DECLARE_GLOBAL_DATA_PTR;
+ #define MV88E6185_G1_STS_PPU_STATE_POLLING	0xc000
+ #define MV88E6185_G1_STS_PPU_STATE_BUSY		0x0000
+ 
++#define VER_ID_GPIO 40
++#define PHY_SWITCH_GPIO 36
++#define YT_PHY_ADDR 2
+ 
+ static inline int mv88e6185_port_read(struct phy_device *phydev, u8 port, u8 reg)
+ {
+ 	struct mii_dev *bus = phydev->bus;
+-	int val = bus->read(bus, (MV88E6185_PORT_BASE_ADDR + port), MDIO_DEVAD_NONE, reg);printf("------Enter [%s] bus[%s] port[0x%x] reg[0x%x] is [0x%x]\n", __func__, bus->name, (MV88E6185_PORT_BASE_ADDR + port), reg, val); return val;
++	int val = bus->read(bus, (MV88E6185_PORT_BASE_ADDR + port), MDIO_DEVAD_NONE, reg);
++	//printf("------Enter [%s] bus[%s] port[0x%x] reg[0x%x] is [0x%x]\n", __func__, bus->name, (MV88E6185_PORT_BASE_ADDR + port), reg, val);
++	return val;
+ }
+ 
+ static inline int mv88e6185_port_write(struct phy_device *phydev, u8 port, u8 reg, u16 val)
+ {
+-	struct mii_dev *bus = phydev->bus;printf("------Enter [%s] bus[%s] port[0x%x] reg[0x%x] is [0x%x]\n", __func__, bus->name, (MV88E6185_PORT_BASE_ADDR + port), reg, val);
++	struct mii_dev *bus = phydev->bus;
++	//printf("------Enter [%s] bus[%s] port[0x%x] reg[0x%x] is [0x%x]\n", __func__, bus->name, (MV88E6185_PORT_BASE_ADDR + port), reg, val);
+ 	return bus->write(bus, (MV88E6185_PORT_BASE_ADDR + port), MDIO_DEVAD_NONE, reg, val);
+ }
+ 
+@@ -121,7 +127,8 @@ static inline int mv88e6185_phy_read(struct phy_device *phydev, u8 port, u8 reg)
+ 	struct mii_dev *bus = phydev->bus;
+ 
+ 	mv88e6185_g1_ppu_disable(phydev);
+-	val = bus->read(bus, port, MDIO_DEVAD_NONE, reg);printf("------Enter [%s] bus[%s] port[%d] reg[0x%x] is [0x%x]\n", __func__, bus->name, port, reg, val);
++	val = bus->read(bus, port, MDIO_DEVAD_NONE, reg);
++	//printf("------Enter [%s] bus[%s] port[%d] reg[0x%x] is [0x%x]\n", __func__, bus->name, port, reg, val);
+ 	mv88e6185_g1_ppu_enable(phydev);
+ 	return val;
+ }
+@@ -132,7 +139,8 @@ static inline int mv88e6185_phy_write(struct phy_device *phydev, u8 port, u8 reg
+ 	struct mii_dev *bus = phydev->bus;
+ 
+ 	mv88e6185_g1_ppu_disable(phydev);
+-	ret = bus->write(bus, port, MDIO_DEVAD_NONE, reg, val);printf("------Enter [%s] bus[%s] port[%d] reg[0x%x] is [0x%x]\n", __func__, bus->name, port, reg, val);
++	ret = bus->write(bus, port, MDIO_DEVAD_NONE, reg, val);
++	//printf("------Enter [%s] bus[%s] port[%d] reg[0x%x] is [0x%x]\n", __func__, bus->name, port, reg, val);
+ 	mv88e6185_g1_ppu_enable(phydev);
+ 	return ret;
+ }
+@@ -223,7 +231,7 @@ static void yt8521_phy_setup(struct phy_device *phydev, u8 addr)
+ static void mii_phy_setup(struct phy_device *phydev, u8 addr)
+ {
+ 	u16 ctl;
+-	printf("------Enter [%s] bus[%s] addr[0x%x]\n", __func__,  phydev->bus->name, addr);
++	//printf("------Enter [%s] bus[%s] addr[0x%x]\n", __func__,  phydev->bus->name, addr);
+ 	ctl = mv88e6185_port_read(phydev, addr, MV88E6185_PORT_STS);
+ 	ctl |= MV88E6185_PORT_STS_PHY_DETECT;
+ 	mv88e6185_port_write(phydev, addr, MV88E6185_PORT_STS, ctl);
+@@ -249,7 +257,7 @@ static int mv88e6185_phy_port_setup(struct phy_device *phydev, u8 port)
+ 	val = mv88e6185_phy_read(phydev, port, MII_PHYSID2);
+ 	phy_id = (phy_id << 16);
+ 	phy_id |= val;
+-	printf("------Enter [%s] bus[%s] port[%d] phyid is [0x%x]\n", __func__,  phydev->bus->name, port, phy_id);
++	//printf("------Enter [%s] bus[%s] port[%d] phyid is [0x%x]\n", __func__,  phydev->bus->name, port, phy_id);
+ 	if (phy_id == ~((u32)0U))
+ 		return -ENOMEM;
+ 
+@@ -287,7 +295,7 @@ static int mv88e6185_hw_reset(struct phy_device *phydev)
+ 	struct gpio_desc gpio;
+ 	u32 reset_gpio;
+ 	int node = phydev->addr;
+-	printf("--------Enter %s---------\n", __func__);
++	//printf("--------Enter %s---------\n", __func__);
+ 	ret = gpio_request_by_name_nodev(offset_to_ofnode(node),
+ 		  "reset-gpios", 0, &gpio, GPIOD_IS_OUT | GPIOD_IS_OUT_ACTIVE);
+ 	if (ret) {
+@@ -296,28 +304,29 @@ static int mv88e6185_hw_reset(struct phy_device *phydev)
+ 	}
+ 
+ 	reset_gpio = PMIO_NODE_ID_BASE + gpio.offset;
+-	printf("--------Enter %s, Request for pin--------\n", __func__);
++	//printf("--------Enter %s, Request for pin--------\n", __func__);
+ 	/* Request for pin */
+ 	xilinx_pm_request(PM_PINCTRL_REQUEST, reset_gpio, 0, 0, 0, NULL);
+-	printf("--------Enter %s, Enable hysteresis in cmos receiver--------\n", __func__);
++	//printf("--------Enter %s, Enable hysteresis in cmos receiver--------\n", __func__);
+ 	/* Enable hysteresis in cmos receiver */
+ 	xilinx_pm_request(PM_PINCTRL_CONFIG_PARAM_SET, reset_gpio,
+ 			  PM_PINCTRL_CONFIG_SCHMITT_CMOS,
+ 			  PM_PINCTRL_INPUT_TYPE_SCHMITT, 0, NULL);
+-	printf("--------Enter %s, Disable Tri-state--------\n", __func__);
++	//printf("--------Enter %s, Disable Tri-state--------\n", __func__);
+ 	/* Disable Tri-state */
+ 	xilinx_pm_request(PM_PINCTRL_CONFIG_PARAM_SET, reset_gpio,
+ 			  PM_PINCTRL_CONFIG_TRI_STATE,
+ 			  PM_PINCTRL_TRI_STATE_DISABLE, 0, NULL);
+ 	udelay(1);
+-	printf("--------Enter %s, set gpio value 0--------\n", __func__);
++	//printf("--------Enter %s, set gpio value 0--------\n", __func__);
+ 	/* Set value 0 to pin */
+ 	dm_gpio_set_value(&gpio, 0);
+ 	mdelay(20);
+-	printf("--------Enter %s, set gpio value 1--------\n", __func__);
++	//printf("--------Enter %s, set gpio value 1--------\n", __func__);
+ 	/* Set value 1 to pin */
+ 	dm_gpio_set_value(&gpio, 1);
+-	mdelay(300);printf("--------Enter %s, return--------\n", __func__);
++	mdelay(300);
++	//printf("--------Enter %s, return--------\n", __func__);
+ 	return 0;
+ }
+ 
+@@ -328,6 +337,7 @@ int switchphy_probe(struct phy_device *phydev)
+ 	struct fixed_link *priv;
+ 	int ofnode = phydev->addr;
+ 	unsigned int prod_num;
++	int ver_id = 0;
+ 
+ 	priv = malloc(sizeof(*priv));
+ 	if (!priv)
+@@ -373,11 +383,26 @@ int switchphy_probe(struct phy_device *phydev)
+ 	}
+ 
+ #if 1
+-	gpio_request(36, "PHY_SWITCH_GPIO"); gpio_direction_output(36, 1);
+-	mdelay(20);
+-	yt8521_phy_setup(phydev, 2);
+-	gpio_direction_output(36, 0);
+-	mdelay(20);
++	gpio_request(VER_ID_GPIO, "VER_ID_GPIO");
++	gpio_direction_input(VER_ID_GPIO);
++	ver_id = gpio_get_value(VER_ID_GPIO);
++	printf("%s, read gpio[%d] = [%d]\n", __func__, VER_ID_GPIO, ver_id);
++
++	if (1 == ver_id) {
++		//ver_id 1 is P1A, need switch gpio to config phy
++		printf("%s, HW ver P1A\n", __func__);
++		gpio_request(PHY_SWITCH_GPIO, "PHY_SWITCH_GPIO");
++		gpio_direction_output(PHY_SWITCH_GPIO, 1);
++		mdelay(20);
++		yt8521_phy_setup(phydev, YT_PHY_ADDR);
++		gpio_direction_output(PHY_SWITCH_GPIO, 0);
++		mdelay(20);
++	} else {
++		//ver_id 1 is P1B, config phy via switch chip
++		printf("%s, HW ver P1B\n", __func__);
++		gpio_request(PHY_SWITCH_GPIO, "PHY_SWITCH_GPIO");
++		yt8521_phy_setup(phydev, YT_PHY_ADDR);
++	}
+ #endif
+ 
+ 	return 0;

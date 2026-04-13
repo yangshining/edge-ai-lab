@@ -1,0 +1,52 @@
+#!/bin/sh
+
+DESC="unix socket message bus"
+
+ubusd_start() {
+
+	case "$1" in
+		on)
+			echo "Starting ubusd"
+			ubusd & 2>/dev/null
+			;;
+		off)
+			echo "Stoping ubusd"
+			killall ubusd 2>/dev/null
+			;;
+		*)
+			echo "Invalid arg to ubusd_start $1"
+			exit 1
+			;;
+	esac
+
+
+}
+
+do_start() {
+
+	ubusd_start "on"
+
+}
+
+do_stop() {
+
+	ubusd_start "off"
+
+}
+
+case "$1" in
+	start)
+		do_start
+		;;
+	stop)
+		do_stop
+		;;
+	restart)
+		do_stop
+		do_start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac

@@ -1,0 +1,30 @@
+From 580fdf5b2db0734575909cbed21bbee51cd8a235 Mon Sep 17 00:00:00 2001
+From: hexi <xi.he@zillnk.com>
+Date: Thu, 11 Aug 2022 17:51:03 +0800
+Subject: [PATCH] zboot:modify zboot info
+
+Change-Id: I1bc7c203103bf8b462eb5f568ad3e1f84cf1bd85
+---
+ cmd/zboot.h | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/cmd/zboot.h b/cmd/zboot.h
+index 213d4a89..58c4b44a 100644
+--- a/cmd/zboot.h
++++ b/cmd/zboot.h
+@@ -30,9 +30,9 @@
+ #include <time.h>
+ #include <timer.h>
+ 
+-#define ZBOOT_VERSION "R1A"
+-#define ZBOOT_INFO "ORU3225N78C_ZBOOT"
+-#define ZBOOT_DATE 211213
++#define ZBOOT_VERSION "RXA"
++#define ZBOOT_INFO "ORU622X_ZBOOT"
++#define ZBOOT_DATE 20220811
+ 
+ #define BUS			1
+ #define CS			0
+-- 
+2.31.1
+

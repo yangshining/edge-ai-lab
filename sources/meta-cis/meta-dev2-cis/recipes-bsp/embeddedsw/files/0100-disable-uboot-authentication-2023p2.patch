@@ -1,0 +1,46 @@
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_config.h b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_config.h
+index d6d8dc231f..ec2088e8c1 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_config.h
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_config.h
+@@ -77,7 +77,7 @@ extern "C" {
+ #endif
+ 
+ #ifndef FSBL_DEBUG_VAL
+-#define FSBL_DEBUG_VAL              (0U)
++#define FSBL_DEBUG_VAL              (1U)
+ #endif
+ 
+ #ifndef FSBL_DEBUG_INFO_VAL
+@@ -152,7 +152,7 @@ extern "C" {
+ #endif
+ 
+ #ifndef FSBL_SECURE_EXCLUDE_VAL
+-#define FSBL_SECURE_EXCLUDE_VAL			(0U)
++#define FSBL_SECURE_EXCLUDE_VAL			(1U)
+ #endif
+ 
+ #ifndef FSBL_BS_EXCLUDE_VAL
+@@ -192,7 +192,7 @@ extern "C" {
+ #endif
+ 
+ #ifndef FSBL_FORCE_ENC_EXCLUDE_VAL
+-#define FSBL_FORCE_ENC_EXCLUDE_VAL		(0U)
++#define FSBL_FORCE_ENC_EXCLUDE_VAL		(1U)
+ #endif
+ 
+ #ifndef FSBL_DDR_SR_EXCLUDE_VAL
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c
+index a2842a3e41..3790e6f2a1 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c
+@@ -1240,9 +1240,7 @@ static u32 XFsbl_ValidateHeader(XFsblPs * FsblInstancePtr)
+ 	}
+ 
+ 	/* If authentication is enabled */
+-	if (((EfuseCtrl & EFUSE_SEC_CTRL_RSA_EN_MASK) != 0U) ||
+-	    ((BootHdrAttrb & XIH_BH_IMAGE_ATTRB_RSA_MASK)
+-		== XIH_BH_IMAGE_ATTRB_RSA_MASK)) {
++	if (0) {
+ 		FsblInstancePtr->AuthEnabled = TRUE;
+ 		XFsbl_Printf(DEBUG_INFO,"Authentication Enabled\r\n");
+ #ifdef XFSBL_SECURE

@@ -1,0 +1,34 @@
+# rlogd.conf.example
+<source>
+    type forward
+    bind unix:///var/run/rlogd/rlogd.sock
+</source>
+
+<source>
+    type forward
+    bind 0.0.0.0:10381
+    label forwarded
+</source>
+
+<match example.**>
+    type forward
+    target 127.0.0.1:10381
+    buffer_path /var/spool/rlogd/rlogd/
+</match>
+
+<label forwarded>
+    <match example.acc.**>
+        type file
+        # time_format %s
+        # format $time $tag: $record
+        path /var/log/rlogd/example/%Y-%m-%d/acc_%H%M.log
+    </match>
+    <match example.err.**>
+        type file
+        path /var/lgo/rlogd/example/%Y-%m-%d/err_%H%M.log
+    </match>
+    <match example.app.**>
+        type file
+        path /var/log/rlogd/example/%Y-%m-%d/app_%H%M.log
+    </match>
+</label>

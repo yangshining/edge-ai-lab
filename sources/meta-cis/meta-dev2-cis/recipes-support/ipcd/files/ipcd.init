@@ -1,0 +1,113 @@
+#!/bin/sh
+for file in /etc/profile.d/zsys*; do
+	if [ -f "$file" ]; then
+		echo "Sourcing $file"
+		. "$file"
+	fi
+done
+
+DESC="ipc server"
+
+ipcd_start() {
+
+	case "$1" in
+		on)
+			echo "Starting ipcd"
+			ipcd & 2>/dev/null
+			sleep 2s
+			change_passwd
+			;;
+		off)
+			echo "Stoping ipcd"
+			killall ipcd 2>/dev/null
+			;;
+		*)
+			echo "Invalid arg to ipcd_start $1"
+			exit 1
+			;;
+	esac
+
+
+}
+
+do_start() {
+
+	ipcd_start "on"
+
+}
+
+do_stop() {
+
+	ipcd_start "off"
+
+}
+
+change_passwd() {
+	echo "##---Change password for plat: [$VARI_PLAT] init---" > /dev/console
+
+	local unique_passwd="root"
+	#legacy code, remained this for legacy product, obsolete now
+	local boardenv=$(ubus call boardenv get '{"key":"du_vendor"}' | grep value |awk -F '\"' '{print $4}')
+
+	if [ "${PKG_MODE}" = "upg-tool" ]; then
+		# tool package use own password
+		echo "This version is specific usage, login forbidden!"
+		unique_passwd="Obtain=tandem2skinny"
+	elif [ "${boardenv}" = "TypeD" -o "${boardenv}" = "TypeB" ];then
+		# legacy product logical
+		echo "need change passwd for Parallel"
+		unique_passwd="Ph03nix5parr0w!"
+	else
+		# sakura plat product loagical
+		case "${VARI_PLAT}" in
+			sakura)
+				unique_passwd="SakuraFj_Uvnc8/xho"
+				;;
+			apple)
+				unique_passwd="AppleFJ_Uvnc8/lyb@"
+				;;
+			apricot)
+				unique_passwd="ApricotFJ_Uvnc8/3yr@"
+				;;
+			grape)
+				# unique_passwd="root"
+				return
+				;;
+			blueberry)
+				# unique_passwd="root"
+				return
+				;;
+			emimoa|emimom)
+				# unique_passwd="root"
+				return
+				;;
+			*)
+				echo "No need change for plat[$VARI_PLAT], using default passwd" > /dev/console
+				return
+				;;
+		esac
+	fi
+
+passwd << EOF
+${unique_passwd}
+${unique_passwd}
+EOF
+
+}
+
+case "$1" in
+	start)
+		do_start
+		;;
+	stop)
+		do_stop
+		;;
+	restart)
+		do_stop
+		do_start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac

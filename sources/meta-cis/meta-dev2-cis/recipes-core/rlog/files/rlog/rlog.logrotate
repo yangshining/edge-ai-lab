@@ -1,0 +1,15 @@
+
+/var/log/racd/rlog.log
+{
+        rotate 1
+        missingok
+        notifempty
+        nodateext
+        copytruncate
+        size 512K
+        compress
+        sharedscripts
+        postrotate
+		@BINDIR@/pkill -HUP syslogd 2> /dev/null || true
+        endscript
+}

@@ -1,0 +1,110 @@
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_hw.h b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_hw.h
+index 9d2b91ce34..8b2297fe78 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_hw.h
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_hw.h
+@@ -163,6 +163,10 @@ extern "C" {
+ #define CSU_IDCODE_SVD_MASK		(0x7U << CSU_IDCODE_SVD_SHIFT)
+ #define CSU_IDCODE_DEVICE_CODE_SHIFT	15U
+ #define CSU_IDCODE_DEVICE_CODE_MASK	(0xFU << CSU_IDCODE_DEVICE_CODE_SHIFT)
++#define CSU_IDCODE_SUB_FAMILY_SHIFT	19U
++#define CSU_IDCODE_SUB_FAMILY_MASK	(0x3U << CSU_IDCODE_SUB_FAMILY_SHIFT)
++#define CSU_IDCODE_SUB_DEV_SVD_MASK	(CSU_IDCODE_SUB_FAMILY_MASK | CSU_IDCODE_DEVICE_CODE_MASK \
++					 | CSU_IDCODE_SVD_MASK)
+ 
+ /* efuse */
+ 
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_misc.c b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_misc.c
+index 92d83e687c..a5b2995b8e 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_misc.c
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_misc.c
+@@ -677,24 +677,47 @@ const char *XFsbl_GetSiliconIdName(void)
+ {
+ 	/* Lookup table for Device-SVD Id and DeviceId Name */
+ 	static XFsblPs_ZynqmpDevices ZynqmpDevices[] = {
+-		{0x10U, "3",},
+-		{0x11U, "2",},
+-		{0x20U, "5",},
+-		{0x21U, "4",},
+-		{0x30U, "7",},
+-		{0x38U, "9",},
+-		{0x39U, "6",},
+-		{0x40U, "11",},
+-		{0x50U, "15",},
+-		{0x58U, "19",},
+-		{0x59U, "17",},
++		{ 0x088U,  "1" },
++		{ 0x0D0U, "67" },
++		{ 0x0D1U, "65" },
++		{ 0x0D2U, "55" },
++		{ 0x0D3U, "57" },
++		{ 0x0D4U, "42" },
++		{ 0x0D5U, "63" },
++		{ 0x0D6U, "64" },
++		{ 0x112U,  "0" },
++		{ 0x111U,  "2" },
++		{ 0x110U,  "3" },
++		{ 0x121U,  "4" },
++		{ 0x120U,  "5" },
++		{ 0x130U,  "7" },
++		{ 0x139U,  "6" },
++		{ 0x138U,  "9" },
++		{ 0x140U, "11" },
++		{ 0x150U, "15" },
++		{ 0x159U, "17" },
++		{ 0x158U, "19" },
++		{ 0x1E1U, "21" },
++		{ 0x1E3U, "23" },
++		{ 0x1E5U, "25" },
++		{ 0x1E4U, "27" },
++		{ 0x1E0U, "28" },
++		{ 0x1E2U, "29" },
++		{ 0x1E6U, "39" },
++		{ 0x1FDU, "43" },
++		{ 0x1F8U, "46" },
++		{ 0x1FFU, "47" },
++		{ 0x1FBU, "48" },
++		{ 0x1FEU, "49" },
++		{ 0x1F9U, "58" },
++		{ 0x1FCU, "59" },
+ 	};
+ 	u32 DevSvdId;
+ 	u32 Index;
+ 
+ 	DevSvdId = XFsbl_In32(CSU_IDCODE);
+ 
+-	DevSvdId &= CSU_IDCODE_DEVICE_CODE_MASK | CSU_IDCODE_SVD_MASK;
++	DevSvdId &= CSU_IDCODE_SUB_DEV_SVD_MASK;
+ 	DevSvdId >>= CSU_IDCODE_SVD_SHIFT;
+ 
+ 	for (Index = 0U; Index < ARRAY_SIZE(ZynqmpDevices); Index++) {
+@@ -718,15 +741,15 @@ const char *XFsbl_GetSiliconIdName(void)
+ ******************************************************************************/
+ const char *XFsbl_GetProcEng(void)
+ {
+-	u32 DevSvdId = XFsbl_In32(CSU_IDCODE);
+-	DevSvdId &= CSU_IDCODE_DEVICE_CODE_MASK | CSU_IDCODE_SVD_MASK;
+-	DevSvdId >>= CSU_IDCODE_SVD_SHIFT;
++	u32 SubDevSvdId = XFsbl_In32(CSU_IDCODE);
++	SubDevSvdId &= CSU_IDCODE_SUB_DEV_SVD_MASK;
++	SubDevSvdId >>= CSU_IDCODE_SVD_SHIFT;
+ 
+ 	if ((XFsbl_In32(EFUSE_IPDISABLE) & EFUSE_IPDISABLE_CG_MASK) ==
+ 			EFUSE_IPDISABLE_CG_MASK) {
+ 		return "CG";
+ 	}
+-	else if((DevSvdId == 0x20U) || (DevSvdId == 0x21U) || (DevSvdId == 0x30U))
++	else if((SubDevSvdId == 0x120U) || (SubDevSvdId == 0x121U) || (SubDevSvdId == 0x130U))
+ 	{
+ 		if ((XFsbl_In32(EFUSE_IPDISABLE) & EFUSE_IPDISABLE_VCU_DIS_MASK) ==
+ 				EFUSE_IPDISABLE_VCU_DIS_MASK) {
+@@ -738,6 +761,10 @@ const char *XFsbl_GetProcEng(void)
+ 		}
+ 
+ 	}
++	else if(((SubDevSvdId >= 0xD0U) && (SubDevSvdId <= 0xD6U)) || ((SubDevSvdId >= 0x1E0U) && (SubDevSvdId <= 0x1FFU)))
++	{
++		return "DR";
++	}
+ 	else
+ 	{
+ 		return "EG";

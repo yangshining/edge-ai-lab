@@ -1,0 +1,557 @@
+#include <dt-bindings/interrupt-controller/irq.h>
+/include/ "system-conf.dtsi"
+/ {
+	aliases {
+		//spi0 = &#;
+		spi1 = &spi0;
+		spi2 = &spi1;
+		spi3 = &axi_quad_spi_49a;
+		spi4 = &axi_quad_spi_49b;
+		spi5 = &axi_quad_spi_49c;
+		spi6 = &axi_quad_spi_49d;
+	};
+
+	gpio_keys:@0 {
+		compatible = "gpio-keys";
+		label = "zulu Interrupt collection";
+
+		gpio_irq0 {
+			label = "EX_ALARM_B";
+			gpios = <&gpio 68 1>;
+			linux,code = <0x100>;
+			debounce-interval = <20>;
+		};
+
+		gpio_irq1 {
+			label = "EX_ALARM_A";
+			gpios = <&gpio 69 1>;
+			linux,code = <0x101>;
+			debounce-interval = <20>;
+		};
+	};
+
+};
+
+&qspi {
+	status = "okay";
+	is-dual = <0>;
+	num-cs = <1>;
+	flash@0 {
+		compatible ="jedec,spi-nor";
+		reg = <0x0>;
+		spi-tx-bus-width = <1>;
+		spi-rx-bus-width = <4>;
+		spi-max-frequency = <108000000>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+	};
+};
+
+&spi0 {
+	status = "okay";
+	num-cs = <1>;
+	u-boot,dm-pre-reloc;
+	phc@0 {
+		compatible="idt,8a34000";
+		reg = <0>;
+		spi-max-frequency = <10000000>;
+		reset-gpio = <&gpio 78 1>;//GPIO_ACTIVE_LOW
+	};
+};
+
+&spi1 {
+	status = "okay";
+	num-cs = <1>;
+	u-boot,dm-pre-reloc;
+	spidev@0 {
+		compatible="rohm,dh2228fv";
+		reg = <0>;
+		dbgname = "spi0-ff050000";
+		spi-max-frequency = <5000000>;
+	};
+};
+
+&sdhci0 {
+	status = "okay";
+	bus-width = <8>;
+	non-removable;
+	cap-mmc-highspeed;
+	cap-sd-highspeed;
+	disable-wp;
+	no-1-8-v;
+};
+
+// &axi_intc_0 {
+// 	status = "disabled";
+// };
+
+&watchdog0 {
+	status = "okay";
+	reset-on-timeout;
+	timeout-sec = <60>;
+};
+
+&gem3 {
+	status = "okay";
+	phy-handle = <&phy0>;
+	phy-mode = "sgmii";
+	is-internal-pcspma = <0x1>;
+	phy0: phy@1 {
+		reg = <0x1>;
+	};
+};
+
+
+&gem1 {
+	status = "okay";
+	phy-mode = "sgmii";
+	is-internal-pcspma = <0x1>;
+
+	fixed-link {
+		speed = <1000>;
+		full-duplex;
+	};
+
+	switch-link {
+		reset-gpios = <&gpio 54 0>;
+		fixed-ports = <0x8f>;
+		phy-ports = <0x140>;
+	};
+};
+
+/*
+&gem1 {
+	status = "okay";
+	phy-mode = "sgmii";
+	is-internal-pcspma = <0x1>;
+
+	fixed-link {
+		speed = <1000>;
+		full-duplex;
+	};
+
+	mdio {
+		status = "okay";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		switch@0 {
+			compatible = "marvell,mv88e6185";
+			reset-gpios = <&gpio 54 1>;
+			reg = <0>;
+			#address-cells = <0x01>;
+			#size-cells = <0x00>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					label = "cpu";
+					phy-mode = "sgmii";
+					ethernet = <&gem1>;
+					fixed-link {
+						speed = <1000>;
+						full-duplex;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+					label = "lan1";
+
+					fixed-link {
+						speed = <1000>;
+						full-duplex;
+					};
+				};
+
+				port@2 {
+					reg = <2>;
+					label = "lan2";
+
+					fixed-link {
+						speed = <1000>;
+						full-duplex;
+					};
+				};
+
+				port@3 {
+					reg = <3>;
+					label = "lan3";
+
+					fixed-link {
+						speed = <1000>;
+						full-duplex;
+					};
+				};
+
+				port@5 {
+					reg = <5>;
+					label = "lan5";
+
+					fixed-link {
+						speed = <1000>;
+						full-duplex;
+					};
+				};
+				port@6 {
+					reg = <6>;
+					label = "wan0";
+					phy-handle = <&phy1>;
+					phy-mode = "sgmii";
+					is-internal-pcspma = <0x1>;
+					phy1: phy@6 {
+						reg = <0x6>;
+					};
+				};
+				port@7 {
+					reg = <7>;
+					label = "lan7";
+
+					fixed-link {
+						speed = <1000>;
+						full-duplex;
+					};
+				};
+
+
+			};
+		};
+	};
+};
+*/
+
+&amba_pl{
+	masterFpga: masterFpga@a0000000 {
+		compatible = "generic-uio";
+		reg = <0x0 0xa0000000 0x0 0x800000>;
+	};
+
+	slaveFpga0: slaveFpga0@a0800000 {
+		compatible = "generic-uio";
+		reg = <0x0 0xa0800000 0x0 0x200000>;
+	};
+
+	slaveFpga1: slaveFpga1@a0a00000 {
+		compatible = "generic-uio";
+		reg = <0x0 0xa0a00000 0x0 0x200000>;
+	};
+
+	slaveFpga2: slaveFpga2@a0c00000 {
+		compatible = "generic-uio";
+		reg = <0x0 0xa0c00000 0x0 0x200000>;
+	};
+
+	slaveFpga3: slaveFpga3@a0e00000 {
+		compatible = "generic-uio";
+		reg = <0x0 0xa0e00000 0x0 0x200000>;
+	};
+
+	axi_quad_spi_49a: axi_quad_spi@a0801000 {
+		bits-per-word = <8>;
+		clock-names = "ext_spi_clk", "s_axi_aclk";
+		clocks = <&zynqmp_clk 72>, <&zynqmp_clk 72>;
+		compatible = "xlnx,axi-quad-spi-3.2", "xlnx,xps-spi-2.00.a";
+		fifo-size = <256>;
+		interrupt-names = "ip2intc_irpt";
+		interrupt-parent = <&gic>;
+		interrupts = <0 104 1>;
+		num-cs = <0x1>;
+		reg = <0x0 0xa0801000 0x0 0x1000>;
+		xlnx,num-ss-bits = <0x1>;
+		xlnx,spi-mode = <0>;
+	};
+
+	axi_quad_spi_49b: axi_quad_spi@a0a01000 {
+		bits-per-word = <8>;
+		clock-names = "ext_spi_clk", "s_axi_aclk";
+		clocks = <&zynqmp_clk 72>, <&zynqmp_clk 72>;
+		compatible = "xlnx,axi-quad-spi-3.2", "xlnx,xps-spi-2.00.a";
+		fifo-size = <256>;
+		interrupt-names = "ip2intc_irpt";
+		interrupt-parent = <&gic>;
+		interrupts = <0 105 1>;
+		num-cs = <0x1>;
+		reg = <0x0 0xa0a01000 0x0 0x1000>;
+		xlnx,num-ss-bits = <0x1>;
+		xlnx,spi-mode = <0>;
+	};
+
+	axi_quad_spi_49c: axi_quad_spi@a0c01000 {
+		bits-per-word = <8>;
+		clock-names = "ext_spi_clk", "s_axi_aclk";
+		clocks = <&zynqmp_clk 72>, <&zynqmp_clk 72>;
+		compatible = "xlnx,axi-quad-spi-3.2", "xlnx,xps-spi-2.00.a";
+		fifo-size = <256>;
+		interrupt-names = "ip2intc_irpt";
+		interrupt-parent = <&gic>;
+		interrupts = <0 106 1>;
+		num-cs = <0x1>;
+		reg = <0x0 0xa0c01000 0x0 0x1000>;
+		xlnx,num-ss-bits = <0x1>;
+		xlnx,spi-mode = <0>;
+	};
+
+	axi_quad_spi_49d: axi_quad_spi@a0e01000 {
+		bits-per-word = <8>;
+		clock-names = "ext_spi_clk", "s_axi_aclk";
+		clocks = <&zynqmp_clk 72>, <&zynqmp_clk 72>;
+		compatible = "xlnx,axi-quad-spi-3.2", "xlnx,xps-spi-2.00.a";
+		fifo-size = <256>;
+		interrupt-names = "ip2intc_irpt";
+		interrupt-parent = <&gic>;
+		interrupts = <0 107 1>;
+		num-cs = <0x1>;
+		reg = <0x0 0xa0e01000 0x0 0x1000>;
+		xlnx,num-ss-bits = <0x1>;
+		xlnx,spi-mode = <0>;
+	};
+
+	dma_proxy {
+		compatible ="xlnx,dma_proxy";
+		dmas = <&axi_dma_1 0 &axi_dma_1 1>;
+		dma-names = "dma_proxy_tx", "dma_proxy_rx";
+	};
+};
+
+
+&axi_dma_1 {
+	interrupts = <0 110 4 0 111 4>;
+	dma-channel@a0188000 {
+		interrupts = <0 110 4>;
+	};
+	dma-channel@a0188030 {
+		interrupts = <0 111 4>;
+	};
+};
+
+&axi_quad_spi_49a {
+	status = "okay";
+	label = <101>;
+
+	spi0_dev_0@0 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "rohm,dh2228fv";
+		reg = <0>;
+		dbgname = "spi0-a0801000";
+		spi-max-frequency = <500000>;
+	};
+};
+
+&axi_quad_spi_49b {
+	status = "okay";
+	label = <102>;
+
+	spi0_dev_0@0 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "rohm,dh2228fv";
+		reg = <0>;
+		dbgname = "spi0-a0a01000";
+		spi-max-frequency = <500000>;
+	};
+};
+
+&axi_quad_spi_49c {
+	status = "okay";
+	label = <103>;
+
+	spi0_dev_0@0 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "rohm,dh2228fv";
+		reg = <0>;
+		dbgname = "spi0-a0c01000";
+		spi-max-frequency = <500000>;
+	};
+};
+
+&axi_quad_spi_49d {
+	status = "okay";
+	label = <104>;
+
+	spi0_dev_0@0 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "rohm,dh2228fv";
+		reg = <0>;
+		dbgname = "spi0-a0e01000";
+		spi-max-frequency = <500000>;
+	};
+};
+
+&gpio_keys {
+
+	pl_irq0{
+		label = "RADIO_CTRL";
+		linux,code = <1>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <0 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq2{
+		label = "ETH_IF";
+		linux,code = <3>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <2 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq3{
+		label = "ETH_CTRL";
+		linux,code = <4>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <3 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq4{
+		label = "ZU49A";
+		linux,code = <5>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <4 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq5{
+		label = "ZU49B";
+		linux,code = <6>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <5 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq6{
+		label = "ZU49C";
+		linux,code = <7>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <6 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq7{
+		label = "ZU49D";
+		linux,code = <8>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <7 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq9{
+		label = "DMA_S2M";
+		linux,code = <10>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <9 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq11{
+		label = "DMA_M2S";
+		linux,code = <12>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <11 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq13{
+		label = "C2C_LINK_DOWN";
+		linux,code = <14>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <13 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq14{
+		label = "INTER_LINK0";
+		linux,code = <15>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <14 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq15{
+		label = "INTER_LINK1";
+		linux,code = <16>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <15 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq16{
+		label = "DL_DFE_S";
+		linux,code = <17>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <16 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq17{
+		label = "UL_DFE_S";
+		linux,code = <18>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <17 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+
+	pl_irq30{
+		label = "TEST";
+		linux,code = <28>;
+		interrupt-parent = <&axi_intc_0>;
+		interrupts = <27 IRQ_TYPE_NONE>;
+		debounce-interval = <0>;
+	};
+};
+
+
+&support_1588_2step_timer1588_subs_timer_1588_v2_0_0{
+        compatible = "xlnx,timer-1588-2.0";
+        xlnx,period = <4000000>;
+	pps_in_fifo = <&axi_fifo_mm_s_0>;
+};
+
+&oran_radio_if_1{
+        compatible = "xlnx,oran-radio-if-1.0";
+};
+
+&support_1588_2step_tx_ts_fifo_axi_fifo_mm_s_0{
+        compatible = "xlnx,axi-fifo-mm-s-4.1";
+};
+
+&support_1588_2step_rx_ts_fifo_axi_fifo_mm_s_0{
+        compatible = "xlnx,axi-fifo-mm-s-4.1";
+};
+
+&xxv_ethernet_0{
+        axistream-connected = <&eth_axi_dma>;
+        axistream-control-connected = <&eth_axi_dma>;
+        axififo-connected = <&support_1588_2step_tx_ts_fifo_axi_fifo_mm_s_0>;
+        xlnx,rxtsfifo = <&support_1588_2step_rx_ts_fifo_axi_fifo_mm_s_0>;
+        xlnx,num-queues = /bits/ 16 <0x1>;
+        xlnx,channel-ids = "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f", "10";
+        xlnx,include-dre;
+        interrupt-names = "mm2s_ch1_introut", "s2mm_ch1_introut";
+        interrupt-parent = <&gic>;
+        interrupts = <0 94 4 0 95 4>;
+        /*local-mac-address = [ff ff ff ff ff ff];*/
+};
+
+&xxv_ethernet_1{
+        compatible = "xlnx,xxv-ethernet-1.9";
+};
+
+&xxv_ethernet_2{
+        compatible = "xlnx,xxv-ethernet-1.9";
+};
+
+&xxv_ethernet_3{
+        compatible = "xlnx,xxv-ethernet-1.9";
+};
+
+&eth_axi_dma {
+        compatible = "xlnx,eth-dma";
+        xlnx,include-dre;
+};

@@ -1,0 +1,107 @@
+diff --git a/bl31/bl31_main.c b/bl31/bl31_main.c
+index 44bf32cb7..8cf3ef685 100644
+--- a/bl31/bl31_main.c
++++ b/bl31/bl31_main.c
+@@ -115,17 +115,21 @@ void bl31_main(void)
+ 
+ 	/* Perform platform setup in BL31 */
+ 	bl31_platform_setup();
++	NOTICE("BL31: bl31_platform_setup\n");
+ 
+ 	/* Initialise helper libraries */
+ 	bl31_lib_init();
++	NOTICE("BL31: bl31_lib_init\n");
+ 
+ #if EL3_EXCEPTION_HANDLING
+ 	INFO("BL31: Initialising Exception Handling Framework\n");
+ 	ehf_init();
++	NOTICE("BL31: ehf_init\n");
+ #endif
+ 
+ 	/* Initialize the runtime services e.g. psci. */
+ 	INFO("BL31: Initializing runtime services\n");
++	NOTICE("BL31: Initializing runtime services\n");
+ 	runtime_svc_init();
+ 
+ 	/*
+@@ -142,6 +146,7 @@ void bl31_main(void)
+ 	 * If SPD had registered an init hook, invoke it.
+ 	 */
+ 	if (bl32_init != NULL) {
++		NOTICE("BL31: Initializing BL32\n");
+ 		INFO("BL31: Initializing BL32\n");
+ 
+ 		int32_t rc = (*bl32_init)();
+@@ -153,15 +158,20 @@ void bl31_main(void)
+ 	 * We are ready to enter the next EL. Prepare entry into the image
+ 	 * corresponding to the desired security state after the next ERET.
+ 	 */
++	NOTICE("BL31: bl31_prepare_next_image_entry\n");
+ 	bl31_prepare_next_image_entry();
+ 
++	NOTICE("BL31: console_flush-S\n");
+ 	console_flush();
++	NOTICE("BL31: console_flush\n");
+ 
+ 	/*
+ 	 * Perform any platform specific runtime setup prior to cold boot exit
+ 	 * from BL31
+ 	 */
++	
+ 	bl31_plat_runtime_setup();
++	NOTICE("BL31: bl31_plat_runtime_setup\n");
+ }
+ 
+ /*******************************************************************************
+@@ -212,8 +222,8 @@ void __init bl31_prepare_next_image_entry(void)
+ 	assert(next_image_info != NULL);
+ 	assert(image_type == GET_SECURITY_STATE(next_image_info->h.attr));
+ 
+-	INFO("BL31: Preparing for EL3 exit to %s world\n",
+-		(image_type == SECURE) ? "secure" : "normal");
++	NOTICE("BL31: Preparing for EL3 exit to %s world\n",
++		(image_type == SECURE) ? "secure" : "normal");	
+ 	print_entry_point_info(next_image_info);
+ 	cm_init_my_context(next_image_info);
+ 	cm_prepare_el3_exit(image_type);
+diff --git a/common/bl_common.c b/common/bl_common.c
+index f17afcb11..29cf84594 100644
+--- a/common/bl_common.c
++++ b/common/bl_common.c
+@@ -251,8 +251,8 @@ int load_auth_image(unsigned int image_id, image_info_t *image_data)
+  ******************************************************************************/
+ void print_entry_point_info(const entry_point_info_t *ep_info)
+ {
+-	INFO("Entry point address = 0x%lx\n", ep_info->pc);
+-	INFO("SPSR = 0x%x\n", ep_info->spsr);
++	NOTICE("Entry point address = 0x%lx\n", ep_info->pc);
++	NOTICE("SPSR = 0x%x\n", ep_info->spsr);
+ 
+ #define PRINT_IMAGE_ARG(n)					\
+ 	VERBOSE("Argument #" #n " = 0x%llx\n",			\
+diff --git a/common/runtime_svc.c b/common/runtime_svc.c
+index a2c0c09e1..42fc5c0e5 100644
+--- a/common/runtime_svc.c
++++ b/common/runtime_svc.c
+@@ -107,6 +107,7 @@ void __init runtime_svc_init(void)
+ 	rt_svc_descs = (rt_svc_desc_t *) RT_SVC_DESCS_START;
+ 	for (index = 0U; index < RT_SVC_DECS_NUM; index++) {
+ 		rt_svc_desc_t *service = &rt_svc_descs[index];
++		NOTICE("BL31: runtime_svc_init-inside %s\n", service->name);
+ 
+ 		/*
+ 		 * An invalid descriptor is an error condition since it is
+@@ -135,6 +136,7 @@ void __init runtime_svc_init(void)
+ 				continue;
+ 			}
+ 		}
++		NOTICE("BL31: runtime_svc_init-inside2 %s\n", service->name);
+ 
+ 		/*
+ 		 * Fill the indices corresponding to the start and end
+@@ -151,4 +153,5 @@ void __init runtime_svc_init(void)
+ 		for (; start_idx <= end_idx; start_idx++)
+ 			rt_svc_descs_indices[start_idx] = index;
+ 	}
++	NOTICE("BL31: runtime_svc_init-out\n");
+ }

@@ -1,0 +1,13 @@
+diff --git a/drivers/net/zynq_gem.c b/drivers/net/zynq_gem.c
+index 0e8ed3f0da..882e6f702f 100644
+--- a/drivers/net/zynq_gem.c
++++ b/drivers/net/zynq_gem.c
+@@ -886,7 +886,7 @@ static int zynq_gem_probe(struct udevice *dev)
+ 
+ 	printf("\nZYNQ GEM: %lx, mdio bus %lx, phyaddr %d, interface %s\n",
+ 	       (ulong)priv->iobase, (ulong)priv->mdiobase, priv->phydev->addr,
+-	       phy_string_for_interface(priv->interface));
++	       "sgmii");
+ 
+ 	return ret;
+ 

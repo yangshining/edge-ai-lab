@@ -1,0 +1,185 @@
+/include/ "system-conf.dtsi"
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/gpio/gpio.h>
+
+/ {
+	compatible = "xlnx,versal-vmk180-revA", "xlnx,versal";
+	model = "Versal VP1802 Doara 6G Board";
+
+    gpio_keys:alarm_keys@0 {
+        compatible = "gpio-keys";
+        label = "Versal Interrupt collection";
+    };
+	
+	aliases {
+		serial0 = &serial0;
+		serial2 = &dcc;
+		ethernet0 = &gem0;
+		ethernet1 = &gem1;
+		i2c0 = &i2c0;
+		i2c1 = &i2c1;
+		mmc1 = &sdhci1;
+		mmc0 = &sdhci0;
+		spi0 = &qspi;
+		usb0 = &usb0;
+		rtc0 = &rtc;
+	};
+};
+
+&amba_pl {
+    fpga_uio: fpga_uio@a4000000 {
+        compatible = "generic-uio";
+        reg = <0x0 0xA4000000 0x0 0x20000000>;
+    };
+};
+
+/* PMC_MIO 0 -12 - configuration header QSPI/OSPI/EMMC */
+/* FIXME PMC_MIO37 ZU4_TRIGGER/PMC_MIO37/38 PCIE */
+
+&dcc {
+	status = "okay";
+};
+
+&sdhci0 {
+        status = "okay";
+        bus-width = <8>;
+        non-removable;
+        cap-mmc-highspeed;
+        cap-sd-highspeed;
+        disable-wp;
+        no-1-8-v;
+};
+
+&sdhci1 { /* PMC_MIO26-36/51 */
+	status = "disabled";
+	xlnx,mio-bank = <1>;
+	no-1-8-v;
+};
+
+&gem0 {
+    status = "okay";
+    phy-handle = <&phy0>;
+    phy-mode = "rgmii";
+    is-internal-pcspma = <0x1>;
+    phy0: phy@1 {
+        reg = <0x1>;
+    };
+};
+
+&gem1 {
+	status = "okay";
+	phy-mode = "rgmii";
+	is-internal-pcspma = <0x1>;
+
+	fixed-link {
+		speed = <1000>;
+		full-duplex;
+	};
+
+	switch-link {
+		reset-gpios = <&gpio1 35 0>;
+		fixed-ports = <0x3bf>;
+		phy-ports = <0x40>;
+	};
+};
+
+&qspi { /* PMC_MIO_500 0 - 12 */
+	num-cs = <1>;
+	is-dual = <0>;
+	spi-rx-bus-width = <4>;
+	spi-tx-bus-width = <4>;
+
+	flash@0 {
+		compatible = "m25p80", "jedec,spi-nor";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		reg = <0>;
+		spi-tx-bus-width = <4>;
+		spi-rx-bus-width = <4>;
+		spi-max-frequency = <35000000>;
+	};
+};
+
+&spi0 {
+    status = "okay";
+    num-cs = <1>;
+    u-boot,dm-pre-reloc;
+    phc@0 {
+        compatible="idt,8a34000";
+        reg = <0>;
+        spi-max-frequency = <10000000>;
+        reset-gpio = <&gpio1 37 1>;//GPIO_ACTIVE_LOW
+    };
+};
+
+
+&dwc3_0 { /* USB 2.0 host */
+	dr_mode = "host";
+	maximum-speed = "high-speed";
+	snps,dis_u2_susphy_quirk;
+	snps,dis_u3_susphy_quirk;
+	snps,usb3_lpm_capable;
+};
+
+
+&watchdog {
+        status = "okay";
+        reset-on-timeout;
+};
+
+&axi_intc_0 {
+    status = "disabled";
+};
+
+&axi_firewall_0 {
+    status = "disabled";
+};
+
+&support_1588_2step_timer1588_subs_timer_1588_v2_0_1 {
+   compatible = "xlnx,timer-1588-2.0";
+   xlnx,period = <4000000>;
+   pps_in_fifo = <&axi_fifo_mm_s_0>;
+};
+
+&support_1588_2step1_timer1588_subs_timer_1588_v2_0_1 {
+   compatible = "xlnx,timer-1588-2.0";
+   xlnx,period = <4000000>;
+   status = "disabled";
+};
+
+&xxv_ethernet_0 {
+       status = "disabled";
+       axistream-connected = <&axi_mcdma_0>;
+       axistream-control-connected = <&axi_mcdma_0>;
+       axififo-connected = <&support_1588_2step_tx_ts_fifo_axi_fifo_mm_s_0>;
+       xlnx,rxtsfifo = <&support_1588_2step_rx_ts_fifo_axi_fifo_mm_s_0>;
+       xlnx,num-queues = /bits/ 16 <0x1>;
+       xlnx,channel-ids = "1";
+       xlnx,include-dre;
+       xlnx,rxmem = <0x3000>;
+       interrupt-names = "mm2s_ch1_introut", "s2mm_ch1_introut";
+       interrupt-parent = <&gic>;
+       interrupts = <0 94 4 0 96 4>;
+       local-mac-address = [00 0A 35 00 1A AE];
+};
+
+&xxv_ethernet_1 {
+       status = "disabled";
+       axistream-connected = <&axi_mcdma_0>;
+       axistream-control-connected = <&axi_mcdma_0>;
+       axififo-connected = <&support_1588_2step1_tx_ts_fifo_axi_fifo_mm_s_0>;
+       xlnx,rxtsfifo = <&support_1588_2step1_rx_ts_fifo_axi_fifo_mm_s_0>;
+       xlnx,num-queues = /bits/ 16 <0x1>;
+       xlnx,channel-ids = "2";
+       xlnx,include-dre;
+       xlnx,rxmem = <0x3000>;
+       interrupt-names = "mm2s_ch2_introut", "s2mm_ch2_introut";
+       interrupt-parent = <&gic>;
+       interrupts = <0 95 4 0 97 4>;
+       local-mac-address = [00 0A 35 00 1A AF];
+};
+
+&axi_mcdma_0 {
+       compatible = "xlnx,eth-dma";
+       xlnx,include-dre;
+};

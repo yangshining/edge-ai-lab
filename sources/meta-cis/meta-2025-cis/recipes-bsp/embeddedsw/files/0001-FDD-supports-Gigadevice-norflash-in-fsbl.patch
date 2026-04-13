@@ -1,0 +1,47 @@
+From 08af06b7ef510b96e9322c2312711924d6fcbcbe Mon Sep 17 00:00:00 2001
+From: sbjf0005 <chao.fang@zillnk.com>
+Date: Sat, 18 Jun 2022 18:06:24 +0800
+Subject: [PATCH] FDD supports Gigadevice norflash in fsbl
+
+---
+ lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.c | 4 ++++
+ lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.h | 1 +
+ 2 files changed, 5 insertions(+)
+
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.c b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.c
+index fc54df35e9..a1d89fba35 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.c
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.c
+@@ -138,6 +138,9 @@ static u32 FlashReadID(XQspiPsu *QspiPsuPtr)
+ 	} else if(ReadBuffer[0] == ISSI_ID) {
+ 		QspiFlashMake = ISSI_ID;
+ 		XFsbl_Printf(DEBUG_INFO, "ISSI ");
++	} else if (ReadBuffer[0] == GIGADEVICE_ID) {
++		QspiFlashMake = GIGADEVICE_ID;
++		XFsbl_Printf(DEBUG_INFO, "GIGADEVICE ");
+ 	} else {
+ 		UStatus = XFSBL_ERROR_UNSUPPORTED_QSPI;
+ 		XFsbl_Printf(DEBUG_GENERAL,"XFSBL_ERROR_UNSUPPORTED_QSPI\r\n");
+@@ -181,6 +184,7 @@ static u32 FlashReadID(XQspiPsu *QspiPsuPtr)
+ 			|| (ReadBuffer[2] == MACRONIX_FLASH_1_8_V_SIZE_ID_2G)) {
+                 QspiFlashSize = FLASH_SIZE_2G;
+ 		if ((QspiFlashMake == WINBOND_ID) ||
++			(QspiFlashMake == GIGADEVICE_ID) ||
+ 			(QspiFlashMake == MICRON_ID)) {
+ 			MultiDie = (u8)TRUE;
+ 		}
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.h b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.h
+index 690991fd27..6105684d6f 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.h
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.h
+@@ -156,6 +156,7 @@ extern "C" {
+ #define WINBOND_ID		(0xEFU)
+ #define MACRONIX_ID		(0xC2U)
+ #define ISSI_ID			(0x9DU)
++#define GIGADEVICE_ID	(0xC8U)
+ 
+ #define FLASH_SIZE_ID_8M		(0x14U)
+ #define FLASH_SIZE_ID_16M		(0x15U)
+-- 
+2.31.1
+

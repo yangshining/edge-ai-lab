@@ -1,0 +1,25 @@
+From 2ff3f192b8ffdc38872a2b3a75d9b8bdffb3eeed Mon Sep 17 00:00:00 2001
+From: Fan Wu <fan.wu@zillnk.com>
+Date: Tue, 2 Jul 2024 15:52:04 +0800
+Subject: [PATCH 1/4] sport uio driver
+
+---
+ drivers/uio/uio_pdrv_genirq.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/uio/uio_pdrv_genirq.c b/drivers/uio/uio_pdrv_genirq.c
+index 63258b6accc4..ab262832b123 100644
+--- a/drivers/uio/uio_pdrv_genirq.c
++++ b/drivers/uio/uio_pdrv_genirq.c
+@@ -276,7 +276,7 @@ static const struct dev_pm_ops uio_pdrv_genirq_dev_pm_ops = {
+ 
+ #ifdef CONFIG_OF
+ static struct of_device_id uio_of_genirq_match[] = {
+-	{ /* This is filled with module_parm */ },
++	{ .compatible = "generic-uio", },
+ 	{ /* Sentinel */ },
+ };
+ MODULE_DEVICE_TABLE(of, uio_of_genirq_match);
+-- 
+2.27.0
+

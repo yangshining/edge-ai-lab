@@ -1,0 +1,92 @@
+From e0ab0bc60dd3a378b1d724075925044b00ff582a Mon Sep 17 00:00:00 2001
+From: Fan Wu <fan.wu@zillnk.com>
+Date: Thu, 31 Jul 2025 09:29:30 +0000
+Subject: [PATCH] emimoa support internal pcspma
+
+---
+ drivers/net/ethernet/cadence/macb.h      |  1 +
+ drivers/net/ethernet/cadence/macb_main.c | 31 ++++++++++++++++++------
+ 2 files changed, 25 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/net/ethernet/cadence/macb.h b/drivers/net/ethernet/cadence/macb.h
+index aa60c514254a..e67988870ed8 100644
+--- a/drivers/net/ethernet/cadence/macb.h
++++ b/drivers/net/ethernet/cadence/macb.h
+@@ -1259,6 +1259,7 @@ struct macb {
+ 	struct ptp_clock_info ptp_clock_info;
+ 	struct tsu_incr tsu_incr;
+ 	struct hwtstamp_config tstamp_config;
++	bool internal_pcspma;
+ 
+ 	/* RX queue filer rule set*/
+ 	struct ethtool_rx_fs_list rx_fs_list;
+diff --git a/drivers/net/ethernet/cadence/macb_main.c b/drivers/net/ethernet/cadence/macb_main.c
+index d5ceef463fb9..bdd7cd6cbc33 100644
+--- a/drivers/net/ethernet/cadence/macb_main.c
++++ b/drivers/net/ethernet/cadence/macb_main.c
+@@ -2489,6 +2489,8 @@ static void macb_init_hw(struct macb *bp)
+ 	macb_set_hwaddr(bp);
+ 
+ 	config = macb_mdc_clk_div(bp);
++	if (bp->internal_pcspma)
++		config |= GEM_BIT(SGMIIEN) | GEM_BIT(PCSSEL);	
+ 	config |= MACB_BF(RBOF, NET_IP_ALIGN);	/* Make eth data aligned */
+ 
+ 	/* Do not discard Rx FCS if RX checsum offload disabled */
+@@ -2514,9 +2516,16 @@ static void macb_init_hw(struct macb *bp)
+ 		bp->rx_frm_len_mask = MACB_RX_JFRMLEN_MASK;
+ 
+ 	if ((bp->phy_interface == PHY_INTERFACE_MODE_SGMII) &&
+-	    (bp->caps & MACB_CAPS_PCS))
+-		gem_writel(bp, PCSCNTRL,
+-			   gem_readl(bp, PCSCNTRL) | GEM_BIT(PCSAUTONEG));
++	    (bp->caps & MACB_CAPS_PCS)) {
++		if (bp->internal_pcspma) {
++			gem_writel(bp, PCSCNTRL,
++				gem_readl(bp, PCSCNTRL) & ~GEM_BIT(PCSAUTONEG));
++
++		} else {
++			gem_writel(bp, PCSCNTRL,
++				gem_readl(bp, PCSCNTRL) | GEM_BIT(PCSAUTONEG));
++		}
++	}
+ 
+ 	macb_configure_dma(bp);
+ 
+@@ -3839,14 +3848,20 @@ static int macb_init(struct platform_device *pdev)
+ 	/* Set MII management clock divider */
+ 	val = macb_mdc_clk_div(bp);
+ 	val |= macb_dbw(bp);
+-	if (bp->phy_interface == PHY_INTERFACE_MODE_SGMII)
++	if (bp->phy_interface == PHY_INTERFACE_MODE_SGMII || bp->internal_pcspma)
+ 		val |= GEM_BIT(SGMIIEN) | GEM_BIT(PCSSEL);
+ 	macb_writel(bp, NCFGR, val);
+ 
+ 	if ((bp->phy_interface == PHY_INTERFACE_MODE_SGMII) &&
+-	    (bp->caps & MACB_CAPS_PCS))
+-		gem_writel(bp, PCSCNTRL,
+-			   gem_readl(bp, PCSCNTRL) | GEM_BIT(PCSAUTONEG));
++	    (bp->caps & MACB_CAPS_PCS)) {
++		if (bp->internal_pcspma) {
++			gem_writel(bp, PCSCNTRL,
++				gem_readl(bp, PCSCNTRL) & ~GEM_BIT(PCSAUTONEG));
++		} else {
++			gem_writel(bp, PCSCNTRL,
++				gem_readl(bp, PCSCNTRL) | GEM_BIT(PCSAUTONEG));
++		}
++	}
+ 
+ 	return 0;
+ }
+@@ -4564,6 +4579,8 @@ static int macb_probe(struct platform_device *pdev)
+ 
+ 	spin_lock_init(&bp->lock);
+ 
++	bp->internal_pcspma = of_property_read_bool(np, "is-internal-pcspma");
++
+ 	/* setup capabilities */
+ 	macb_configure_caps(bp, macb_config);
+ 
+-- 
+2.25.1
+

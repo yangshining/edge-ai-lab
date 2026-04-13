@@ -1,0 +1,24 @@
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_debug.h b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_debug.h
+index 92c86e9908..fa13080e84 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_debug.h
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_debug.h
+@@ -54,6 +54,8 @@ extern "C" {
+ #define DEBUG_INFO	      (0x00000004U)    /* More debug information */
+ #define DEBUG_DETAILED	      (0x00000008U)    /* More debug information */
+ 
++#define FSBL_DEBUG_INFO DEBUG_PRINT_ALWAYS
++
+ #if defined (FSBL_DEBUG_DETAILED)
+ #define XFsblDbgCurrentTypes ((DEBUG_DETAILED) | (DEBUG_INFO) | \
+          (DEBUG_GENERAL) | (DEBUG_PRINT_ALWAYS))
+@@ -67,8 +69,9 @@ extern "C" {
+ #else
+ #define XFsblDbgCurrentTypes (0U)
+ #endif
++
+ #define XFsbl_Printf(DebugType,...) \
+-		if(((DebugType) & XFsblDbgCurrentTypes)!=XFSBL_SUCCESS) {xil_printf (__VA_ARGS__); }
++		if(1) {xil_printf (__VA_ARGS__); }
+ 
+ #ifdef __cplusplus
+ }

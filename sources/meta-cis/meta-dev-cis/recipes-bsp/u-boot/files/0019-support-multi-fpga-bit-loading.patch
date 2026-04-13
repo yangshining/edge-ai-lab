@@ -1,0 +1,263 @@
+diff --git a/cmd/zboot.c b/cmd/zboot.c
+index 6f8584d9..c1b663c1 100644
+--- a/cmd/zboot.c
++++ b/cmd/zboot.c
+@@ -4,6 +4,13 @@
+  * Ma Chun <chun.ma@zillnk.com>, Zillnk Inc.
+  */
+ #include "zboot.h"
++#include <asm/gpio.h>
++
++// #define DEFAULT_NMR_HDID0_GPIO 7
++// #define DEFAULT_NMR_HDID1_GPIO 8
++// #define DEFAULT_NMR_HDID2_GPIO 9
++// #define DEFAULT_NMR_HDID3_GPIO 10
++#define DEFAULT_NMR_HDID_GPIO(i) (7 + (i))
+ 
+ static int do_spi_xfer(uchar *dout, uchar *din, int bitlen)
+ {
+@@ -201,6 +208,7 @@ static int do_fpga_loadb(uint32_t fpgadata, uint32_t datasize)
+ 
+ 	/* use device zero */
+ 	dev = get_fpga_device("0");
++	printf("devname :%d\n", dev);
+ 	if (dev < 0) {
+ 		printf("ERROR git fpga device failed!\n");
+ 		return -1;
+@@ -213,7 +221,7 @@ static int do_fpga_loadb(uint32_t fpgadata, uint32_t datasize)
+ #endif
+ }
+ 
+-static int parse_head_data(uint32_t base_addr)
++static int parse_head_data(uint32_t base_addr, uint8_t fpganum)
+ {
+ 	struct head head_data;
+ 	uint8_t *dataptr;
+@@ -225,6 +233,7 @@ static int parse_head_data(uint32_t base_addr)
+ 
+ 	dataptr += sizeof(head_data.identifier);
+ 	head_data.reserve_size = *((uint8_t *)dataptr);
++	head_data.fpga_num = *((uint8_t *)(dataptr + 4));
+ 	head_data.reserve = dataptr;
+ 
+ 	dataptr += head_data.reserve_size;
+@@ -269,12 +278,17 @@ static int parse_head_data(uint32_t base_addr)
+ 	head_data.head_size = *((uint32_t *)dataptr + 3);
+ 	head_data.zboot_offset = *((uint32_t *)dataptr + 4);
+ 	head_data.mbr_offset = *((uint32_t *)dataptr + 5);
++	//mutiple fpga bit2 - bitn
++	for (uint8_t i = 0; i < fpganum; i++) {
++		head_data.lastmbh[i].mbit_off = *((uint32_t *)dataptr + 6 + i*2);
++		head_data.lastmbh[i].mbit_sz = *((uint32_t *)dataptr + 7 + i*2);
++	}
+ 
+ 	uint8_t mask = *((uint8_t *)(head_data.reserve3 + 1));
+ 
+-#if 0
++#if 1
+ 	printf("%s: identifier : %#x\n", __func__, head_data.identifier);
+-	printf("%s: reserve_size : %d\t reserve: %d\n", __func__, head_data.reserve_size, head_data.reserve);
++	printf("%s: reserve_size : %d\t reserve: %d\t fpga_num: %d\n", __func__, head_data.reserve_size, head_data.reserve, head_data.fpga_num);
+ 	printf("%s: crc32 : %#x\t blob_size: %#x\n", __func__, head_data.crc32, head_data.blob_size);
+ 	printf("%s: reserve2_size : %#x\t reserve2: %d\n", __func__, head_data.reserve2_size, *((uint32_t *)head_data.reserve2));
+ 	printf("%s: reserve3_size : %#x\t reserve3: %d\t mask: %#x\n", __func__, head_data.reserve3_size, head_data.reserve3, mask);
+@@ -284,6 +298,10 @@ static int parse_head_data(uint32_t base_addr)
+ 	printf("%s: version_size : %#x\t version: %s\n", __func__, head_data.version_size, head_data.version);
+ 	printf("%s: bit_offset : %#x\t kernel_offset: %#x\t bit_size: %#x\n", __func__, head_data.bit_offset, head_data.kernel_offset, head_data.bit_size);
+ 	printf("%s: head_size: %#x\t zboot_offset: %#x\t mbr_offset: %#x\n", __func__, head_data.head_size, head_data.zboot_offset, head_data.mbr_offset);
++	//printf("%s: bit2_offset : %#x\t bit2_size: %#x\n", __func__, head_data.bit2_offset, head_data.bit2_size);
++	for (uint8_t i = 0; i < fpganum; i++) {
++		printf("%s: bit[%d]_offset : %#x\t bit[%d]_size: %#x\n", __func__, 2+i, head_data.lastmbh[i].mbit_off, 2+i, head_data.lastmbh[i].mbit_sz);
++	}	
+ #endif
+ 
+ }
+@@ -318,6 +336,10 @@ static int do_zboot(struct cmd_tbl *cmdtp, int flag, int argc, char * const argv
+ 	uint32_t *checksum, *crc_len;
+ 	uint8_t *dataptr, *crc_data;
+ 	uint8_t length;
++	uint8_t fpganum = 1; //fpga binary header info
++    unsigned int bin_selection = 0, fpga_idx = 0; //get info from GPIO pin selection
++	int ret;
++	unsigned char i;
+ 
+ 	base_addr = simple_strtol(argv[1], NULL, 16);
+ 	if (!base_addr) {
+@@ -335,9 +357,14 @@ static int do_zboot(struct cmd_tbl *cmdtp, int flag, int argc, char * const argv
+ 		printf("%s: unrecognized file type!\n", __func__);
+ 		return CMD_RET_FAILURE;
+ 	}
+-
++	printf("%s: base_addr : %#x\n", __func__, base_addr);
+ 	dataptr = (uint8_t*)base_addr;
+ 	length = (*dataptr << 8) + *(dataptr + 4);
++	fpganum = *(dataptr + 8);
++	printf("%s: ##fpganum : %d \n", __func__, fpganum);
++	if (fpganum > MAX_FPGA_BIN_NUM || fpganum == 0) {
++		fpganum = 1;
++	}
+ 	dataptr += length;
+ 	dataptr += 4;
+ 
+@@ -346,7 +373,6 @@ static int do_zboot(struct cmd_tbl *cmdtp, int flag, int argc, char * const argv
+ 	checksum = (uint32_t *)(dataptr);
+ 	crc_data = (uint8_t *)(dataptr);
+ 	dataptr += 4;
+-
+ 	crc_len = (uint32_t *)(dataptr);
+ 	dataptr += 4;
+ 
+@@ -362,7 +388,7 @@ static int do_zboot(struct cmd_tbl *cmdtp, int flag, int argc, char * const argv
+ 		return CMD_RET_FAILURE;
+ 	}
+ 
+-	parse_head_data(base_addr);
++	parse_head_data(base_addr, fpganum - 1);
+ 
+ 	/* skip the first bytes, their meaning is unknown */
+ 	length = (*dataptr << 8) + *(dataptr + 4);
+@@ -389,7 +415,6 @@ static int do_zboot(struct cmd_tbl *cmdtp, int flag, int argc, char * const argv
+ 		printf("%s: Part version id not recognized\n", __func__);
+ 		return CMD_RET_FAILURE;
+ 	}
+-
+ 	length = (*dataptr << 8) + *(dataptr + 1);
+ 	dataptr += 2;
+ 	printf("  version = %s\n", dataptr);
+@@ -401,11 +426,84 @@ static int do_zboot(struct cmd_tbl *cmdtp, int flag, int argc, char * const argv
+ 
+ 	sh = (slot_head *)dataptr;
+ 
+-	fpga_data_addr = base_addr + sh->bit_offset + sh->head_size;
+-	fpga_data_size = sh->bit_size;
++    //read gpio
++	for(i=0; i < NUM_BIN_SELECTION_BITS; i++)
++	{
++		ret = gpio_request(DEFAULT_NMR_HDID_GPIO(i), "nmr_gpio");
++		printf("gpio: requesting hdid nmr pin %u\n", DEFAULT_NMR_HDID_GPIO(i));
++		if (ret && ret != -EBUSY) {
++			printf("gpio: requesting hdid nmr pin %u failed\n", DEFAULT_NMR_HDID_GPIO(i));
++			//return -1;
++		}
++		gpio_direction_input(DEFAULT_NMR_HDID_GPIO(i));
++		int tmp = gpio_get_value(DEFAULT_NMR_HDID_GPIO(i));
++		printf("HDID%d is valid: %#x\n", i, tmp);
++		if (tmp == 0 || tmp == 1) {
++			bin_selection |= tmp << i;
++		} else {
++			printf("gpio: reading hdid nmr pin %u failed = (%d)\n", DEFAULT_NMR_HDID_GPIO(i), tmp);
++		}
++	}
++	printf("End HDID bin selection %#x\n", bin_selection, gpio_get_value(10));
++    /*
++			HDID		BIT3	BIT2	BIT1	BIT0	
++			MIO			MIO10	MIO9	MIO8	MIO7	Hex
++		"Macro1(NarrowBand PA Solution)"	
++			N25N66		0	0	0	0	0x0
++			N7N30		0	0	0	1	0x1
++			N26N29		0	0	1	0	0x2
++			B12B13N71	0	0	1	1	0x3
++			TBD			0	1	0	0	0x4
++			TBD			0	1	0	1	0x5
++			TBD			0	1	1	0	0x6
++			TBD			0	1	1	1	0x7
++		"Macro2(BroadBand PA Solutino)"	
++			N26N29		1	0	0	0	0x8
++			N8N20N28B	1	0	0	1	0x9
++			B12B13N71	1	0	1	0	0xA
++			N25N66		1	0	1	1	0xB
++			TBD			1	1	0	0	0xC
++			TBD			1	1	0	1	0xD
++			TBD			1	1	1	0	0xE
++			TBD			1	1	1	1	0xF
++	*/
++
++	fpga_idx = (bin_selection >> 3) & 0x1;
++	printf("fpga index [%d] from GPIO <--> binary header fpga num [%d]\n", fpga_idx, fpganum);
++	if ( fpga_idx >= 1 ) 
++	{
++		if (fpganum == 1 
++			|| fpganum == 0
++			|| sh->mbh[fpga_idx - 1].mbit_off == 0xFFFFFFFF 
++			|| sh->mbh[fpga_idx - 1].mbit_sz == 0xFFFFFFFF
++			|| sh->mbh[fpga_idx - 1].mbit_off == 0x0
++			|| sh->mbh[fpga_idx - 1].mbit_sz == 0x0) {
++			
++			if (fpganum == 1 || fpganum == 0){
++				printf("Warn: old style package with ONLY fpga0!\n");
++			} else {
++				printf("Warn: bit off/sz invalid to switch to default fpga0!\n");
++			}
++			fpga_data_addr = base_addr + sh->bit_offset + sh->head_size;
++			fpga_data_size = sh->bit_size;
++		} else {
++
++			printf("To select fpga[%d]\n", fpga_idx);
++			fpga_data_addr = base_addr + sh->mbh[fpga_idx - 1].mbit_off + sh->head_size;
++			fpga_data_size = sh->mbh[fpga_idx - 1].mbit_sz;
++		}
++
++	} else {
++		// env not defined, to use default fpga bin
++		printf("To select fpga0\n");
++		fpga_data_addr = base_addr + sh->bit_offset + sh->head_size;
++		fpga_data_size = sh->bit_size;
++	}
+ 
++	printf("%s: base_addr %#x *** fpga_data_addr : %#x - %#x \n", 
++		__func__, base_addr, fpga_data_addr, fpga_data_size);
+ 	/* Reserved 10M, */
+-	unzip_data_addr = fpga_data_addr + fpga_data_size + SZ_10M;
++	unzip_data_addr = fpga_data_addr + fpga_data_size + SZ_60M;
+ 
+ 	/* 8 byte align */
+ 	BYTES_ALIGN(unzip_data_addr);
+diff --git a/cmd/zboot.h b/cmd/zboot.h
+index 58c4b44a..40dc07ec 100644
+--- a/cmd/zboot.h
++++ b/cmd/zboot.h
+@@ -41,6 +41,10 @@
+ 
+ #define HEAD_SIZE	256
+ #define SZ_10M	(10*1024*1024)
++#define SZ_60M	(60*1024*1024) //compressed 10 fpga less than 60M?
++#define MAX_EXTRA_FPGA_BIN_NUM 10
++#define MAX_FPGA_BIN_NUM (MAX_EXTRA_FPGA_BIN_NUM + 1)
++#define NUM_BIN_SELECTION_BITS 4
+ #define FILE_HEAD	0x3F425A
+ 
+ #define PLL1_LOCK (0x1<<5)
+@@ -85,17 +89,25 @@
+ 						} \
+ 					}while(0)
+ #define BYTES_ALIGN(addr)	(addr = (addr + 7) & (~7));
++struct multibit_head {
++	unsigned int mbit_off;
++	unsigned int mbit_sz;
++};
+ 
+ typedef struct _lm_head_ {
+ 	unsigned int bit_offset;
+ 	unsigned int kernel_offset;
+ 	unsigned int bit_size;
+ 	unsigned int head_size;
++	unsigned int zboot_offset;
++	unsigned int mbr_offset;
++	struct multibit_head mbh[MAX_EXTRA_FPGA_BIN_NUM];
+ }slot_head;
+ 
+ struct head {
+ 	uint32_t identifier;	/* ZB?\0 */
+ 	uint8_t reserve_size;	/* \x08 */
++	uint8_t fpga_num;		/* reserve the second u32 region */
+ 	uint8_t *reserve;
+ 	uint32_t crc32;			/* from next */
+ 	uint32_t blob_size;		/* from next + 4 */
+@@ -115,6 +127,7 @@ struct head {
+ 	uint32_t head_size;
+ 	uint32_t zboot_offset;
+ 	uint32_t mbr_offset;
++	struct multibit_head lastmbh[MAX_EXTRA_FPGA_BIN_NUM];
+ 	uint8_t padding[16];	/* \xFF */
+ };
+ 

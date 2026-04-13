@@ -1,0 +1,163 @@
+diff --git a/board/xilinx/zynqmp/zynqmp.c b/board/xilinx/zynqmp/zynqmp.c
+index 88a1b924d34..2079e3a5235 100644
+--- a/board/xilinx/zynqmp/zynqmp.c
++++ b/board/xilinx/zynqmp/zynqmp.c
+@@ -316,6 +316,18 @@ static u8 __maybe_unused zynqmp_get_bootmode(void)
+ 	return bootmode;
+ }
+ 
++static u8 __maybe_unused zynqmp_get_rsa_status(void)
++{
++#ifdef CONFIG_ZBOOT_RSA_BITSTREAM
++	puts("RSA STATUS:  ON\n");
++	env_set("rsa", "on");
++#else
++	puts("RSA STATUS:  OFF\n");
++	env_set("rsa", "off");
++#endif
++	return 0;
++}
++
+ #if defined(CONFIG_BOARD_LATE_INIT)
+ static const struct {
+ 	u32 bit;
+@@ -507,6 +519,8 @@ int board_late_init(void)
+ 			return ret;
+ 	}
+ 
++	zynqmp_get_rsa_status();
++
+ 	reset_reason();
+ 
+ 	return board_late_init_xilinx();
+diff --git a/cmd/Kconfig b/cmd/Kconfig
+index b222ddaf149..6d171126e35 100644
+--- a/cmd/Kconfig
++++ b/cmd/Kconfig
+@@ -221,6 +221,11 @@ config CMD_REGINFO
+ 	help
+ 	  Register dump
+ 
++config CMD_RSA_STATUS
++	bool "rsainfo"
++	help
++	  Rsa status dump
++
+ config CMD_TCPM
+ 	bool "tcpm"
+ 	depends on TYPEC_TCPM
+@@ -1065,6 +1070,12 @@ config CLU_INIT
+ 	  The CLU c is configured through spi
+ endmenu
+ 
++config ZBOOT_RSA_BITSTREAM
++	bool "loads rsa bit"
++	depends on CMD_ZBOOT_Z
++	help
++	  Loads rsa bit stream to fpga
++
+ menu "Device access commands"
+ 
+ config CMD_ARMFFA
+diff --git a/cmd/Makefile b/cmd/Makefile
+index e8d3402034c..9fd1a85f1f5 100644
+--- a/cmd/Makefile
++++ b/cmd/Makefile
+@@ -160,6 +160,7 @@ obj-$(CONFIG_CMD_KASLRSEED) += kaslrseed.o
+ obj-$(CONFIG_CMD_RKMTD) += rkmtd.o
+ obj-$(CONFIG_CMD_ROCKUSB) += rockusb.o
+ obj-$(CONFIG_CMD_RTC) += rtc.o
++obj-$(CONFIG_CMD_RSA_STATUS) += rsa.o
+ obj-$(CONFIG_SANDBOX) += host.o
+ obj-$(CONFIG_CMD_SATA) += sata.o
+ obj-$(CONFIG_CMD_NVME) += nvme.o
+diff --git a/cmd/rsa.c b/cmd/rsa.c
+new file mode 100644
+index 00000000000..1afd5fa6801
+--- /dev/null
++++ b/cmd/rsa.c
+@@ -0,0 +1,27 @@
++/*
++ * Get zboot rsa status
++ *
++ * Copyright (c) 2022 xi.he@zillnk.com.
++ *
++ * Licensed under the GPL-2 or later.
++ */
++
++#include <command.h>
++#include <linux/compiler.h>
++
++static int do_rsa(struct cmd_tbl *cmdtp, int flag, int argc,
++		   char *const argv[])
++{
++#ifdef CONFIG_ZBOOT_RSA_BITSTREAM
++	printf("RSA STATUS:  ON\n");
++#else
++	printf("RSA STATUS:  OFF\n");
++#endif
++	return 0;
++}
++
++U_BOOT_CMD(
++	rsa,	2,		2,	do_rsa,
++	"Get rsa status\n",
++	""
++);
+\ No newline at end of file
+diff --git a/cmd/zboot.c b/cmd/zboot.c
+index 42bbf57933c..c8410dba439 100644
+--- a/cmd/zboot.c
++++ b/cmd/zboot.c
+@@ -161,6 +161,39 @@ static long get_fpga_device(char *arg)
+ 	return dev;
+ }
+ 
++static int do_fpga_loads_rsa_bitstream(int devnum, uint32_t fpga_data, uint32_t data_size)
++{
++	struct fpga_secure_info fpga_sec_info;
++
++	memset(&fpga_sec_info, 0, sizeof(fpga_sec_info));
++	/*
++	*	auth_loc :
++	*
++	*	location of image to be authenticated is located
++	*
++	*	0 = On-Chip Memory (OCM)
++	*
++	*	1 = DDR
++	*
++	*	2 = no authentication
++	*/
++	fpga_sec_info.authflag = 1; //DDR
++	/*
++	* enc_key_sel :
++	*
++	* selection of the encryption key
++	*
++	* 0 = device key
++	*
++	* 1 = user key - KUP
++	*
++	* 2 = no encryption
++	*/
++	fpga_sec_info.encflag = 2;
++	printf("fpga load rsa bitstream.\n");
++	return fpga_loads(devnum, (void *)fpga_data, data_size, &fpga_sec_info);
++}
++
+ static int do_fpga_loadb(uint32_t fpgadata, uint32_t datasize)
+ {
+ 	long dev;
+@@ -172,7 +205,11 @@ static int do_fpga_loadb(uint32_t fpgadata, uint32_t datasize)
+ 		return -1;
+ 	}
+ 
++#ifdef CONFIG_ZBOOT_RSA_BITSTREAM
++	return do_fpga_loads_rsa_bitstream(dev, fpgadata, datasize);
++#else
+ 	return fpga_loadbitstream(dev, (void *)fpgadata, datasize, BIT_FULL);
++#endif
+ }
+ 
+ static int parse_head_data(uint32_t base_addr)

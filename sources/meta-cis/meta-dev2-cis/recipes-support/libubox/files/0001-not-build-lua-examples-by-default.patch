@@ -1,0 +1,31 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 1a1b7d5..c5bed27 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -11,8 +11,12 @@ IF(CMAKE_C_COMPILER_VERSION VERSION_GREATER 6)
+ ENDIF()
+ ADD_DEFINITIONS(-Os -std=gnu99 -g3 -Wmissing-declarations -Wno-unused-parameter)
+ 
++IF(BUILD_SUPPORT_LUA)
+ OPTION(BUILD_LUA "build Lua plugin" ON)
++ENDIF()
++IF(BUILD_SUPPORT_EXAMPLES)
+ OPTION(BUILD_EXAMPLES "build examples" ON)
++ENDIF()
+ 
+ INCLUDE(FindPkgConfig)
+ PKG_SEARCH_MODULE(JSONC json-c)
+@@ -45,8 +49,13 @@ INSTALL(TARGETS ubox ubox-static
+ 	LIBRARY DESTINATION lib
+ )
+ 
++IF(BUILD_SUPPORT_LUA)
+ ADD_SUBDIRECTORY(lua)
++ENDIF()
++
++IF(BUILD_SUPPORT_EXAMPLES)
+ ADD_SUBDIRECTORY(examples)
++ENDIF()
+ 
+ MACRO(ADD_UNIT_TEST_SAN name)
+   ADD_EXECUTABLE(${name}-san ${name}.c)

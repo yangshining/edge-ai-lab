@@ -1,0 +1,32 @@
+From 678b032edfaf5e1c3d28b83ade09c415b9085908 Mon Sep 17 00:00:00 2001
+From: Fan Wu <fan.wu@zillnk.com>
+Date: Tue, 26 Aug 2025 08:53:06 +0000
+Subject: [PATCH] sup yt phy 10/100/1000m led blink for petalinux 2025.1
+
+---
+ drivers/net/phy/motorcomm.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/drivers/net/phy/motorcomm.c b/drivers/net/phy/motorcomm.c
+index 299a12e66c5f..94d7fd790371 100644
+--- a/drivers/net/phy/motorcomm.c
++++ b/drivers/net/phy/motorcomm.c
+@@ -1284,6 +1284,15 @@ static int yt8521_config_init(struct phy_device *phydev)
+     if (ret < 0)
+         return ret;
+ 
++	/* change led mode to 10/100/1000m led blink */
++	ret = ytphy_write_ext(phydev, 0xa00d, 0x1800);
++	if (ret < 0)
++		return ret;
++
++	ret = ytphy_write_ext(phydev, 0xa00e, 0x2600);
++	if (ret < 0)
++		return ret;
++
+     /* disable auto sleep */
+     val = ytphy_read_ext(phydev, YT8521_EXTREG_SLEEP_CONTROL1);
+     if (val < 0)
+-- 
+2.34.1
+

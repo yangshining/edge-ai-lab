@@ -1,0 +1,107 @@
+diff --git a/cmd/Kconfig b/cmd/Kconfig
+index 2a24331c..92cacaf1 100644
+--- a/cmd/Kconfig
++++ b/cmd/Kconfig
+@@ -789,6 +789,12 @@ config ZBOOT_RSA_BITSTREAM
+ 	help
+ 	  Loads rsa bit stream to fpga
+ 
++config ZU67_SELECTION
++	bool "zu67 selection"
++	depends on CMD_ZBOOT_Z
++	help
++	  Automatically loads the zu67 limited and standard bit files.
++
+ endmenu
+ 
+ menu "Device access commands"
+diff --git a/cmd/zboot.c b/cmd/zboot.c
+index c1b663c1..7ca6521a 100644
+--- a/cmd/zboot.c
++++ b/cmd/zboot.c
+@@ -12,6 +12,12 @@
+ // #define DEFAULT_NMR_HDID3_GPIO 10
+ #define DEFAULT_NMR_HDID_GPIO(i) (7 + (i))
+ 
++/*
++Low: Limited ZU67
++High: Std ZU67
++*/
++#define DEFAULT_ZU67_VERSION_ID_GPIO 25
++
+ static int do_spi_xfer(uchar *dout, uchar *din, int bitlen)
+ {
+ 	struct spi_slave *slave;
+@@ -328,6 +334,23 @@ static int to_bootm(uint32_t image_addr)
+ 	return 0;
+ }
+ 
++#ifdef CONFIG_ZU67_SELECTION
++static int read_zu67_version_id(void)
++{
++	int ret;
++	ret = gpio_request(DEFAULT_ZU67_VERSION_ID_GPIO, "version_gpio");
++	printf("gpio: requesting zu67 version pin %u\n", DEFAULT_ZU67_VERSION_ID_GPIO);
++	if (ret && ret != -EBUSY) {
++		printf("gpio: requesting zu67 version pin %u failed\n", DEFAULT_ZU67_VERSION_ID_GPIO);
++		return 1;
++	}
++	gpio_direction_input(DEFAULT_ZU67_VERSION_ID_GPIO);
++	int tmp = gpio_get_value(DEFAULT_ZU67_VERSION_ID_GPIO);
++	printf("Zu67 version: %s\n", tmp?"Standard":"Limited");
++	return tmp;
++}
++#endif
++
+ static int do_zboot(struct cmd_tbl *cmdtp, int flag, int argc, char * const argv[])
+ {
+ 	slot_head *sh;
+@@ -426,6 +449,40 @@ static int do_zboot(struct cmd_tbl *cmdtp, int flag, int argc, char * const argv
+ 
+ 	sh = (slot_head *)dataptr;
+ 
++#ifdef CONFIG_ZU67_SELECTION
++	int zu67_selection = 1;//set standard zu67 as default.
++	int zu67_idx = 0;
++	zu67_selection = read_zu67_version_id();
++	if(zu67_selection) {
++		// Standard zu67, to use default fpga bin
++		printf("Standard zu67, to select fpga0\n");
++		fpga_data_addr = base_addr + sh->bit_offset + sh->head_size;
++		fpga_data_size = sh->bit_size;
++	}else {
++		zu67_idx = 1;
++		printf("Limited zu67, to select fpga[%d]\n", zu67_idx);
++		if (fpganum == 1 
++			|| fpganum == 0
++			|| sh->mbh[zu67_idx - 1].mbit_off == 0xFFFFFFFF 
++			|| sh->mbh[zu67_idx - 1].mbit_sz == 0xFFFFFFFF
++			|| sh->mbh[zu67_idx - 1].mbit_off == 0x0
++			|| sh->mbh[zu67_idx - 1].mbit_sz == 0x0) {
++			
++			if (fpganum == 1 || fpganum == 0){
++				printf("Warn: old style package with ONLY fpga0!\n");
++			} else {
++				printf("Warn: bit off/sz invalid to switch to default fpga0!\n");
++			}
++			fpga_data_addr = base_addr + sh->bit_offset + sh->head_size;
++			fpga_data_size = sh->bit_size;
++		} else {
++
++			printf("To select fpga[%d]\n", zu67_idx);
++			fpga_data_addr = base_addr + sh->mbh[zu67_idx - 1].mbit_off + sh->head_size;
++			fpga_data_size = sh->mbh[zu67_idx - 1].mbit_sz;
++		}
++	}
++#else
+     //read gpio
+ 	for(i=0; i < NUM_BIN_SELECTION_BITS; i++)
+ 	{
+@@ -499,6 +556,7 @@ static int do_zboot(struct cmd_tbl *cmdtp, int flag, int argc, char * const argv
+ 		fpga_data_addr = base_addr + sh->bit_offset + sh->head_size;
+ 		fpga_data_size = sh->bit_size;
+ 	}
++#endif
+ 
+ 	printf("%s: base_addr %#x *** fpga_data_addr : %#x - %#x \n", 
+ 		__func__, base_addr, fpga_data_addr, fpga_data_size);

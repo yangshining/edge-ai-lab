@@ -1,0 +1,210 @@
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.c b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.c
+index a28058f197..944f52ee5d 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.c
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.c
+@@ -73,6 +73,7 @@
+ static u32 FlashReadID(XQspiPsu *QspiPsuPtr);
+ static u32 MacronixEnable4B(XQspiPsu *QspiPsuPtr);
+ static u32 MacronixEnableQPIMode(XQspiPsu *QspiPsuPtr, int Enable);
++static u32 GigadeviceEnableQPIMode(XQspiPsu *QspiPsuPtr, int Enable);
+ 
+ /************************** Variable Definitions *****************************/
+ static XQspiPsu QspiPsuInstance __attribute__ ((aligned(64)));
+@@ -86,6 +87,7 @@ static u8 TxBfrPtr __attribute__ ((aligned(32)));
+ static u8 ReadBuffer[10] __attribute__ ((aligned(32)));
+ static u8 WriteBuffer[10] __attribute__ ((aligned(32)));
+ static u32 MacronixFlash = 0U;
++static u32 GigadeviceFlash = 0U;
+ u8 MultiDie = (u8)FALSE;
+ 
+ /******************************************************************************
+@@ -137,6 +139,7 @@ static u32 FlashReadID(XQspiPsu *QspiPsuPtr)
+ 	 * Deduce flash make
+ 	 */
+ 	MacronixFlash = 0U;
++	GigadeviceFlash = 0U;
+ 	if (ReadBuffer[0] == MICRON_ID) {
+ 		QspiFlashMake = MICRON_ID;
+ 		XFsbl_Printf(DEBUG_INFO, "MICRON ");
+@@ -156,6 +159,7 @@ static u32 FlashReadID(XQspiPsu *QspiPsuPtr)
+ 	} else if(ReadBuffer[0] == GIGADEVICE_ID) {
+ 		QspiFlashMake = GIGADEVICE_ID;
+ 		XFsbl_Printf(DEBUG_INFO, "GIGADEVICE ");
++		GigadeviceFlash = 1U;
+ 	} else {
+ 		UStatus = XFSBL_ERROR_UNSUPPORTED_QSPI;
+ 		XFsbl_Printf(DEBUG_GENERAL,"XFSBL_ERROR_UNSUPPORTED_QSPI\r\n");
+@@ -202,7 +206,8 @@ static u32 FlashReadID(XQspiPsu *QspiPsuPtr)
+ 			|| (ReadBuffer[2] == MACRONIX_FLASH_1_8_V_SIZE_ID_2G)) {
+                 QspiFlashSize = FLASH_SIZE_2G;
+ 		if ((QspiFlashMake == WINBOND_ID) ||
+-			(QspiFlashMake == MICRON_ID)) {
++			(QspiFlashMake == MICRON_ID) ||
++			(QspiFlashMake == GIGADEVICE_ID)) {
+ 			MultiDie = (u8)TRUE;
+ 		}
+                 XFsbl_Printf(DEBUG_INFO, "2G Bits\r\n");
+@@ -360,6 +365,13 @@ u32 XFsbl_Qspi24Init(u32 DeviceFlags)
+ 			(QspiPsuInstance.Config.BusWidth == XFSBL_QSPI_BUSWIDTH_FOUR)) {
+ 		ReadCommand = QUAD_READ_CMD_24BIT2;
+ 	}
++
++	if ((GigadeviceFlash == 1U) &&
++			(QspiPsuInstance.Config.BusWidth == XFSBL_QSPI_BUSWIDTH_FOUR)) {
++
++		GigadeviceEnableQPIMode(&QspiPsuInstance, ENABLE_QPI);
++
++	}
+ 	/**
+ 	 * add code: For a Stacked connection, read second Flash ID
+ 	 */
+@@ -601,6 +613,132 @@ END:
+ 	return UStatus;
+ }
+ 
++/******************************************************************************
++*
++* Static API used for Gigadevice flash to enable or disable QPI mode
++*
++* @param	QspiPsuPtr Pointer to QSPI instance.
++* @param    Enable valid values are 0 (disable) and 1 (enable).
++*
++* @return	XFSBL_SUCCESS if success, otherwise XFSBL_ERROR_QSPI_READ.
++*
++* @note		None.
++*
++******************************************************************************/
++static u32 GigadeviceEnableQPIMode(XQspiPsu *QspiPsuPtr, int Enable)
++{
++	s32 Status;
++	u32 UStatus;
++	u8 ReadStatusCmd;
++	u8 FlashStatus[2];
++	u8 StatusRegVal;
++
++	/* Read the value of status register no.2*/
++	ReadStatusCmd = READ_STATUS_REG_2_CMD;
++	FlashMsg[0].TxBfrPtr = &ReadStatusCmd;
++	FlashMsg[0].RxBfrPtr = NULL;
++	FlashMsg[0].ByteCount = 1;
++	if (Enable == ENABLE_QPI) {
++		FlashMsg[0].BusWidth = XQSPIPSU_SELECT_MODE_SPI;
++	} else {
++		FlashMsg[0].BusWidth = XQSPIPSU_SELECT_MODE_QUADSPI;
++	}
++
++	FlashMsg[0].Flags = XQSPIPSU_MSG_FLAG_TX;
++	FlashMsg[1].TxBfrPtr = NULL;
++	FlashMsg[1].RxBfrPtr = FlashStatus;
++	FlashMsg[1].ByteCount = 2;
++	if (Enable == ENABLE_QPI) {
++		FlashMsg[1].BusWidth = XQSPIPSU_SELECT_MODE_SPI;
++	} else {
++		FlashMsg[1].BusWidth = XQSPIPSU_SELECT_MODE_QUADSPI;
++	}
++	FlashMsg[1].Flags = XQSPIPSU_MSG_FLAG_RX;
++
++	Status = XQspiPsu_PolledTransfer(QspiPsuPtr, FlashMsg, 2);
++	if (Status != XST_SUCCESS) {
++		UStatus = XFSBL_ERROR_QSPI_READ;
++		XFsbl_Printf(DEBUG_GENERAL,"XFSBL_ERROR_QSPI_READ\r\n");
++		goto END;
++
++	}
++
++	if (QspiPsuPtr->Config.ConnectionMode ==
++		XQSPIPSU_CONNECTION_MODE_PARALLEL) {
++		FlashStatus[1] |= FlashStatus[0];
++	}
++	/*
++	 * Set Quad Enable Bit in the buffer
++	 */
++	StatusRegVal = FlashStatus[1];
++	XFsbl_Printf(DEBUG_GENERAL,"Old status register no.2:0x%02x\r\n", StatusRegVal);
++
++	/*Enable register write*/
++	TxBfrPtr = WRITE_ENABLE_CMD;
++	FlashMsg[0].TxBfrPtr = &TxBfrPtr;
++	FlashMsg[0].RxBfrPtr = NULL;
++	FlashMsg[0].ByteCount = 1;
++	if (Enable == ENABLE_QPI) {
++		FlashMsg[0].BusWidth = XQSPIPSU_SELECT_MODE_SPI;
++	} else {
++		FlashMsg[0].BusWidth = XQSPIPSU_SELECT_MODE_QUADSPI;
++	}
++	FlashMsg[0].Flags = XQSPIPSU_MSG_FLAG_TX;
++
++	Status = XQspiPsu_PolledTransfer(&QspiPsuInstance, &FlashMsg[0], 1);
++	if (Status != XFSBL_SUCCESS) {
++		UStatus = XFSBL_ERROR_QSPI_READ;
++		XFsbl_Printf(DEBUG_GENERAL,"XFSBL_ERROR_QSPI_READ\r\n");
++		goto END;
++	}
++
++	if (Enable == ENABLE_QPI)
++		StatusRegVal |= 0x1 << GD_QUAD_MODE_ENABLE_BIT;
++	else
++		StatusRegVal &= ~(0x1 << GD_QUAD_MODE_ENABLE_BIT);
++
++	XFsbl_Printf(DEBUG_GENERAL,"new status register no.2:0x%02x\r\n", StatusRegVal);
++
++	/*
++	 * Write Status register
++	 */
++	WriteBuffer[COMMAND_OFFSET] = WRITE_STATUS_REG_2_CMD;
++	FlashMsg[0].TxBfrPtr = WriteBuffer;
++	FlashMsg[0].RxBfrPtr = NULL;
++	FlashMsg[0].ByteCount = 1;
++	if (Enable == ENABLE_QPI) {
++		FlashMsg[0].BusWidth = XQSPIPSU_SELECT_MODE_SPI;
++	} else {
++		FlashMsg[0].BusWidth = XQSPIPSU_SELECT_MODE_QUADSPI;
++	}
++
++	FlashMsg[0].Flags = XQSPIPSU_MSG_FLAG_TX;
++
++	FlashMsg[1].TxBfrPtr = &StatusRegVal;
++	FlashMsg[1].RxBfrPtr = NULL;
++	FlashMsg[1].ByteCount = 1;
++	if (Enable == ENABLE_QPI) {
++		FlashMsg[1].BusWidth = XQSPIPSU_SELECT_MODE_SPI;
++	} else {
++		FlashMsg[1].BusWidth = XQSPIPSU_SELECT_MODE_QUADSPI;
++	}
++
++	FlashMsg[1].Flags = XQSPIPSU_MSG_FLAG_TX;
++
++	Status = XQspiPsu_PolledTransfer(QspiPsuPtr, FlashMsg, 2);
++	if (Status != XST_SUCCESS) {
++		UStatus = XFSBL_ERROR_QSPI_READ;
++		XFsbl_Printf(DEBUG_GENERAL,"XFSBL_ERROR_QSPI_READ\r\n");
++		goto END;
++
++	}
++
++	UStatus = XFSBL_SUCCESS;
++
++END:
++	return UStatus;
++}
++
+ /*****************************************************************************/
+ /**
+  * This function is used to copy the data from QSPI flash to destination
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.h b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.h
+index 7cdb93cf6e..7e9b9ab007 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.h
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_qspi.h
+@@ -69,6 +69,12 @@ extern "C" {
+ #define WRITE_ENABLE_CMD	(0x06U)
+ #define BANK_REG_RD_CMD		(0x16U)
+ #define BANK_REG_WR_CMD		(0x17U)
++
++/* For Gigadevice Flash */
++#define WRITE_STATUS_REG_2_CMD	(0x31U)
++#define READ_STATUS_REG_2_CMD	(0x35U)
++#define GD_QUAD_MODE_ENABLE_BIT	(0x01U)
++
+ /* Bank register is called Extended Address Reg in Micron */
+ #define EXTADD_REG_RD_CMD	(0xC8U)
+ #define EXTADD_REG_WR_CMD	(0xC5U)

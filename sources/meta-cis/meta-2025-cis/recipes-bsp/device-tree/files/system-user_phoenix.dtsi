@@ -1,0 +1,260 @@
+/include/ "system-conf.dtsi"
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/gpio/gpio.h>
+/ {
+    gpio_keys:alarm_keys@0 {
+        compatible = "gpio-keys";
+        label = "Fara Interrupt collection";
+    };
+
+    select_map: select-map {
+        compatible = "selectmap,ku5p";
+        status = "okay";
+        reg = <0x0 0xff0a0048 0x0 0x20>;
+        first_check_cfg_done = <0>;
+        ku_rdwr = <&gpio 65 GPIO_ACTIVE_HIGH>;
+        ku_cclk = <&gpio 53 GPIO_ACTIVE_HIGH>;
+        ku_prog_b = <&gpio 56 GPIO_ACTIVE_HIGH>;
+        ku_cfg_done = <&gpio 52 GPIO_ACTIVE_HIGH>;
+        ku_init_b = <&gpio 68 GPIO_ACTIVE_HIGH>;
+        ku_csi_b = <&gpio 60 GPIO_ACTIVE_HIGH>;
+        // ku_cfg_led = <&gpio 51 GPIO_ACTIVE_HIGH>;
+        ku_bank_base = <&gpio 52 GPIO_ACTIVE_HIGH>;
+        /* D0 - D7*/
+        gpios = <&gpio 64 GPIO_ACTIVE_HIGH
+            &gpio 57 GPIO_ACTIVE_HIGH
+            &gpio 66 GPIO_ACTIVE_HIGH
+            &gpio 69 GPIO_ACTIVE_HIGH
+            &gpio 54 GPIO_ACTIVE_HIGH
+            &gpio 62 GPIO_ACTIVE_HIGH
+            &gpio 61 GPIO_ACTIVE_HIGH
+            &gpio 63 GPIO_ACTIVE_HIGH>;
+    };
+
+};
+
+&debug_bridge_0 {
+	compatible = "xlnx,xvc";
+	status = "okay";
+};
+
+&spi1 {
+    status = "okay";
+    num-cs = <1>;
+    tpm@0 {
+        compatible = "infineon,slb9670";
+        #address-cells = <1>;
+        #size-cells = <0>;
+        spi-max-frequency = <20000000>;
+        reg = <0>;
+        status = "okay";
+    };
+};
+
+&qspi {
+    status = "okay";
+    is-dual = <0>;
+    num-cs = <1>;
+    flash@0 {
+        compatible ="jedec,spi-nor";
+        reg = <0x0>;
+        spi-tx-bus-width = <1>;
+        spi-rx-bus-width = <4>;
+        spi-max-frequency = <108000000>;
+        #address-cells = <1>;
+        #size-cells = <1>;
+    };
+};
+
+&gem0 {
+    status = "okay";
+    phy-handle = <&phy0>;
+    phy-mode = "sgmii";
+    is-internal-pcspma = <0x1>;
+    phy0: phy@1 {
+        reg = <0x1>;
+    };
+};
+
+&spi0 {
+    status = "okay";
+    num-cs = <1>;
+    u-boot,dm-pre-reloc;
+    phc@0 {
+        compatible="idt,8a34000";
+        reg = <0>;
+        spi-max-frequency = <10000000>;
+        reset-gpio = <&gpio 24 1>;//GPIO_ACTIVE_LOW
+    };
+};
+
+&axi_quad_spi_0 {
+    status = "okay";
+    spidev@0 {
+        compatible="rohm,dh2228fv";
+        reg = <0>;
+        spi-max-frequency = <5000000>;
+    };
+
+    spidev@1 {
+        compatible="rohm,dh2228fv";
+        reg = <1>;
+        spi-max-frequency = <5000000>;
+    };
+
+    spidev@2 {
+        compatible="rohm,dh2228fv";
+        reg = <2>;
+        spi-max-frequency = <5000000>;
+    };
+
+    spidev@3 {
+        compatible="rohm,dh2228fv";
+        reg = <3>;
+        spi-max-frequency = <5000000>;
+    };
+
+    spidev@4 {
+        compatible="rohm,dh2228fv";
+        reg = <4>;
+        spi-max-frequency = <5000000>;
+    };
+
+    spidev@5 {
+        compatible="rohm,dh2228fv";
+        reg = <5>;
+        spi-max-frequency = <5000000>;
+    };
+
+    spidev@6 {
+        compatible="rohm,dh2228fv";
+        reg = <6>;
+        spi-max-frequency = <5000000>;
+    };
+
+    spidev@7 {
+        compatible="rohm,dh2228fv";
+        reg = <7>;
+        spi-max-frequency = <5000000>;
+    };
+
+    spidev@8 {
+        compatible="rohm,dh2228fv";
+        reg = <8>;
+        spi-max-frequency = <5000000>;
+    };
+
+    spidev@9 {
+        compatible="rohm,dh2228fv";
+        reg = <9>;
+        spi-max-frequency = <5000000>;
+    };
+	
+    spidev@10 {
+        compatible="rohm,dh2228fv";
+        reg = <10>;
+        spi-max-frequency = <5000000>;
+    };
+
+    spidev@11 {
+        compatible="rohm,dh2228fv";
+        reg = <11>;
+        spi-max-frequency = <5000000>;
+    };
+
+    spidev@12 {
+        compatible="rohm,dh2228fv";
+        reg = <12>;
+        spi-max-frequency = <5000000>;
+    };
+
+    spidev@13 {
+        compatible="rohm,dh2228fv";
+        reg = <13>;
+        spi-max-frequency = <5000000>;
+    };
+};
+
+&sdhci0 {
+        status = "okay";
+        bus-width = <8>;
+        non-removable;
+        cap-mmc-highspeed;
+        cap-sd-highspeed;
+        disable-wp;
+        no-1-8-v;
+};
+
+&amba_pl {
+    fpga: fpga@a0000000 {
+        compatible = "generic-uio";
+        reg = <0x0 0xA0000000 0x0 0x20000000>;
+    };
+
+    dpd_0_USER: dpd_user@a4000000 {
+        compatible = "generic-uio";
+        reg = <0x0 0xa4000000 0x0 0x20000>;
+    };
+};
+
+&dpd_0{
+    compatible = "generic-uio";
+    reg = <0x0 0xa8000000 0x0 0x4000000>;
+};
+
+&gpio_keys {
+	/* will be enabled in overlay */
+	status = "disabled";
+};
+
+&axi_intc_ku5p {
+	compatible = "xlnx,intc-interlink";
+	/* will be enabled in overlay */
+	status = "disabled";
+};
+
+&support_1588_2step_timer1588_subs_timer_1588_v2_0_0 {
+   compatible = "xlnx,timer-1588-2.0";
+   xlnx,period = <4000000>;
+   pps_in_fifo = <&axi_fifo_mm_s_0>;
+};
+
+&support_1588_2step1_timer1588_subs_timer_1588_v2_0_0 {
+   compatible = "xlnx,timer-1588-2.0";
+   xlnx,period = <4000000>;
+   status = "disabled";
+};
+
+&xxv_ethernet_0 {
+       axistream-connected = <&axi_mcdma_0>;
+       axistream-control-connected = <&axi_mcdma_0>;
+       axififo-connected = <&support_1588_2step_tx_ts_fifo_axi_fifo_mm_s_0>;
+       xlnx,rxtsfifo = <&support_1588_2step_rx_ts_fifo_axi_fifo_mm_s_0>;
+       xlnx,num-queues = /bits/ 16 <0x1>;
+       xlnx,channel-ids = "1";
+       xlnx,include-dre;
+       interrupt-names = "mm2s_ch1_introut", "s2mm_ch1_introut";
+       interrupt-parent = <&gic>;
+       interrupts = <0 92 4 0 94 4>;
+       local-mac-address = [00 0A 35 00 1A AE];
+};
+
+&xxv_ethernet_1 {
+       axistream-connected = <&axi_mcdma_0>;
+       axistream-control-connected = <&axi_mcdma_0>;
+       axififo-connected = <&support_1588_2step1_tx_ts_fifo_axi_fifo_mm_s_0>;
+       xlnx,rxtsfifo = <&support_1588_2step1_rx_ts_fifo_axi_fifo_mm_s_0>;
+       xlnx,num-queues = /bits/ 16 <0x1>;
+       xlnx,channel-ids = "2";
+       xlnx,include-dre;
+       interrupt-names = "mm2s_ch2_introut", "s2mm_ch2_introut";
+       interrupt-parent = <&gic>;
+       interrupts = <0 93 4 0 95 4>;
+       local-mac-address = [00 0A 35 00 1A AF];
+};
+
+&axi_mcdma_0 {
+       compatible = "xlnx,eth-dma";
+       xlnx,include-dre;
+};
+

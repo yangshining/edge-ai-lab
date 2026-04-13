@@ -1,0 +1,69 @@
+# This is a boot script for U-Boot
+# Generate boot.scr:
+# mkimage -c none -A arm -T script -d boot.cmd.default boot.scr
+#
+################
+@@PRE_BOOTENV@@
+
+sf probe 0 0 0;
+if test "${reset_reason}" = "PMU"; then
+	echo "Boot backup partition.";
+	sf read @@FIT_IMAGE_LOAD_ADDRESS@@ 0x17c0000 0x4600000;
+	if test "${runing}" != "0"; then
+		setenv runing 0;
+		setenv bootenv_save true;
+	fi
+	if test "${bootenv_save}" = "true"; then
+		setenv bootenv_save false;
+		saveenv;
+	fi
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	exit;
+fi
+if test "${zboot}" = "1"; then
+	sf read @@FIT_IMAGE_LOAD_ADDRESS@@ 0x5dc0000 0x4600000;
+	if test "${runing}" != "1"; then
+		setenv runing 1;
+		setenv bootenv_save true
+	fi
+	if test "${bootenv_save}" = "true"; then
+		setenv bootenv_save false;
+		saveenv;
+	fi
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	echo "Boot backup partition.";
+	sf read @@FIT_IMAGE_LOAD_ADDRESS@@ 0x17c0000 0x4600000;
+	setenv runing 0;
+	setenv state1 1;
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	exit;
+fi
+if test "${zboot}" = "2"; then
+	sf read @@FIT_IMAGE_LOAD_ADDRESS@@ 0xa3c0000 0x4600000;
+	if test "${runing}" != "2"; then
+		setenv runing 2;
+		setenv bootenv_save true
+	fi
+	if test "${bootenv_save}" = "true"; then
+		setenv bootenv_save false;
+		saveenv;
+	fi
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	echo "Boot backup partition.";
+	sf read @@FIT_IMAGE_LOAD_ADDRESS@@ 0x17c0000 0x4600000;
+	setenv runing 0;
+	setenv state2 1;
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	exit;
+fi
+echo "Boot backup partition.";
+sf read @@FIT_IMAGE_LOAD_ADDRESS@@ 0x17c0000 0x4600000;
+if test "${runing}" != "0"; then
+	setenv runing 0;
+	setenv bootenv_save true;
+fi
+if test "${bootenv_save}" = "true"; then
+	setenv bootenv_save false;
+	saveenv;
+fi
+zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;

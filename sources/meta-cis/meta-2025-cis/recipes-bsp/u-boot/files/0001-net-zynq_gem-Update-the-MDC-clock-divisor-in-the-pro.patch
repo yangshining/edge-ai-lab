@@ -1,0 +1,88 @@
+From 0fc19cad5a07a09958443e7a5b6f11e420ef195c Mon Sep 17 00:00:00 2001
+From: Venkatesh Yadav Abbarapu <venkatesh.abbarapu@amd.com>
+Date: Thu, 21 Sep 2023 08:57:06 +0530
+Subject: [PATCH] net: zynq_gem: Update the MDC clock divisor in the probe
+ function
+
+MDC clock change needs to be done when the driver probe function
+is called and not when the interface is being used.
+
+Signed-off-by: Venkatesh Yadav Abbarapu <venkatesh.abbarapu@amd.com>
+State: pending
+---
+ drivers/net/zynq_gem.c | 22 ++++++++++++++--------
+ 1 file changed, 14 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/net/zynq_gem.c b/drivers/net/zynq_gem.c
+index 5dbbdba816..0e8ed3f0da 100644
+--- a/drivers/net/zynq_gem.c
++++ b/drivers/net/zynq_gem.c
+@@ -383,7 +383,7 @@ static u32 gem_mdc_clk_div(struct zynq_gem_priv *priv)
+ 
+ static int zynq_gem_init(struct udevice *dev)
+ {
+-	u32 i, nwconfig;
++	u32 i, nwconfig, nwcfg;
+ 	int ret;
+ 	unsigned long clk_rate = 0;
+ 	struct zynq_gem_priv *priv = dev_get_priv(dev);
+@@ -489,8 +489,7 @@ static int zynq_gem_init(struct udevice *dev)
+ 		return -1;
+ 	}
+ 
+-	nwconfig = gem_mdc_clk_div(priv);
+-	nwconfig |= ZYNQ_GEM_NWCFG_INIT;
++	nwconfig = ZYNQ_GEM_NWCFG_INIT;
+ 
+ 	/*
+ 	 * Set SGMII enable PCS selection only if internal PCS/PMA
+@@ -504,19 +503,21 @@ static int zynq_gem_init(struct udevice *dev)
+ 
+ 	switch (priv->phydev->speed) {
+ 	case SPEED_1000:
+-		writel(nwconfig | ZYNQ_GEM_NWCFG_SPEED1000,
+-		       &regs->nwcfg);
++		nwconfig |= ZYNQ_GEM_NWCFG_SPEED1000;
+ 		clk_rate = ZYNQ_GEM_FREQUENCY_1000;
+ 		break;
+ 	case SPEED_100:
+-		writel(nwconfig | ZYNQ_GEM_NWCFG_SPEED100,
+-		       &regs->nwcfg);
++		nwconfig |= ZYNQ_GEM_NWCFG_SPEED100;
+ 		clk_rate = ZYNQ_GEM_FREQUENCY_100;
+ 		break;
+ 	case SPEED_10:
+ 		clk_rate = ZYNQ_GEM_FREQUENCY_10;
+ 		break;
+ 	}
++	nwcfg = readl(&regs->nwcfg);
++	nwcfg |= nwconfig;
++	if (nwcfg)
++		writel(nwcfg, &regs->nwcfg);
+ 
+ #ifdef CONFIG_ARM64
+ 	if (priv->interface == PHY_INTERFACE_MODE_SGMII &&
+@@ -776,7 +777,8 @@ static int zynq_gem_probe(struct udevice *dev)
+ {
+ 	void *bd_space;
+ 	struct zynq_gem_priv *priv = dev_get_priv(dev);
+-	int ret;
++	struct zynq_gem_regs *regs = priv->iobase;
++	int ret, val;
+ 	struct phy phy;
+ 
+ 	if (priv->interface == PHY_INTERFACE_MODE_SGMII) {
+@@ -856,6 +858,10 @@ static int zynq_gem_probe(struct udevice *dev)
+ 	if (IS_ENABLED(CONFIG_DM_ETH_PHY))
+ 		eth_phy_set_mdio_bus(dev, priv->bus);
+ 
++	val = gem_mdc_clk_div(priv);
++	if (val)
++		writel(val, &regs->nwcfg);
++
+ 	ret = zynq_phy_init(dev);
+ 	if (ret)
+ 		goto err3;
+-- 
+2.25.1
+

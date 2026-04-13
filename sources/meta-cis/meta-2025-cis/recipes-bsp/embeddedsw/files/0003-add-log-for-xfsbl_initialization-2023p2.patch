@@ -1,0 +1,52 @@
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c
+index 18a0d2a495..a2842a3e41 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c
+@@ -1254,6 +1254,9 @@ static u32 XFsbl_ValidateHeader(XFsblPs * FsblInstancePtr)
+ 			XFsbl_Printf(DEBUG_GENERAL,"Device Copy Failed \n\r");
+ 			goto END;
+ 		}
++
++		XFsbl_Printf(DEBUG_INFO,"AcOffset:%d\r\n", AcOffset);
++
+ 		if (AcOffset != 0x00U) {
+ 			/* Authentication exists copy AC to OCM */
+ 			Status = FsblInstancePtr->DeviceOps.DeviceCopy(
+@@ -1263,10 +1266,13 @@ static u32 XFsbl_ValidateHeader(XFsblPs * FsblInstancePtr)
+ 			if (XFSBL_SUCCESS != Status) {
+ 				goto END;
+ 			}
++			
++			XFsbl_Printf(DEBUG_INFO,"EfuseCtrl:0x%04x\r\n", EfuseCtrl);
+ 
+ 			/* Authenticate boot header */
+ 			/* When eFUSE RSA enable bit is blown */
+ 			if ((EfuseCtrl & EFUSE_SEC_CTRL_RSA_EN_MASK) != 0U) {
++				XFsbl_Printf(DEBUG_INFO," eFUSE RSA enable bit is blown\r\n");
+ 				Status = XFsbl_BhAuthentication(FsblInstancePtr,
+ 						ReadBuffer, (PTRSIZE)AuthBuffer, TRUE);
+ 			}
+@@ -1281,6 +1287,7 @@ static u32 XFsbl_ValidateHeader(XFsblPs * FsblInstancePtr)
+ 				goto END;
+ 			}
+ 
++			XFsbl_Printf(DEBUG_INFO,"Authenticate Image header table\r\n");
+ 
+ 			/* Authenticate Image header table */
+ 			/*
+@@ -1295,6 +1302,7 @@ static u32 XFsbl_ValidateHeader(XFsblPs * FsblInstancePtr)
+ 				Status = XFSBL_ERROR_IMAGE_HEADER_SIZE;
+ 				goto END;
+ 			}
++			XFsbl_Printf(DEBUG_INFO,"Copy the Image header to OCM\r\n");
+ 
+ 			/* Copy the Image header to OCM */
+ 			Status = FsblInstancePtr->DeviceOps.DeviceCopy(
+@@ -1304,6 +1312,7 @@ static u32 XFsbl_ValidateHeader(XFsblPs * FsblInstancePtr)
+ 			if (Status != XFSBL_SUCCESS) {
+ 				goto END;
+ 			}
++			XFsbl_Printf(DEBUG_INFO,"Authenticate the image header\r\n");
+ 
+ 			/* Authenticate the image header */
+ 			Status = XFsbl_Authentication(FsblInstancePtr,

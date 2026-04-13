@@ -1,0 +1,43 @@
+# This is a boot script for U-Boot
+# Generate boot.scr:
+# mkimage -c none -A arm -T script -d boot.cmd.default boot.scr
+#
+################
+@@PRE_BOOTENV@@
+
+sf probe 0 0 0;
+if test "${reset_reason}" = "PMU"; then
+	echo "Boot backup partition.";
+	sf read @@FIT_IMAGE_LOAD_ADDRESS@@ 0x17c0000 0x4600000;
+	setenv runing 0;
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	exit;
+fi
+if test "${zboot}" = "1"; then
+	sf read @@FIT_IMAGE_LOAD_ADDRESS@@ 0x5dc0000 0x4600000;
+	setenv runing 1;
+	saveenv;
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	echo "Boot backup partition.";
+	sf read @@FIT_IMAGE_LOAD_ADDRESS@@ 0x17c0000 0x4600000;
+	setenv runing 0;
+	setenv state1 1;
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	exit;
+fi
+if test "${zboot}" = "2"; then
+	sf read @@FIT_IMAGE_LOAD_ADDRESS@@ 0xa3c0000 0x4600000;
+	setenv runing 2;
+	saveenv;
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	echo "Boot backup partition.";
+	sf read @@FIT_IMAGE_LOAD_ADDRESS@@ 0x17c0000 0x4600000;
+	setenv runing 0;
+	setenv state2 1;
+	zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;
+	exit;
+fi
+echo "Boot backup partition.";
+sf read @@FIT_IMAGE_LOAD_ADDRESS@@ 0x17c0000 0x4600000;
+setenv runing 0;
+zboot @@FIT_IMAGE_LOAD_ADDRESS@@ 0x4600000;

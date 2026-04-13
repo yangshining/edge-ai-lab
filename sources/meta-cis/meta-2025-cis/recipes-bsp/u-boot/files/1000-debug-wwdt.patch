@@ -1,0 +1,86 @@
+diff --git a/drivers/watchdog/wdt-uclass.c b/drivers/watchdog/wdt-uclass.c
+index 6221ef12d7..6d0b9e74d4 100644
+--- a/drivers/watchdog/wdt-uclass.c
++++ b/drivers/watchdog/wdt-uclass.c
+@@ -124,7 +124,7 @@ int initr_watchdog(void)
+ 	struct udevice *dev;
+ 	struct uclass *uc;
+ 	int ret;
+-
++	printf("-----Enter %s\n", __func__);
+ 	ret = uclass_get(UCLASS_WDT, &uc);
+ 	if (ret) {
+ 		log_debug("Error getting UCLASS_WDT: %d\n", ret);
+@@ -147,7 +147,7 @@ int wdt_start(struct udevice *dev, u64 timeout_ms, ulong flags)
+ {
+ 	const struct wdt_ops *ops = device_get_ops(dev);
+ 	int ret;
+-
++	printf("-----Enter %s\n", __func__);
+ 	if (!ops->start)
+ 		return -ENOSYS;
+ 
+diff --git a/drivers/watchdog/xilinx_wwdt.c b/drivers/watchdog/xilinx_wwdt.c
+index 8b6fc30edb..67eb7e6bf1 100644
+--- a/drivers/watchdog/xilinx_wwdt.c
++++ b/drivers/watchdog/xilinx_wwdt.c
+@@ -70,7 +70,7 @@ static int xlnx_wwdt_reset(struct udevice *dev)
+ static int xlnx_wwdt_stop(struct udevice *dev)
+ {
+ 	struct xlnx_wwdt_priv *wdt = dev_get_priv(dev);
+-
++	printf("-----Enter %s\n", __func__);
+ 	if (wdt->enable_once) {
+ 		dev_warn(dev, "Can't stop Xilinx watchdog.\n");
+ 		return -EBUSY;
+@@ -82,7 +82,7 @@ static int xlnx_wwdt_stop(struct udevice *dev)
+ 
+ 	clk_disable(&wdt->clk);
+ 
+-	dev_dbg(dev, "Watchdog disabled!\n");
++	dev_info(dev, "Watchdog disabled!\n");
+ 
+ 	return 0;
+ }
+@@ -94,14 +94,14 @@ static int xlnx_wwdt_start(struct udevice *dev, u64 timeout_ms, ulong flags)
+ 	u64 count, timeout;
+ 	unsigned long clock_f;
+ 	struct xlnx_wwdt_priv *wdt = dev_get_priv(dev);
+-
++	printf("-----Enter %s\n", __func__);
+ 	clock_f = clk_get_rate(&wdt->clk);
+ 	if (IS_ERR_VALUE(clock_f)) {
+ 		dev_err(dev, "failed to get rate\n");
+ 		return clock_f;
+ 	}
+ 
+-	dev_dbg(dev, "%s: CLK %ld\n", __func__, clock_f);
++	dev_info(dev, "%s: CLK %ld\n", __func__, clock_f);
+ 
+ 	/* Convert timeout from msec to sec */
+ 	timeout = timeout_ms / 1000;
+@@ -154,12 +154,12 @@ static int xlnx_wwdt_probe(struct udevice *dev)
+ 	int ret;
+ 	struct xlnx_wwdt_plat *plat = dev_get_plat(dev);
+ 	struct xlnx_wwdt_priv *wdt = dev_get_priv(dev);
+-
+-	dev_dbg(dev, "%s: Probing wdt%u\n", __func__, dev_seq(dev));
++	printf("-----Enter %s\n", __func__);
++	dev_info(dev, "%s: Probing wdt%u\n", __func__, dev_seq(dev));
+ 
+ 	ret = regmap_init_mem(dev_ofnode(dev), &wdt->regs);
+ 	if (ret) {
+-		dev_dbg(dev, "failed to get regbase of wwdt\n");
++		dev_info(dev, "failed to get regbase of wwdt\n");
+ 		return ret;
+ 	}
+ 
+@@ -178,7 +178,7 @@ static int xlnx_wwdt_of_to_plat(struct udevice *dev)
+ 
+ 	plat->enable_once = dev_read_u32_default(dev, "xlnx,wdt-enable-once",
+ 						 0);
+-	dev_dbg(dev, "wdt-enable-once %d\n", plat->enable_once);
++	dev_info(dev, "wdt-enable-once %d\n", plat->enable_once);
+ 
+ 	return 0;
+ }

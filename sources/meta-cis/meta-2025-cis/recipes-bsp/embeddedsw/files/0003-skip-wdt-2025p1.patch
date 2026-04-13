@@ -1,0 +1,31 @@
+diff --git a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c
+index cf1e784ebf..1f470ed1b3 100644
+--- a/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c
++++ b/lib/sw_apps/zynqmp_fsbl/src/xfsbl_initialization.c
+@@ -288,6 +288,16 @@ u32 XFsbl_Initialize(XFsblPs * FsblInstancePtr)
+ 		{0U};
+ #endif
+ 
++#if 0
++	/* enable jtag in secure mode*/
++	Xil_Out32(0xffca0038,0x3F);
++	Xil_Out32(0xffca003C,0xFF);
++	Xil_Out32(0xffca0030,0x3);
++	Xil_Out32(0xFF5E00B0,0x01002002);
++	Xil_Out32(0xFF5E0240,0x0);
++	Xil_Out32(0xFFCA3000,0x1);
++#endif
++
+ 	/**
+ 	 * Place AES and SHA engines in reset
+ 	 */
+@@ -750,7 +760,8 @@ static u32 XFsbl_ResetValidation(void)
+ 			 */
+ 			Status = XFSBL_ERROR_SYSTEM_WDT_RESET;
+ 			XFsbl_Printf(DEBUG_GENERAL,"XFSBL_ERROR_SYSTEM_WDT_RESET\n\r");
+-			goto END;
++			/* Don't do fallback */
++			//goto END;
+ 		}
+ 	}
+ #endif

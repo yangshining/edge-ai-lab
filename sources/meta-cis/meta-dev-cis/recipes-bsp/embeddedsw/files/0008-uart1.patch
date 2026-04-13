@@ -1,0 +1,52 @@
+diff --git a/lib/sw_apps/imgsel/misc/outbyte.c b/lib/sw_apps/imgsel/misc/outbyte.c
+index a86440bd84..86fc17fa18 100644
+--- a/lib/sw_apps/imgsel/misc/outbyte.c
++++ b/lib/sw_apps/imgsel/misc/outbyte.c
+@@ -9,7 +9,7 @@ void outbyte(char c);
+ #ifdef __cplusplus
+ }
+ #endif
+-
++#define STDOUT_BASEADDRESS 0xFF010000 //WUFAN imgsel
+ void outbyte(char c) {
+ 	 XUartPs_SendByte(STDOUT_BASEADDRESS, c);
+ }
+diff --git a/lib/sw_apps/zynqmp_fsbl/misc/zcu102-es2/outbyte.c b/lib/sw_apps/zynqmp_fsbl/misc/zcu102-es2/outbyte.c
+index 42dbdc0667..d96de77fc8 100644
+--- a/lib/sw_apps/zynqmp_fsbl/misc/zcu102-es2/outbyte.c
++++ b/lib/sw_apps/zynqmp_fsbl/misc/zcu102-es2/outbyte.c
+@@ -13,7 +13,7 @@ void outbyte(char c);
+ #ifdef __cplusplus
+ }
+ #endif
+-
++#define STDOUT_BASEADDRESS 0xFF010000 //WUFAN zcu102-es2
+ void outbyte(char c) {
+ 	 XUartPs_SendByte(STDOUT_BASEADDRESS, c);
+ }
+diff --git a/lib/sw_apps/zynqmp_fsbl/misc/zcu102/outbyte.c b/lib/sw_apps/zynqmp_fsbl/misc/zcu102/outbyte.c
+index 42dbdc0667..285d497c0e 100644
+--- a/lib/sw_apps/zynqmp_fsbl/misc/zcu102/outbyte.c
++++ b/lib/sw_apps/zynqmp_fsbl/misc/zcu102/outbyte.c
+@@ -13,7 +13,7 @@ void outbyte(char c);
+ #ifdef __cplusplus
+ }
+ #endif
+-
++#define STDOUT_BASEADDRESS 0xFF010000 //WUFAN zcu102
+ void outbyte(char c) {
+ 	 XUartPs_SendByte(STDOUT_BASEADDRESS, c);
+ }
+diff --git a/lib/sw_apps/zynqmp_pmufw/misc/outbyte.c b/lib/sw_apps/zynqmp_pmufw/misc/outbyte.c
+index 42dbdc0667..2ae8a0f863 100644
+--- a/lib/sw_apps/zynqmp_pmufw/misc/outbyte.c
++++ b/lib/sw_apps/zynqmp_pmufw/misc/outbyte.c
+@@ -13,7 +13,7 @@ void outbyte(char c);
+ #ifdef __cplusplus
+ }
+ #endif
+-
++#define STDOUT_BASEADDRESS 0xFF010000 //WUFAN pmufw
+ void outbyte(char c) {
+ 	 XUartPs_SendByte(STDOUT_BASEADDRESS, c);
+ }

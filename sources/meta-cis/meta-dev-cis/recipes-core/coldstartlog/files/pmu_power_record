@@ -1,0 +1,34 @@
+#!/bin/sh
+
+set_rlog_for_wd_ext() {
+    result=$(fw_printenv reset_reason)
+    reset_reason_value=$(echo "$result" | cut -d'=' -f2)
+
+    # compare reset_reason_value with PMU or EXTERNAL"
+    if [ "$reset_reason_value" == "PMU" ]; then
+        echo "PMU: $reset_reason_value"
+        write_rlog "HW watchdog" "Cold" "-" "-" "-"
+    elif [ "$reset_reason_value" == "EXTERNAL" ]; then
+        echo "EXTERNAL: $reset_reason_value"
+        write_rlog "EXTERNAL Power" "Cold" "-" "-" "-"
+    else
+        echo "Common: $reset_reason_value"
+    fi
+}
+
+case "$1" in
+  start)
+    echo "Starting rlog init"
+    set_rlog_for_wd_ext
+    ;;
+  stop)
+    ;;
+  restart)
+    ;;
+  *)
+    echo "Usage: $0 { start | stop | restart }" >&2
+    exit 1
+    ;;
+esac
+
+exit 0

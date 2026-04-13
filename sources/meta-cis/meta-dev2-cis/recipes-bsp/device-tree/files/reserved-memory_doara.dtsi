@@ -1,0 +1,51 @@
+/ {
+    reserved-memory {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+        //rts capture data reserved
+        reserved: buffer@0 {
+            no-map;
+            reg = <0x0 0x28000000 0x0 0x4000000>; //64MB
+        };
+
+        // log system and RACD reserved
+        rmdom0domain: rmdom0domain@2c000000 {
+            reg = <0x0 0x2c000000 0x0 0xE000000>; // 224MB
+            no-map;
+        };
+    };
+
+    rmdom0: rmdom0 {
+        #address-cells = <1>;
+        #size-cells = <1>;
+        compatible = "linux,rmdom";
+        memory-domain = <&rmdom0domain>;
+        ranges;
+
+        logsys@1000 {
+            compatible = "linux,rmdom-rmem";
+            reg = <0x1000 0x7FFF000>; // 128M - 4K - 4K for log system //skip RMDOM header
+        };
+
+        racd@8000000 {
+            compatible = "linux,rmdom-rmem";
+            reg = <0x8000000 0x4FFF000>; // 80 MB - 4K for Retrospective Analysis Core Dump
+        };
+
+        ramoops@5000000 { //support pstore (Persistent store support enabled in kernel)
+            compatible = "linux,rmdom-ramoops";
+            reg = <0xD000000 0x1000000>;//16MB
+            record-size = <0x10000>;
+            console-size = <0x10000>;
+            ftrace-size = <0x10000>;
+            rmsg-size = <0x10000>;
+        };
+    };
+
+    rts_mem@0x28000000 {
+        compatible = "generic-uio";
+        reg = <0x0 0x28000000 0x0 0x4000000>;
+    };
+};

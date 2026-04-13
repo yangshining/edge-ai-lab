@@ -1,0 +1,4195 @@
+From 734af41abaf65b12d927a1f580fa09fa22353e32 Mon Sep 17 00:00:00 2001
+From: Fan Wu <fan.wu@zillnk.com>
+Date: Thu, 27 Feb 2025 07:39:37 +0000
+Subject: [PATCH] Support rsmu cdev in 2023.1
+
+---
+ drivers/mfd/rsmu.h                 |   2 +
+ drivers/mfd/rsmu_core.c            |  10 +-
+ drivers/mfd/rsmu_i2c.c             | 260 ++++++++--
+ drivers/mfd/rsmu_spi.c             |  52 +-
+ drivers/misc/Kconfig               |  11 +
+ drivers/misc/Makefile              |   2 +
+ drivers/misc/rsmu_cdev.c           | 449 ++++++++++++++++++
+ drivers/misc/rsmu_cdev.h           | 134 ++++++
+ drivers/misc/rsmu_cm.c             | 561 ++++++++++++++++++++++
+ drivers/misc/rsmu_fc3.c            | 732 +++++++++++++++++++++++++++++
+ drivers/misc/rsmu_sabre.c          | 367 +++++++++++++++
+ include/linux/mfd/idt82p33_reg.h   |  38 +-
+ include/linux/mfd/idt8a340_reg.h   | 664 +++++++++++++++-----------
+ include/linux/mfd/idtRC38xxx_reg.h | 260 ++++++++++
+ include/linux/mfd/rsmu.h           |   9 +-
+ include/uapi/linux/rsmu.h          | 184 ++++++++
+ 16 files changed, 3391 insertions(+), 344 deletions(-)
+ create mode 100755 drivers/misc/rsmu_cdev.c
+ create mode 100755 drivers/misc/rsmu_cdev.h
+ create mode 100755 drivers/misc/rsmu_cm.c
+ create mode 100755 drivers/misc/rsmu_fc3.c
+ create mode 100755 drivers/misc/rsmu_sabre.c
+ create mode 100755 include/linux/mfd/idtRC38xxx_reg.h
+ create mode 100755 include/uapi/linux/rsmu.h
+
+diff --git a/drivers/mfd/rsmu.h b/drivers/mfd/rsmu.h
+index bb88597d189f..1bb04cafa45d 100644
+--- a/drivers/mfd/rsmu.h
++++ b/drivers/mfd/rsmu.h
+@@ -10,6 +10,8 @@
+ 
+ #include <linux/mfd/rsmu.h>
+ 
++#define RSMU_CM_SCSR_BASE		0x20100000
++
+ int rsmu_core_init(struct rsmu_ddata *rsmu);
+ void rsmu_core_exit(struct rsmu_ddata *rsmu);
+ 
+diff --git a/drivers/mfd/rsmu_core.c b/drivers/mfd/rsmu_core.c
+index 29437fd0bd5b..951ddd92c238 100644
+--- a/drivers/mfd/rsmu_core.c
++++ b/drivers/mfd/rsmu_core.c
+@@ -40,12 +40,12 @@ static struct mfd_cell rsmu_sabre_devs[] = {
+ 	},
+ };
+ 
+-static struct mfd_cell rsmu_sl_devs[] = {
++static struct mfd_cell rsmu_fc3_devs[] = {
+ 	[RSMU_PHC] = {
+-		.name = "8v19n85x-phc",
++		.name = "rc38xxx-phc",
+ 	},
+ 	[RSMU_CDEV] = {
+-		.name = "8v19n85x-cdev",
++		.name = "rc38xxx-cdev",
+ 	},
+ };
+ 
+@@ -61,8 +61,8 @@ int rsmu_core_init(struct rsmu_ddata *rsmu)
+ 	case RSMU_SABRE:
+ 		cells = rsmu_sabre_devs;
+ 		break;
+-	case RSMU_SL:
+-		cells = rsmu_sl_devs;
++	case RSMU_FC3:
++		cells = rsmu_fc3_devs;
+ 		break;
+ 	default:
+ 		dev_err(rsmu->dev, "Unsupported RSMU device type: %d\n", rsmu->type);
+diff --git a/drivers/mfd/rsmu_i2c.c b/drivers/mfd/rsmu_i2c.c
+index f716ab8039a0..225398c45377 100644
+--- a/drivers/mfd/rsmu_i2c.c
++++ b/drivers/mfd/rsmu_i2c.c
+@@ -18,11 +18,12 @@
+ #include "rsmu.h"
+ 
+ /*
+- * 16-bit register address: the lower 8 bits of the register address come
+- * from the offset addr byte and the upper 8 bits come from the page register.
++ * 32-bit register address: the lower 8 bits of the register address come
++ * from the offset addr byte and the upper 24 bits come from the page register.
+  */
+-#define	RSMU_CM_PAGE_ADDR		0xFD
+-#define	RSMU_CM_PAGE_WINDOW		256
++#define	RSMU_CM_PAGE_ADDR		0xFC
++#define RSMU_CM_PAGE_MASK		0xFFFFFF00
++#define RSMU_CM_ADDRESS_MASK		0x000000FF
+ 
+ /*
+  * 15-bit register address: the lower 7 bits of the register address come
+@@ -31,17 +32,7 @@
+ #define	RSMU_SABRE_PAGE_ADDR		0x7F
+ #define	RSMU_SABRE_PAGE_WINDOW		128
+ 
+-static const struct regmap_range_cfg rsmu_cm_range_cfg[] = {
+-	{
+-		.range_min = 0,
+-		.range_max = 0xD000,
+-		.selector_reg = RSMU_CM_PAGE_ADDR,
+-		.selector_mask = 0xFF,
+-		.selector_shift = 0,
+-		.window_start = 0,
+-		.window_len = RSMU_CM_PAGE_WINDOW,
+-	}
+-};
++typedef int (*rsmu_rw_device)(struct rsmu_ddata *rsmu, u8 reg, u8 *buf, u8 bytes);
+ 
+ static const struct regmap_range_cfg rsmu_sabre_range_cfg[] = {
+ 	{
+@@ -55,35 +46,209 @@ static const struct regmap_range_cfg rsmu_sabre_range_cfg[] = {
+ 	}
+ };
+ 
+-static bool rsmu_cm_volatile_reg(struct device *dev, unsigned int reg)
++static bool rsmu_sabre_volatile_reg(struct device *dev, unsigned int reg)
+ {
+ 	switch (reg) {
+-	case RSMU_CM_PAGE_ADDR:
++	case RSMU_SABRE_PAGE_ADDR:
+ 		return false;
+ 	default:
+ 		return true;
+ 	}
+ }
+ 
+-static bool rsmu_sabre_volatile_reg(struct device *dev, unsigned int reg)
++static int rsmu_smbus_i2c_write_device(struct rsmu_ddata *rsmu, u8 reg, u8 *buf, u8 bytes)
+ {
+-	switch (reg) {
+-	case RSMU_SABRE_PAGE_ADDR:
+-		return false;
+-	default:
+-		return true;
++	struct i2c_client *client = to_i2c_client(rsmu->dev);
++
++	return i2c_smbus_write_i2c_block_data(client, reg, bytes, buf);
++}
++
++static int rsmu_smbus_i2c_read_device(struct rsmu_ddata *rsmu, u8 reg, u8 *buf, u8 bytes)
++{
++	struct i2c_client *client = to_i2c_client(rsmu->dev);
++	int ret;
++
++	ret = i2c_smbus_read_i2c_block_data(client, reg, bytes, buf);
++	if (ret == bytes)
++		return 0;
++	else if (ret < 0)
++		return ret;
++	else
++		return -EIO;
++}
++
++static int rsmu_i2c_read_device(struct rsmu_ddata *rsmu, u8 reg, u8 *buf, u8 bytes)
++{
++	struct i2c_client *client = to_i2c_client(rsmu->dev);
++	struct i2c_msg msg[2];
++	int cnt;
++
++	msg[0].addr = client->addr;
++	msg[0].flags = 0;
++	msg[0].len = 1;
++	msg[0].buf = &reg;
++
++	msg[1].addr = client->addr;
++	msg[1].flags = I2C_M_RD;
++	msg[1].len = bytes;
++	msg[1].buf = buf;
++
++	cnt = i2c_transfer(client->adapter, msg, 2);
++
++	if (cnt < 0) {
++		dev_err(rsmu->dev, "i2c_transfer failed at addr: %04x!", reg);
++		return cnt;
++	} else if (cnt != 2) {
++		dev_err(rsmu->dev,
++			"i2c_transfer sent only %d of 2 messages", cnt);
++		return -EIO;
++	}
++
++	return 0;
++}
++
++static int rsmu_i2c_write_device(struct rsmu_ddata *rsmu, u8 reg, u8 *buf, u8 bytes)
++{
++	struct i2c_client *client = to_i2c_client(rsmu->dev);
++	/* we add 1 byte for device register */
++	u8 msg[RSMU_MAX_WRITE_COUNT + 1];
++	int cnt;
++
++	if (bytes > RSMU_MAX_WRITE_COUNT)
++		return -EINVAL;
++
++	msg[0] = reg;
++	memcpy(&msg[1], buf, bytes);
++
++	cnt = i2c_master_send(client, msg, bytes + 1);
++
++	if (cnt < 0) {
++		dev_err(&client->dev,
++			"i2c_master_send failed at addr: %04x!", reg);
++		return cnt;
+ 	}
++
++	return 0;
+ }
+ 
+-static const struct regmap_config rsmu_cm_regmap_config = {
+-	.reg_bits = 8,
++static int rsmu_write_page_register(struct rsmu_ddata *rsmu, u32 reg,
++				    rsmu_rw_device rsmu_write_device)
++{
++	u32 page = reg & RSMU_CM_PAGE_MASK;
++	u8 buf[4];
++	int err;
++
++	/* Do not modify offset register for none-scsr registers */
++	if (reg < RSMU_CM_SCSR_BASE)
++		return 0;
++
++	/* Simply return if we are on the same page */
++	if (rsmu->page == page)
++		return 0;
++
++	buf[0] = 0x0;
++	buf[1] = (u8)((page >> 8) & 0xFF);
++	buf[2] = (u8)((page >> 16) & 0xFF);
++	buf[3] = (u8)((page >> 24) & 0xFF);
++
++	err = rsmu_write_device(rsmu, RSMU_CM_PAGE_ADDR, buf, sizeof(buf));
++	if (err)
++		dev_err(rsmu->dev, "Failed to set page offset 0x%x\n", page);
++	else
++		/* Remember the last page */
++		rsmu->page = page;
++
++	return err;
++}
++
++static int rsmu_i2c_reg_read(void *context, unsigned int reg, unsigned int *val)
++{
++	struct rsmu_ddata *rsmu = i2c_get_clientdata((struct i2c_client *)context);
++	u8 addr = (u8)(reg & RSMU_CM_ADDRESS_MASK);
++	int err;
++
++	err = rsmu_write_page_register(rsmu, reg, rsmu_i2c_write_device);
++	if (err)
++		return err;
++
++	err = rsmu_i2c_read_device(rsmu, addr, (u8 *)val, 1);
++	if (err)
++		dev_err(rsmu->dev, "Failed to read offset address 0x%x\n", addr);
++
++	return err;
++}
++
++static int rsmu_i2c_reg_write(void *context, unsigned int reg, unsigned int val)
++{
++	struct rsmu_ddata *rsmu = i2c_get_clientdata((struct i2c_client *)context);
++	u8 addr = (u8)(reg & RSMU_CM_ADDRESS_MASK);
++	u8 data = (u8)val;
++	int err;
++
++	err = rsmu_write_page_register(rsmu, reg, rsmu_i2c_write_device);
++	if (err)
++		return err;
++
++	err = rsmu_i2c_write_device(rsmu, addr, &data, 1);
++	if (err)
++		dev_err(rsmu->dev,
++			"Failed to write offset address 0x%x\n", addr);
++
++	return err;
++}
++
++static int rsmu_smbus_i2c_reg_read(void *context, unsigned int reg, unsigned int *val)
++{
++	struct rsmu_ddata *rsmu = i2c_get_clientdata((struct i2c_client *)context);
++	u8 addr = (u8)(reg & RSMU_CM_ADDRESS_MASK);
++	int err;
++
++	err = rsmu_write_page_register(rsmu, reg, rsmu_smbus_i2c_write_device);
++	if (err)
++		return err;
++
++	err = rsmu_smbus_i2c_read_device(rsmu, addr, (u8 *)val, 1);
++	if (err)
++		dev_err(rsmu->dev, "Failed to read offset address 0x%x\n", addr);
++
++	return err;
++}
++
++static int rsmu_smbus_i2c_reg_write(void *context, unsigned int reg, unsigned int val)
++{
++	struct rsmu_ddata *rsmu = i2c_get_clientdata((struct i2c_client *)context);
++	u8 addr = (u8)(reg & RSMU_CM_ADDRESS_MASK);
++	u8 data = (u8)val;
++	int err;
++
++	err = rsmu_write_page_register(rsmu, reg, rsmu_smbus_i2c_write_device);
++	if (err)
++		return err;
++
++	err = rsmu_smbus_i2c_write_device(rsmu, addr, &data, 1);
++	if (err)
++		dev_err(rsmu->dev,
++			"Failed to write offset address 0x%x\n", addr);
++
++	return err;
++}
++
++static const struct regmap_config rsmu_i2c_cm_regmap_config = {
++	.reg_bits = 32,
+ 	.val_bits = 8,
+-	.max_register = 0xD000,
+-	.ranges = rsmu_cm_range_cfg,
+-	.num_ranges = ARRAY_SIZE(rsmu_cm_range_cfg),
+-	.volatile_reg = rsmu_cm_volatile_reg,
+-	.cache_type = REGCACHE_RBTREE,
+-	.can_multi_write = true,
++	.max_register = 0x20120000,
++	.reg_read = rsmu_i2c_reg_read,
++	.reg_write = rsmu_i2c_reg_write,
++	.cache_type = REGCACHE_NONE,
++};
++
++static const struct regmap_config rsmu_smbus_i2c_cm_regmap_config = {
++	.reg_bits = 32,
++	.val_bits = 8,
++	.max_register = 0x20120000,
++	.reg_read = rsmu_smbus_i2c_reg_read,
++	.reg_write = rsmu_smbus_i2c_reg_write,
++	.cache_type = REGCACHE_NONE,
+ };
+ 
+ static const struct regmap_config rsmu_sabre_regmap_config = {
+@@ -97,11 +262,11 @@ static const struct regmap_config rsmu_sabre_regmap_config = {
+ 	.can_multi_write = true,
+ };
+ 
+-static const struct regmap_config rsmu_sl_regmap_config = {
++static const struct regmap_config rsmu_fc3_regmap_config = {
+ 	.reg_bits = 16,
+ 	.val_bits = 8,
+ 	.reg_format_endian = REGMAP_ENDIAN_BIG,
+-	.max_register = 0x339,
++	.max_register = 0xE88,
+ 	.cache_type = REGCACHE_NONE,
+ 	.can_multi_write = true,
+ };
+@@ -124,19 +289,32 @@ static int rsmu_i2c_probe(struct i2c_client *client,
+ 
+ 	switch (rsmu->type) {
+ 	case RSMU_CM:
+-		cfg = &rsmu_cm_regmap_config;
++		if (i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
++			cfg = &rsmu_i2c_cm_regmap_config;
++		} else if (i2c_check_functionality(client->adapter,
++						   I2C_FUNC_SMBUS_I2C_BLOCK)) {
++			cfg = &rsmu_smbus_i2c_cm_regmap_config;
++		} else {
++			dev_err(rsmu->dev, "Unsupported i2c adapter\n");
++			return -ENOTSUPP;
++		}
+ 		break;
+ 	case RSMU_SABRE:
+ 		cfg = &rsmu_sabre_regmap_config;
+ 		break;
+-	case RSMU_SL:
+-		cfg = &rsmu_sl_regmap_config;
++	case RSMU_FC3:
++		cfg = &rsmu_fc3_regmap_config;
+ 		break;
+ 	default:
+ 		dev_err(rsmu->dev, "Unsupported RSMU device type: %d\n", rsmu->type);
+ 		return -ENODEV;
+ 	}
+-	rsmu->regmap = devm_regmap_init_i2c(client, cfg);
++
++	if (rsmu->type == RSMU_CM)
++		rsmu->regmap = devm_regmap_init(&client->dev, NULL, client, cfg);
++	else
++		rsmu->regmap = devm_regmap_init_i2c(client, cfg);
++
+ 	if (IS_ERR(rsmu->regmap)) {
+ 		ret = PTR_ERR(rsmu->regmap);
+ 		dev_err(rsmu->dev, "Failed to allocate register map: %d\n", ret);
+@@ -158,8 +336,8 @@ static const struct i2c_device_id rsmu_i2c_id[] = {
+ 	{ "8a34001",  RSMU_CM },
+ 	{ "82p33810", RSMU_SABRE },
+ 	{ "82p33811", RSMU_SABRE },
+-	{ "8v19n850", RSMU_SL },
+-	{ "8v19n851", RSMU_SL },
++	{ "rc38xxx0", RSMU_FC3 },
++	{ "rc38xxx1", RSMU_FC3 },
+ 	{}
+ };
+ MODULE_DEVICE_TABLE(i2c, rsmu_i2c_id);
+@@ -169,8 +347,8 @@ static const struct of_device_id rsmu_i2c_of_match[] = {
+ 	{ .compatible = "idt,8a34001",  .data = (void *)RSMU_CM },
+ 	{ .compatible = "idt,82p33810", .data = (void *)RSMU_SABRE },
+ 	{ .compatible = "idt,82p33811", .data = (void *)RSMU_SABRE },
+-	{ .compatible = "idt,8v19n850", .data = (void *)RSMU_SL },
+-	{ .compatible = "idt,8v19n851", .data = (void *)RSMU_SL },
++	{ .compatible = "idt,rc38xxx0", .data = (void *)RSMU_FC3 },
++	{ .compatible = "idt,rc38xxx1", .data = (void *)RSMU_FC3 },
+ 	{}
+ };
+ MODULE_DEVICE_TABLE(of, rsmu_i2c_of_match);
+diff --git a/drivers/mfd/rsmu_spi.c b/drivers/mfd/rsmu_spi.c
+index d2f3d8f1e05a..efece6f764a9 100644
+--- a/drivers/mfd/rsmu_spi.c
++++ b/drivers/mfd/rsmu_spi.c
+@@ -19,19 +19,21 @@
+ 
+ #define	RSMU_CM_PAGE_ADDR		0x7C
+ #define	RSMU_SABRE_PAGE_ADDR		0x7F
+-#define	RSMU_HIGHER_ADDR_MASK		0xFF80
+-#define	RSMU_HIGHER_ADDR_SHIFT		7
+-#define	RSMU_LOWER_ADDR_MASK		0x7F
++#define	RSMU_PAGE_MASK			0xFFFFFF80
++#define	RSMU_ADDR_MASK			0x7F
+ 
+ static int rsmu_read_device(struct rsmu_ddata *rsmu, u8 reg, u8 *buf, u16 bytes)
+ {
+ 	struct spi_device *client = to_spi_device(rsmu->dev);
+ 	struct spi_transfer xfer = {0};
+ 	struct spi_message msg;
+-	u8 cmd[256] = {0};
+-	u8 rsp[256] = {0};
++	u8 cmd[RSMU_MAX_READ_COUNT + 1] = {0};
++	u8 rsp[RSMU_MAX_READ_COUNT + 1] = {0};
+ 	int ret;
+ 
++	if (bytes > RSMU_MAX_READ_COUNT)
++		return -EINVAL;
++
+ 	cmd[0] = reg | 0x80;
+ 	xfer.rx_buf = rsp;
+ 	xfer.len = bytes + 1;
+@@ -66,7 +68,10 @@ static int rsmu_write_device(struct rsmu_ddata *rsmu, u8 reg, u8 *buf, u16 bytes
+ 	struct spi_device *client = to_spi_device(rsmu->dev);
+ 	struct spi_transfer xfer = {0};
+ 	struct spi_message msg;
+-	u8 cmd[256] = {0};
++	u8 cmd[RSMU_MAX_WRITE_COUNT + 1] = {0};
++
++	if (bytes > RSMU_MAX_WRITE_COUNT)
++		return -EINVAL;
+ 
+ 	cmd[0] = reg;
+ 	memcpy(&cmd[1], buf, bytes);
+@@ -86,26 +91,35 @@ static int rsmu_write_device(struct rsmu_ddata *rsmu, u8 reg, u8 *buf, u16 bytes
+  * 16-bit register address: the lower 7 bits of the register address come
+  * from the offset addr byte and the upper 9 bits come from the page register.
+  */
+-static int rsmu_write_page_register(struct rsmu_ddata *rsmu, u16 reg)
++static int rsmu_write_page_register(struct rsmu_ddata *rsmu, u32 reg)
+ {
+ 	u8 page_reg;
+-	u8 buf[2];
++	u8 buf[4];
+ 	u16 bytes;
+-	u16 page;
++	u32 page;
+ 	int err;
+ 
+ 	switch (rsmu->type) {
+ 	case RSMU_CM:
++		/* Do not modify page register for none-scsr registers */
++		if (reg < RSMU_CM_SCSR_BASE)
++			return 0;
+ 		page_reg = RSMU_CM_PAGE_ADDR;
+-		page = reg & RSMU_HIGHER_ADDR_MASK;
+-		buf[0] = (u8)(page & 0xff);
+-		buf[1] = (u8)((page >> 8) & 0xff);
+-		bytes = 2;
++		page = reg & RSMU_PAGE_MASK;
++		buf[0] = (u8)(page & 0xFF);
++		buf[1] = (u8)((page >> 8) & 0xFF);
++		buf[2] = (u8)((page >> 16) & 0xFF);
++		buf[3] = (u8)((page >> 24) & 0xFF);
++		bytes = 4;
+ 		break;
+ 	case RSMU_SABRE:
++		/* Do not modify page register if reg is page register itself */
++		if ((reg & RSMU_ADDR_MASK) == RSMU_ADDR_MASK)
++			return 0;
+ 		page_reg = RSMU_SABRE_PAGE_ADDR;
+-		page = reg >> RSMU_HIGHER_ADDR_SHIFT;
+-		buf[0] = (u8)(page & 0xff);
++		page = reg & RSMU_PAGE_MASK;
++		/* The three page bits are located in the single Page Register */
++		buf[0] = (u8)((page >> 7) & 0x7);
+ 		bytes = 1;
+ 		break;
+ 	default:
+@@ -130,7 +144,7 @@ static int rsmu_write_page_register(struct rsmu_ddata *rsmu, u16 reg)
+ static int rsmu_reg_read(void *context, unsigned int reg, unsigned int *val)
+ {
+ 	struct rsmu_ddata *rsmu = spi_get_drvdata((struct spi_device *)context);
+-	u8 addr = (u8)(reg & RSMU_LOWER_ADDR_MASK);
++	u8 addr = (u8)(reg & RSMU_ADDR_MASK);
+ 	int err;
+ 
+ 	err = rsmu_write_page_register(rsmu, reg);
+@@ -147,7 +161,7 @@ static int rsmu_reg_read(void *context, unsigned int reg, unsigned int *val)
+ static int rsmu_reg_write(void *context, unsigned int reg, unsigned int val)
+ {
+ 	struct rsmu_ddata *rsmu = spi_get_drvdata((struct spi_device *)context);
+-	u8 addr = (u8)(reg & RSMU_LOWER_ADDR_MASK);
++	u8 addr = (u8)(reg & RSMU_ADDR_MASK);
+ 	u8 data = (u8)val;
+ 	int err;
+ 
+@@ -164,9 +178,9 @@ static int rsmu_reg_write(void *context, unsigned int reg, unsigned int val)
+ }
+ 
+ static const struct regmap_config rsmu_cm_regmap_config = {
+-	.reg_bits = 16,
++	.reg_bits = 32,
+ 	.val_bits = 8,
+-	.max_register = 0xD000,
++	.max_register = 0x20120000,
+ 	.reg_read = rsmu_reg_read,
+ 	.reg_write = rsmu_reg_write,
+ 	.cache_type = REGCACHE_NONE,
+diff --git a/drivers/misc/Kconfig b/drivers/misc/Kconfig
+index b717258aa021..7143aa07d0dc 100644
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -538,6 +538,17 @@ config RMDOM
+           to create other drivers using persistent ram with dt. The main goal
+           is to be able to divide parts of SRAM of the layout as its reserved regions.
+ 
++config RSMU
++	tristate "Renesas Synchronization Management Unit (SMU)"
++	depends on MFD_RSMU_I2C || MFD_RSMU_SPI
++	help
++	  This option enables support for Renesas SMUs, such as the Clockmatrix and
++	  82P33XXX families. It is used by the Renesas PTP Clock Manager for Linux (pcm4l)
++	  software to provide support to GNSS assisted partial timing support (APTS)
++	  and other networking timing functions. It is used by the synced software to
++	  manage the Synchronous Ethernet (SyncE) device.
++
++
+ source "drivers/misc/c2port/Kconfig"
+ source "drivers/misc/eeprom/Kconfig"
+ source "drivers/misc/cb710/Kconfig"
+diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
+index 02cb34e7fca7..0bbc2b56a743 100644
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -65,3 +65,5 @@ obj-$(CONFIG_TMR_MANAGER)	+= xilinx_tmr_manager.o
+ obj-$(CONFIG_TMR_INJECT)	+= xilinx_tmr_inject.o
+ obj-$(CONFIG_XILINX_PUF)        += xilinx_puf.o
+ obj-$(CONFIG_RMDOM)             += rmdom.o
++rsmu-objs			:= rsmu_cdev.o rsmu_cm.o rsmu_sabre.o rsmu_fc3.o
++obj-$(CONFIG_RSMU)		+= rsmu.o
+diff --git a/drivers/misc/rsmu_cdev.c b/drivers/misc/rsmu_cdev.c
+new file mode 100755
+index 000000000000..f7694ae4f0ac
+--- /dev/null
++++ b/drivers/misc/rsmu_cdev.c
+@@ -0,0 +1,449 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * This driver is developed for the IDT ClockMatrix(TM) and 82P33xxx families
++ * of timing and synchronization devices. It will be used by Renesas PTP Clock
++ * Manager for Linux (pcm4l) software to provide support to GNSS assisted
++ * partial timing support (APTS) and other networking timing functions.
++ *
++ * Please note it must work with Renesas MFD driver to access device through
++ * I2C/SPI.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++
++#include <linux/cdev.h>
++#include <linux/device.h>
++#include <linux/fs.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <linux/mfd/rsmu.h>
++#include "rsmu_cdev.h"
++
++static DEFINE_IDA(rsmu_cdev_map);
++
++/*
++ * The name of the firmware file to be loaded
++ * over-rides any automatic selection
++ */
++static char *firmware;
++module_param(firmware, charp, 0);
++
++static struct rsmu_ops *ops_array[] = {
++	[0] = &cm_ops,
++	[1] = &sabre_ops,
++	[2] = &fc3_ops,
++};
++
++static int
++rsmu_set_combomode(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_combomode mode;
++	int err;
++
++	if (copy_from_user(&mode, arg, sizeof(mode)))
++		return -EFAULT;
++
++	if (ops->set_combomode == NULL)
++		return -EOPNOTSUPP;
++
++	mutex_lock(rsmu->lock);
++	err = ops->set_combomode(rsmu, mode.dpll, mode.mode);
++	mutex_unlock(rsmu->lock);
++
++	return err;
++}
++
++static int
++rsmu_get_dpll_state(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_get_state state_request;
++	u8 state;
++	int err;
++
++	if (copy_from_user(&state_request, arg, sizeof(state_request)))
++		return -EFAULT;
++
++	if (ops->get_dpll_state == NULL)
++		return -EOPNOTSUPP;
++
++	mutex_lock(rsmu->lock);
++	err = ops->get_dpll_state(rsmu, state_request.dpll, &state);
++	mutex_unlock(rsmu->lock);
++
++	state_request.state = state;
++	if (copy_to_user(arg, &state_request, sizeof(state_request)))
++		return -EFAULT;
++
++	return err;
++}
++
++static int
++rsmu_get_dpll_ffo(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_get_ffo ffo_request;
++	int err;
++
++	if (copy_from_user(&ffo_request, arg, sizeof(ffo_request)))
++		return -EFAULT;
++
++	if (ops->get_dpll_ffo == NULL)
++		return -EOPNOTSUPP;
++
++	mutex_lock(rsmu->lock);
++	err = ops->get_dpll_ffo(rsmu, ffo_request.dpll, &ffo_request);
++	mutex_unlock(rsmu->lock);
++
++	if (copy_to_user(arg, &ffo_request, sizeof(ffo_request)))
++		return -EFAULT;
++
++	return err;
++}
++
++static int
++rsmu_set_holdover_mode(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_holdover_mode request;
++	int err;
++
++	if (copy_from_user(&request, arg, sizeof(request)))
++		return -EFAULT;
++
++	if (ops->set_holdover_mode == NULL)
++		return -EOPNOTSUPP;
++
++	mutex_lock(rsmu->lock);
++	err = ops->set_holdover_mode(rsmu, request.dpll, request.enable, request.mode);
++	mutex_unlock(rsmu->lock);
++
++	return err;
++}
++
++static int
++rsmu_set_output_tdc_go(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_set_output_tdc_go request;
++	int err;
++
++	if (copy_from_user(&request, arg, sizeof(request)))
++		return -EFAULT;
++
++	if (ops->set_output_tdc_go == NULL)
++		return -EOPNOTSUPP;
++
++	mutex_lock(rsmu->lock);
++	err = ops->set_output_tdc_go(rsmu, request.tdc, request.enable);
++	mutex_unlock(rsmu->lock);
++
++	return err;
++}
++
++static int
++rsmu_reg_read(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_reg_rw data;
++	int err;
++
++	if (copy_from_user(&data, arg, sizeof(data)))
++		return -EFAULT;
++
++	mutex_lock(rsmu->lock);
++	err = regmap_bulk_read(rsmu->regmap, data.offset, &data.bytes[0], data.byte_count);
++	mutex_unlock(rsmu->lock);
++
++	if (copy_to_user(arg, &data, sizeof(data)))
++		return -EFAULT;
++
++	return err;
++}
++
++static int
++rsmu_reg_write(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_reg_rw data;
++	int err;
++
++	if (copy_from_user(&data, arg, sizeof(data)))
++		return -EFAULT;
++
++	mutex_lock(rsmu->lock);
++	err = regmap_bulk_write(rsmu->regmap, data.offset, &data.bytes[0], data.byte_count);
++	mutex_unlock(rsmu->lock);
++
++	return err;
++}
++
++static int
++rsmu_get_clock_index(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_current_clock_index request;
++	s8 clock_index;
++	int err;
++
++	if (copy_from_user(&request, arg, sizeof(request)))
++		return -EFAULT;
++
++	if (ops->get_clock_index == NULL)
++		return -EOPNOTSUPP;
++
++	mutex_lock(rsmu->lock);
++	err = ops->get_clock_index(rsmu, request.dpll, &clock_index);
++	mutex_unlock(rsmu->lock);
++
++	request.clock_index = clock_index;
++	if (copy_to_user(arg, &request, sizeof(request)))
++		return -EFAULT;
++
++	return err;
++}
++
++static int
++rsmu_set_clock_priorities(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_clock_priorities request;
++	int err;
++
++	if (copy_from_user(&request, arg, sizeof(request)))
++		return -EFAULT;
++
++	if (ops->set_clock_priorities == NULL)
++		return -EOPNOTSUPP;
++
++	mutex_lock(rsmu->lock);
++	err = ops->set_clock_priorities(rsmu, request.dpll, request.num_entries,
++					request.priority_entry);
++	mutex_unlock(rsmu->lock);
++
++	return err;
++}
++
++static int
++rsmu_get_reference_monitor_status(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_reference_monitor_status request;
++	struct rsmu_reference_monitor_status_alarms alarms;
++	int err;
++
++	if (copy_from_user(&request, arg, sizeof(request)))
++		return -EFAULT;
++
++	if (ops->get_reference_monitor_status == NULL)
++		return -EOPNOTSUPP;
++
++	mutex_lock(rsmu->lock);
++	err = ops->get_reference_monitor_status(rsmu, request.clock_index, &alarms);
++	mutex_unlock(rsmu->lock);
++
++	memcpy(&request.alarms, &alarms, sizeof(alarms));
++	if (copy_to_user(arg, &request, sizeof(request)))
++		return -EFAULT;
++
++	return err;
++}
++
++static int
++rsmu_get_tdc_meas(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_get_tdc_meas meas;
++	int err;
++
++	if (ops->get_tdc_meas == NULL)
++		return -EOPNOTSUPP;
++
++	if (copy_from_user(&meas, arg, sizeof(meas)))
++		return -EFAULT;
++
++	mutex_lock(rsmu->lock);
++	err = ops->get_tdc_meas(rsmu, meas.continuous, &meas.offset);
++	mutex_unlock(rsmu->lock);
++
++	if (copy_to_user(arg, &meas, sizeof(meas)))
++		return -EFAULT;
++
++	return err;
++}
++
++static struct rsmu_cdev *file2rsmu(struct file *file)
++{
++	return container_of(file->private_data, struct rsmu_cdev, miscdev);
++}
++
++static long
++rsmu_ioctl(struct file *fptr, unsigned int cmd, unsigned long data)
++{
++	struct rsmu_cdev *rsmu = file2rsmu(fptr);
++	void __user *arg = (void __user *)data;
++	int err = 0;
++
++	switch (cmd) {
++	case RSMU_SET_COMBOMODE:
++		err = rsmu_set_combomode(rsmu, arg);
++		break;
++	case RSMU_GET_STATE:
++		err = rsmu_get_dpll_state(rsmu, arg);
++		break;
++	case RSMU_GET_FFO:
++		err = rsmu_get_dpll_ffo(rsmu, arg);
++		break;
++	case RSMU_SET_HOLDOVER_MODE:
++		err = rsmu_set_holdover_mode(rsmu, arg);
++		break;
++	case RSMU_SET_OUTPUT_TDC_GO:
++		err = rsmu_set_output_tdc_go(rsmu, arg);
++		break;
++	case RSMU_GET_CURRENT_CLOCK_INDEX:
++		err = rsmu_get_clock_index(rsmu, arg);
++		break;
++	case RSMU_SET_CLOCK_PRIORITIES:
++		err = rsmu_set_clock_priorities(rsmu, arg);
++		break;
++	case RSMU_GET_REFERENCE_MONITOR_STATUS:
++		err = rsmu_get_reference_monitor_status(rsmu, arg);
++		break;
++	case RSMU_GET_TDC_MEAS:
++		err = rsmu_get_tdc_meas(rsmu, arg);
++		break;
++	case RSMU_REG_READ:
++		err = rsmu_reg_read(rsmu, arg);
++		break;
++	case RSMU_REG_WRITE:
++		err = rsmu_reg_write(rsmu, arg);
++		break;
++	default:
++		/* Should not get here */
++		dev_err(rsmu->dev, "Undefined RSMU IOCTL");
++		err = -EINVAL;
++		break;
++	}
++
++	return err;
++}
++
++static long rsmu_compat_ioctl(struct file *fptr, unsigned int cmd,
++			      unsigned long data)
++{
++	return rsmu_ioctl(fptr, cmd, data);
++}
++
++static const struct file_operations rsmu_fops = {
++	.owner = THIS_MODULE,
++	.unlocked_ioctl = rsmu_ioctl,
++	.compat_ioctl =	rsmu_compat_ioctl,
++};
++
++static int rsmu_init_ops(struct rsmu_cdev *rsmu)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(ops_array); i++)
++		if (ops_array[i]->type == rsmu->type)
++			break;
++
++	if (i == ARRAY_SIZE(ops_array))
++		return -EINVAL;
++
++	rsmu->ops = ops_array[i];
++	return 0;
++}
++
++static int
++rsmu_probe(struct platform_device *pdev)
++{
++	struct rsmu_ddata *ddata = dev_get_drvdata(pdev->dev.parent);
++	struct rsmu_cdev *rsmu;
++	int err;
++
++	rsmu = devm_kzalloc(&pdev->dev, sizeof(*rsmu), GFP_KERNEL);
++	if (!rsmu)
++		return -ENOMEM;
++
++	/* Save driver private data */
++	platform_set_drvdata(pdev, rsmu);
++
++	rsmu->dev = &pdev->dev;
++	rsmu->mfd = pdev->dev.parent;
++	rsmu->type = ddata->type;
++	rsmu->lock = &ddata->lock;
++	rsmu->regmap = ddata->regmap;
++	rsmu->index = ida_simple_get(&rsmu_cdev_map, 0, MINORMASK + 1, GFP_KERNEL);
++	if (rsmu->index < 0) {
++		dev_err(rsmu->dev, "Unable to get index %d\n", rsmu->index);
++		return rsmu->index;
++	}
++	snprintf(rsmu->name, sizeof(rsmu->name), "rsmu%d", rsmu->index);
++
++	err = rsmu_init_ops(rsmu);
++	if (err) {
++		dev_err(rsmu->dev, "Unknown SMU type %d", rsmu->type);
++		ida_simple_remove(&rsmu_cdev_map, rsmu->index);
++		return err;
++	}
++
++	if (rsmu->ops->device_init) {
++		err = rsmu->ops->device_init(rsmu, firmware);
++		if (err) {
++			dev_err(rsmu->dev, "Device initialization failed\n");
++			ida_simple_remove(&rsmu_cdev_map, rsmu->index);
++			return err;
++		}
++	}
++
++	/* Initialize and register the miscdev */
++	rsmu->miscdev.minor = MISC_DYNAMIC_MINOR;
++	rsmu->miscdev.fops = &rsmu_fops;
++	rsmu->miscdev.name = rsmu->name;
++	err = misc_register(&rsmu->miscdev);
++	if (err) {
++		dev_err(rsmu->dev, "Unable to register device\n");
++		ida_simple_remove(&rsmu_cdev_map, rsmu->index);
++		return -ENODEV;
++	}
++
++	dev_info(rsmu->dev, "Probe %s successful\n", rsmu->name);
++	return 0;
++}
++
++static int
++rsmu_remove(struct platform_device *pdev)
++{
++	struct rsmu_cdev *rsmu = platform_get_drvdata(pdev);
++
++	misc_deregister(&rsmu->miscdev);
++	ida_simple_remove(&rsmu_cdev_map, rsmu->index);
++
++	return 0;
++}
++
++static const struct platform_device_id rsmu_id_table[] = {
++	{ "8a3400x-cdev", RSMU_CM},
++	{ "82p33x1x-cdev", RSMU_SABRE},
++	{ "rc38xxx-cdev", RSMU_FC3},
++	{}
++};
++MODULE_DEVICE_TABLE(platform, rsmu_id_table);
++
++static struct platform_driver rsmu_driver = {
++	.driver = {
++		.name = "rsmu-cdev",
++	},
++	.probe = rsmu_probe,
++	.remove =  rsmu_remove,
++	.id_table = rsmu_id_table,
++};
++
++module_platform_driver(rsmu_driver);
++
++MODULE_DESCRIPTION("Renesas SMU character device driver");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/misc/rsmu_cdev.h b/drivers/misc/rsmu_cdev.h
+new file mode 100755
+index 000000000000..a41b42fda724
+--- /dev/null
++++ b/drivers/misc/rsmu_cdev.h
+@@ -0,0 +1,134 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * This driver is developed for the IDT ClockMatrix(TM) of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++#ifndef __LINUX_RSMU_CDEV_H
++#define __LINUX_RSMU_CDEV_H
++
++#include <linux/firmware.h>
++#include <linux/miscdevice.h>
++#include <linux/regmap.h>
++#include <uapi/linux/rsmu.h>
++#include <linux/bitfield.h>
++
++struct rsmu_ops;
++
++#define FW_NAME_LEN_MAX	256
++
++/**
++ * Define function to set bitfield value of read data from device
++ *
++ * This macro function can be used after a register is read from a
++ * device.  This macro <b>doesn't</b> access the device.
++ *
++ * regVal  register data value.
++ * mask    bitfield mask
++ * lsb     least significant bit
++ * data    bitfield data to set
++ */
++#define rsmu_set_bitfield(regVal, mask, lsb, data) \
++({						   \
++	regVal = ((regVal & ~(mask)) |             \
++		  ((data << lsb) & (mask))         \
++		 );				   \
++})
++
++/**
++ * Define function to get bitfield value of read data from device
++ *
++ * This macro function can be used after a register is read from a
++ * device.  This macro <b>doesn't</b> access the device.
++ *
++ * regVal  register data value.
++ * mask    bitfield mask
++ * lsb     least significant bit
++ */
++#define rsmu_get_bitfield(regVal, mask, lsb) \
++	((regVal & mask) >> lsb)
++
++
++enum holdover_mode {
++	HOLDOVER_MODE_AUTOMATIC = 0,
++	HOLDOVER_MODE_MANUAL = 1,
++	HOLDOVER_MODE_MAX = HOLDOVER_MODE_MANUAL,
++};
++
++/**
++ * struct rsmu_cdev - Driver data for RSMU character device
++ * @name: rsmu device name as rsmu[index]
++ * @dev: pointer to device
++ * @mfd: pointer to MFD device
++ * @miscdev: character device handle
++ * @regmap: I2C/SPI regmap handle
++ * @lock: mutex to protect operations from being interrupted
++ * @type: rsmu device type, passed through platform data
++ * @ops: rsmu device methods
++ * @ddata: device specific data
++ * @index: rsmu device index
++ */
++struct rsmu_cdev {
++	char name[16];
++	struct device *dev;
++	struct device *mfd;
++	struct miscdevice miscdev;
++	struct regmap *regmap;
++	struct mutex *lock;
++	enum rsmu_type type;
++	struct rsmu_ops *ops;
++	void *ddata;
++	int index;
++};
++
++extern struct rsmu_ops cm_ops;
++extern struct rsmu_ops sabre_ops;
++extern struct rsmu_ops fc3_ops;
++
++struct rsmu_ops {
++	enum rsmu_type type;
++	int (*device_init)(struct rsmu_cdev *rsmu, char fwname[FW_NAME_LEN_MAX]);
++	int (*set_combomode)(struct rsmu_cdev *rsmu, u8 dpll, u8 mode);
++	int (*get_dpll_state)(struct rsmu_cdev *rsmu, u8 dpll, u8 *state);
++	int (*get_dpll_ffo)(struct rsmu_cdev *rsmu, u8 dpll,
++			    struct rsmu_get_ffo *ffo);
++	int (*set_holdover_mode)(struct rsmu_cdev *rsmu, u8 dpll,
++				 u8 enable, u8 mode);
++	int (*set_output_tdc_go)(struct rsmu_cdev *rsmu, u8 tdc,
++				 u8 enable);
++	int (*get_clock_index)(struct rsmu_cdev *rsmu, u8 dpll, s8 *clock_index);
++	int (*set_clock_priorities)(struct rsmu_cdev *rsmu, u8 dpll, u8 number_entries,
++				    struct rsmu_priority_entry *priority_entry);
++	int (*get_reference_monitor_status)(struct rsmu_cdev *rsmu, u8 clock_index,
++					    struct rsmu_reference_monitor_status_alarms *alarms);
++	int (*get_tdc_meas)(struct rsmu_cdev *rsmu, bool continuous, s64 *offset_ns);
++};
++
++/**
++ * Enumerated type listing DPLL combination modes
++ */
++enum rsmu_dpll_combomode {
++	E_COMBOMODE_CURRENT = 0,
++	E_COMBOMODE_FASTAVG,
++	E_COMBOMODE_SLOWAVG,
++	E_COMBOMODE_HOLDOVER,
++	E_COMBOMODE_MAX
++};
++
++/**
++ * An id used to identify the respective child class states.
++ */
++enum rsmu_class_state {
++	E_SRVLOINITIALSTATE = 0,
++	E_SRVLOUNQUALIFIEDSTATE = 1,
++	E_SRVLOLOCKACQSTATE = 2,
++	E_SRVLOFREQUENCYLOCKEDSTATE = 3,
++	E_SRVLOTIMELOCKEDSTATE = 4,
++	E_SRVLOHOLDOVERINSPECSTATE = 5,
++	E_SRVLOHOLDOVEROUTOFSPECSTATE = 6,
++	E_SRVLOFREERUNSTATE = 7,
++	E_SRVNUMBERLOSTATES = 8,
++	E_SRVLOSTATEINVALID = 9,
++};
++#endif
+diff --git a/drivers/misc/rsmu_cm.c b/drivers/misc/rsmu_cm.c
+new file mode 100755
+index 000000000000..eb0cea02cd0b
+--- /dev/null
++++ b/drivers/misc/rsmu_cm.c
+@@ -0,0 +1,561 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * This driver is developed for the IDT ClockMatrix(TM) of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/device.h>
++#include <linux/mfd/idt8a340_reg.h>
++#include <linux/mfd/rsmu.h>
++#include <asm/unaligned.h>
++
++#include "rsmu_cdev.h"
++
++#define FW_FILENAME	"rsmu8A34xxx.bin"
++#define FW_VERSION(rsmu)	(((struct rsmucm *)rsmu->ddata)->fw_version)
++
++struct rsmucm {
++	u8 fw_version;
++};
++
++static int check_and_set_masks(struct rsmu_cdev *rsmu,
++			       u16 regaddr,
++			       u8 val)
++{
++	int err = 0;
++
++	return err;
++}
++
++static int get_dpll_reg_offset(u8 fw_version, u8 dpll, u32 *dpll_reg_offset)
++{
++	switch (dpll) {
++	case 0:
++		*dpll_reg_offset = DPLL_0;
++		break;
++	case 1:
++		*dpll_reg_offset = DPLL_1;
++		break;
++	case 2:
++		*dpll_reg_offset = IDTCM_FW_REG(fw_version, V520, DPLL_2);
++		break;
++	case 3:
++		*dpll_reg_offset = DPLL_3;
++		break;
++	case 4:
++		*dpll_reg_offset = IDTCM_FW_REG(fw_version, V520, DPLL_4);
++		break;
++	case 5:
++		*dpll_reg_offset = DPLL_5;
++		break;
++	case 6:
++		*dpll_reg_offset = IDTCM_FW_REG(fw_version, V520, DPLL_6);
++		break;
++	case 7:
++		*dpll_reg_offset = DPLL_7;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int get_dpll_ctrl_reg_offset(u8 dpll, u32 *dpll_ctrl_reg_offset)
++{
++	switch (dpll) {
++	case 0:
++		*dpll_ctrl_reg_offset = DPLL_CTRL_0;
++		break;
++	case 1:
++		*dpll_ctrl_reg_offset = DPLL_CTRL_1;
++		break;
++	case 2:
++		*dpll_ctrl_reg_offset = DPLL_CTRL_2;
++		break;
++	case 3:
++		*dpll_ctrl_reg_offset = DPLL_CTRL_3;
++		break;
++	case 4:
++		*dpll_ctrl_reg_offset = DPLL_CTRL_4;
++		break;
++	case 5:
++		*dpll_ctrl_reg_offset = DPLL_CTRL_5;
++		break;
++	case 6:
++		*dpll_ctrl_reg_offset = DPLL_CTRL_6;
++		break;
++	case 7:
++		*dpll_ctrl_reg_offset = DPLL_CTRL_7;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int get_fw_version(struct rsmu_cdev *rsmu)
++{
++	int err;
++	u8 major;
++	u8 minor;
++	u8 hotfix;
++
++	err = regmap_bulk_read(rsmu->regmap, GENERAL_STATUS + MAJ_REL,
++			       &major, sizeof(major));
++	if (err)
++		return err;
++	major >>= 1;
++
++	err = regmap_bulk_read(rsmu->regmap, GENERAL_STATUS + MIN_REL,
++			       &minor, sizeof(minor));
++	if (err)
++		return err;
++
++	err = regmap_bulk_read(rsmu->regmap, GENERAL_STATUS + HOTFIX_REL,
++			       &hotfix, sizeof(hotfix));
++	if (err)
++		return err;
++
++	if (major >= 5 && minor >= 2) {
++		FW_VERSION(rsmu) = V520;
++		return 0;
++	}
++
++	if (major == 4 && minor >= 8) {
++		FW_VERSION(rsmu) = V487;
++		return 0;
++	}
++
++	FW_VERSION(rsmu) = V_DEFAULT;
++	return 0;
++}
++
++static int rsmu_cm_set_combomode(struct rsmu_cdev *rsmu, u8 dpll, u8 mode)
++{
++	u32 dpll_ctrl_reg_addr;
++	u8 reg;
++	int err;
++
++	err = get_dpll_ctrl_reg_offset(dpll, &dpll_ctrl_reg_addr);
++	if (err)
++		return err;
++
++	if (mode >= E_COMBOMODE_MAX)
++		return -EINVAL;
++
++	err = regmap_bulk_read(rsmu->regmap, dpll_ctrl_reg_addr + DPLL_CTRL_COMBO_MASTER_CFG,
++						&reg, sizeof(reg));
++	if (err)
++		return err;
++
++	/* Only need to enable/disable COMBO_MODE_HOLD. */
++	if (mode)
++		reg |= COMBO_MASTER_HOLD;
++	else
++		reg &= ~COMBO_MASTER_HOLD;
++
++	return regmap_bulk_write(rsmu->regmap, dpll_ctrl_reg_addr + DPLL_CTRL_COMBO_MASTER_CFG,
++						&reg, sizeof(reg));
++}
++
++static int rsmu_cm_set_holdover_mode(struct rsmu_cdev *rsmu, u8 dpll, u8 enable, u8 mode)
++{
++	/* This function enables or disables holdover. The mode is ignored. */
++	u32 dpll_reg_addr;
++	u8 dpll_mode_reg_off;
++	u8 state_mode;
++	u8 reg;
++	int err;
++
++	(void)mode;
++
++	err = get_dpll_reg_offset(FW_VERSION(rsmu), dpll, &dpll_reg_addr);
++	if (err)
++		return err;
++
++	dpll_mode_reg_off = IDTCM_FW_REG(FW_VERSION(rsmu), V520, DPLL_MODE);
++
++	err = regmap_bulk_read(rsmu->regmap, dpll_reg_addr + dpll_mode_reg_off, &reg, sizeof(reg));
++	if (err)
++		return err;
++
++	/*
++	 * To enable holdover, set state_mode (bits [0, 2]) to force_holdover (3).
++	 * To disable holdover, set state_mode (bits [0, 2]) to automatic (0).
++	 */
++	state_mode = reg & 0x7;
++	if (enable) {
++		if (state_mode == 3)
++			return 0;
++	} else {
++		if (state_mode == 0)
++			return 0;
++	}
++
++	/* Set state_mode to 0 */
++	reg &= 0xF8;
++	if (enable)
++		reg |= 3;
++
++	return regmap_bulk_write(rsmu->regmap, dpll_reg_addr + dpll_mode_reg_off,
++				 &reg, sizeof(reg));
++}
++
++static int rsmu_cm_set_output_tdc_go(struct rsmu_cdev *rsmu, u8 tdc, u8 enable)
++{
++	/* This function enables or disables output tdc alignment. */
++	u8 tdc_ctrl4_offset;
++	u32 tdc_n;
++	u8 reg;
++	int err;
++
++	tdc_ctrl4_offset = IDTCM_FW_REG(FW_VERSION(rsmu), V520, OUTPUT_TDC_CTRL_4);
++
++	switch (tdc) {
++	case 0:
++		tdc_n = OUTPUT_TDC_0;
++		break;
++	case 1:
++		tdc_n = OUTPUT_TDC_1;
++		break;
++	case 2:
++		tdc_n = OUTPUT_TDC_2;
++		break;
++	case 3:
++		tdc_n = OUTPUT_TDC_3;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	err = regmap_bulk_read(rsmu->regmap, tdc_n + tdc_ctrl4_offset,
++			       &reg, sizeof(reg));
++
++	if (enable)
++		reg |= 0x01;
++	else
++		reg &= ~0x01;
++
++	return regmap_bulk_write(rsmu->regmap, tdc_n + tdc_ctrl4_offset,
++				 &reg, sizeof(reg));
++}
++
++static int rsmu_cm_get_dpll_state(struct rsmu_cdev *rsmu, u8 dpll, u8 *state)
++{
++	u8 reg;
++	int err;
++
++	/* 8 is sys dpll */
++	if (dpll > 8)
++		return -EINVAL;
++
++	err = regmap_bulk_read(rsmu->regmap, STATUS + DPLL0_STATUS + dpll, &reg, sizeof(reg));
++	if (err)
++		return err;
++
++	switch (reg & DPLL_STATE_MASK) {
++	case DPLL_STATE_FREERUN:
++		*state = E_SRVLOUNQUALIFIEDSTATE;
++		break;
++	case DPLL_STATE_LOCKACQ:
++	case DPLL_STATE_LOCKREC:
++		*state = E_SRVLOLOCKACQSTATE;
++		break;
++	case DPLL_STATE_LOCKED:
++		*state = E_SRVLOTIMELOCKEDSTATE;
++		break;
++	case DPLL_STATE_HOLDOVER:
++		*state = E_SRVLOHOLDOVERINSPECSTATE;
++		break;
++	default:
++		*state = E_SRVLOSTATEINVALID;
++		break;
++	}
++
++	return 0;
++}
++
++static int rsmu_cm_get_dpll_ffo(struct rsmu_cdev *rsmu, u8 dpll,
++				struct rsmu_get_ffo *ffo)
++{
++	u8 buf[8] = {0};
++	s64 fcw = 0;
++	u16 dpll_filter_status;
++	int err;
++
++	switch (dpll) {
++	case 0:
++		dpll_filter_status = DPLL0_FILTER_STATUS;
++		break;
++	case 1:
++		dpll_filter_status = DPLL1_FILTER_STATUS;
++		break;
++	case 2:
++		dpll_filter_status = DPLL2_FILTER_STATUS;
++		break;
++	case 3:
++		dpll_filter_status = DPLL3_FILTER_STATUS;
++		break;
++	case 4:
++		dpll_filter_status = DPLL4_FILTER_STATUS;
++		break;
++	case 5:
++		dpll_filter_status = DPLL5_FILTER_STATUS;
++		break;
++	case 6:
++		dpll_filter_status = DPLL6_FILTER_STATUS;
++		break;
++	case 7:
++		dpll_filter_status = DPLL7_FILTER_STATUS;
++		break;
++	case 8:
++		dpll_filter_status = DPLLSYS_FILTER_STATUS;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	err = regmap_bulk_read(rsmu->regmap, STATUS + dpll_filter_status, buf, 6);
++	if (err)
++		return err;
++
++	/* Convert to frequency control word (FCW) */
++	fcw = sign_extend64(get_unaligned_le64(buf), 47);
++
++	/* FCW unit is 2 ^ -53 = 1.1102230246251565404236316680908e-16 */
++	ffo->ffo = fcw * 111;
++
++	return 0;
++}
++
++static int load_firmware(struct rsmu_cdev *rsmu, char fwname[FW_NAME_LEN_MAX])
++{
++	u16 scratch = IDTCM_FW_REG(FW_VERSION(rsmu), V520, SCRATCH);
++	char fname[FW_NAME_LEN_MAX] = FW_FILENAME;
++	const struct firmware *fw;
++	struct idtcm_fwrc *rec;
++	u32 regaddr;
++	int err;
++	s32 len;
++	u8 val;
++	u8 loaddr;
++
++	if (fwname) /* Module parameter */
++		snprintf(fname, sizeof(fname), "%s", fwname);
++
++	dev_info(rsmu->dev, "requesting firmware '%s'", fname);
++
++	err = request_firmware(&fw, fname, rsmu->dev);
++	if (err) {
++		dev_err(rsmu->dev, "Loading firmware %s failed !!!", fname);
++		return err;
++	}
++
++	dev_dbg(rsmu->dev, "firmware size %zu bytes", fw->size);
++
++	rec = (struct idtcm_fwrc *) fw->data;
++
++	for (len = fw->size; len > 0; len -= sizeof(*rec)) {
++		if (rec->reserved) {
++			dev_err(rsmu->dev,
++				"bad firmware, reserved field non-zero");
++			err = -EINVAL;
++		} else {
++			regaddr = rec->hiaddr << 8;
++			regaddr |= rec->loaddr;
++
++			val = rec->value;
++			loaddr = rec->loaddr;
++
++			rec++;
++
++			err = check_and_set_masks(rsmu, regaddr, val);
++		}
++
++		if (err != -EINVAL) {
++			err = 0;
++
++			/* Top (status registers) and bottom are read-only */
++			if (regaddr < SCSR_ADDR(GPIO_USER_CONTROL) || regaddr >= scratch)
++				continue;
++
++			/* Page size 128, last 4 bytes of page skipped */
++			if ((loaddr > 0x7b && loaddr <= 0x7f) || loaddr > 0xfb)
++				continue;
++
++			err = regmap_bulk_write(rsmu->regmap, SCSR_BASE + regaddr,
++					       &val, sizeof(val));
++		}
++
++		if (err)
++			goto out;
++	}
++
++out:
++	release_firmware(fw);
++	return err;
++}
++
++static int rsmu_cm_get_clock_index(struct rsmu_cdev *rsmu,
++				u8 dpll,
++				s8 *clock_index)
++{
++	u8 reg;
++	int err;
++
++	/* 8 is sys dpll */
++	if (dpll > 8)
++		return -EINVAL;
++
++	err = regmap_bulk_read(rsmu->regmap, STATUS + DPLL0_REF_STATUS + dpll,
++						&reg, sizeof(reg));
++	if (err)
++		return err;
++
++	reg &= DPLL_REF_STATUS_MASK;
++
++	if (reg > (MAX_ELECTRICAL_REFERENCES - 1))
++		*clock_index = -1;
++	else
++		*clock_index = reg;
++
++	return err;
++}
++
++static int rsmu_cm_set_clock_priorities(struct rsmu_cdev *rsmu, u8 dpll, u8 number_entries,
++				struct rsmu_priority_entry *priority_entry)
++{
++	u32 dpll_reg_addr;
++	u8 dpll_mode_reg_off;
++	int priority_index;
++	int prev_priority_group = 0;
++	u8 current_priority_group;
++	int prev_priority = -1;
++	u8 reg;
++	int err;
++
++	err = get_dpll_reg_offset(FW_VERSION(rsmu), dpll, &dpll_reg_addr);
++	if (err)
++		return err;
++
++	/* MAX_REF_PRIORITIES is maximum number of priorities */
++	if (number_entries > MAX_REF_PRIORITIES)
++		return -EINVAL;
++
++	dpll_mode_reg_off = IDTCM_FW_REG(FW_VERSION(rsmu), V520, DPLL_MODE);
++
++	for (priority_index = 0; priority_index < number_entries; priority_index++) {
++		if ((priority_entry->clock_index >= MAX_ELECTRICAL_REFERENCES) ||
++		    (priority_entry->priority >= MAX_REF_PRIORITIES))
++			return -EINVAL;
++
++		if (priority_entry->priority == prev_priority) {
++			current_priority_group = prev_priority_group;
++		} else if ((priority_index < (number_entries - 1)) &&
++			  (priority_entry->priority == (priority_entry + 1)->priority)) {
++			if (prev_priority_group < MAX_PRIORITY_GROUP) {
++				prev_priority_group++;
++				current_priority_group = prev_priority_group;
++			} else {
++				current_priority_group = DEFAULT_PRIORITY_GROUP;
++			}
++		} else {
++			current_priority_group = DEFAULT_PRIORITY_GROUP;
++		}
++
++		prev_priority = priority_entry->priority;
++
++		reg = (1 << DPLL_REF_PRIORITY_ENABLE_SHIFT) |
++			(priority_entry->clock_index << DPLL_REF_PRIORITY_REF_SHIFT) |
++			(current_priority_group << DPLL_REF_PRIORITY_GROUP_NUMBER_SHIFT);
++
++		err = regmap_bulk_write(rsmu->regmap, dpll_reg_addr + DPLL_REF_PRIORITY_0 +
++					priority_index, &reg, sizeof(reg));
++		if (err)
++			return err;
++
++		priority_entry++;
++	}
++
++	for (; priority_index < MAX_REF_PRIORITIES; priority_index++) {
++		reg = (0 << DPLL_REF_PRIORITY_ENABLE_SHIFT) |
++			(0 << DPLL_REF_PRIORITY_REF_SHIFT) |
++			(DEFAULT_PRIORITY_GROUP << DPLL_REF_PRIORITY_GROUP_NUMBER_SHIFT);
++
++		err = regmap_bulk_write(rsmu->regmap, dpll_reg_addr + DPLL_REF_PRIORITY_0 +
++					priority_index, &reg, sizeof(reg));
++		if (err)
++			return err;
++	}
++
++	err = regmap_bulk_read(rsmu->regmap, dpll_reg_addr + dpll_mode_reg_off,
++			       &reg, sizeof(reg));
++	if (err)
++		return err;
++
++	return regmap_bulk_write(rsmu->regmap, dpll_reg_addr + dpll_mode_reg_off,
++				 &reg, sizeof(reg));
++}
++
++static int rsmu_cm_get_reference_monitor_status(struct rsmu_cdev *rsmu, u8 clock_index,
++				struct rsmu_reference_monitor_status_alarms *alarms)
++{
++	u8 reg;
++	int err;
++
++	/* MAX_ELECTRICAL_REFERENCES is maximum number of electrical references */
++	if (clock_index >= MAX_ELECTRICAL_REFERENCES)
++		return -EINVAL;
++
++	err = regmap_bulk_read(rsmu->regmap, STATUS + IN0_MON_STATUS + clock_index,
++						&reg, sizeof(reg));
++	if (err)
++		return err;
++
++	alarms->los = (reg >> IN_MON_STATUS_LOS_SHIFT) & 1;
++	alarms->no_activity = (reg >> IN_MON_STATUS_NO_ACT_SHIFT) & 1;
++	alarms->frequency_offset_limit = (reg >> IN_MON_STATUS_FFO_LIMIT_SHIFT) & 1;
++
++	return err;
++}
++
++static int rsmu_cm_init(struct rsmu_cdev *rsmu, char fwname[FW_NAME_LEN_MAX])
++{
++	struct rsmucm *ddata;
++	int err;
++
++	ddata = devm_kzalloc(rsmu->dev, sizeof(*ddata), GFP_KERNEL);
++	if (!ddata)
++		return -ENOMEM;
++	rsmu->ddata = ddata;
++
++	err = load_firmware(rsmu, fwname);
++	if (err)
++		dev_warn(rsmu->dev, "loading firmware failed with %d", err);
++
++	err = get_fw_version(rsmu);
++	if (err) {
++		dev_err(rsmu->dev, "getting firmware version failed with %d", err);
++		return err;
++	}
++
++	return 0;
++}
++
++struct rsmu_ops cm_ops = {
++	.type = RSMU_CM,
++	.device_init = rsmu_cm_init,
++	.set_combomode = rsmu_cm_set_combomode,
++	.get_dpll_state = rsmu_cm_get_dpll_state,
++	.get_dpll_ffo = rsmu_cm_get_dpll_ffo,
++	.set_holdover_mode = rsmu_cm_set_holdover_mode,
++	.set_output_tdc_go = rsmu_cm_set_output_tdc_go,
++	.get_clock_index = rsmu_cm_get_clock_index,
++	.set_clock_priorities = rsmu_cm_set_clock_priorities,
++	.get_reference_monitor_status = rsmu_cm_get_reference_monitor_status
++};
+diff --git a/drivers/misc/rsmu_fc3.c b/drivers/misc/rsmu_fc3.c
+new file mode 100755
+index 000000000000..fc471c7ee756
+--- /dev/null
++++ b/drivers/misc/rsmu_fc3.c
+@@ -0,0 +1,732 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * This driver is developed for RC38xxx (FemtoClock3) series of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2023 Integrated Device Technology, Inc., a Renesas Company.
++ */
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/device.h>
++#include <linux/mfd/idtRC38xxx_reg.h>
++#include <linux/mfd/rsmu.h>
++#include <asm/unaligned.h>
++
++#include "rsmu_cdev.h"
++
++#define FW_FILENAME	"rsmufc3.bin"
++#define DEVID(rsmu)	(((struct rsmufc3 *)rsmu->ddata)->devid)
++#define HW_PARAM(rsmu)	(&((struct rsmufc3 *)rsmu->ddata)->hw_param)
++#define MEAS_MODE(rsmu)	(((struct rsmufc3 *)rsmu->ddata)->meas_mode)
++#define TDC_APLL(rsmu)	(((struct rsmufc3 *)rsmu->ddata)->tdc_apll_freq)
++#define TIME_REF(rsmu)	(((struct rsmufc3 *)rsmu->ddata)->time_ref_freq)
++
++struct rsmufc3 {
++	u8 devid;
++	u8 meas_mode;
++	struct idtfc3_hw_param hw_param;
++	u32 tdc_apll_freq;
++	u32 time_ref_freq;
++};
++
++static int get_apll_reinit_reg_offset(u8 devid, u16 *apll_reinit_reg_offset)
++{
++	switch (devid) {
++	case V_DEFAULT:
++	case VFC3W:
++		*apll_reinit_reg_offset = SOFT_RESET_CTRL;
++		break;
++	case VFC3A:
++		*apll_reinit_reg_offset = MISC_CTRL;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int read_device_id(struct rsmu_cdev *rsmu)
++{
++	int err;
++	u8 buf[2] = {0};
++	u16 device_id;
++
++	err = regmap_bulk_read(rsmu->regmap, DEVICE_ID, buf, sizeof(buf));
++	if (err)
++		return err;
++
++	device_id = get_unaligned_le16(buf);
++
++	if (device_id & DEVICE_ID_MASK)
++		DEVID(rsmu) = VFC3W;
++	else
++		DEVID(rsmu) = VFC3A;
++
++	dev_info(rsmu->dev, "identified %s device\n",
++		 DEVID(rsmu) == VFC3W ? "FC3W" : "FC3A");
++
++	return 0;
++}
++
++static int rsmu_get_tdc_apll_freq(struct rsmu_cdev *rsmu)
++{
++	int err;
++	u8 tdc_fb_div_int;
++	u8 tdc_ref_div;
++
++	err = regmap_bulk_read(rsmu->regmap, TDC_REF_DIV_CNFG,
++				&tdc_ref_div, sizeof(tdc_ref_div));
++	if (err)
++		return err;
++
++	err = regmap_bulk_read(rsmu->regmap, TDC_FB_DIV_INT_CNFG,
++				&tdc_fb_div_int, sizeof(tdc_fb_div_int));
++	if (err)
++		return err;
++
++	tdc_fb_div_int &= TDC_FB_DIV_INT_MASK;
++	tdc_ref_div &= TDC_REF_DIV_CONFIG_MASK;
++
++	TDC_APLL(rsmu) = div_u64(HW_PARAM(rsmu)->tdc_ref_freq *
++				 (u64)tdc_fb_div_int, 1 << tdc_ref_div);
++
++	return 0;
++}
++
++static int rsmu_get_time_ref_freq(struct rsmu_cdev *rsmu)
++{
++	int err;
++	u8 buf[4];
++	u8 time_ref_div;
++	u8 time_clk_div;
++
++	err = regmap_bulk_read(rsmu->regmap, TIME_CLOCK_MEAS_DIV_CNFG, buf, sizeof(buf));
++	if (err)
++		return err;
++	time_ref_div = FIELD_GET(TIME_REF_DIV_MASK, get_unaligned_le32(buf)) + 1;
++
++	err = regmap_bulk_read(rsmu->regmap, TIME_CLOCK_COUNT, buf, 1);
++	if (err)
++		return err;
++	time_clk_div = (buf[0] & TIME_CLOCK_COUNT_MASK) + 1;
++	TIME_REF(rsmu) = HW_PARAM(rsmu)->time_clk_freq * time_clk_div / time_ref_div;
++
++	return 0;
++}
++
++static int set_tdc_meas_mode(struct rsmu_cdev *rsmu, u8 meas_mode)
++{
++	int err;
++	u8 val = 0;
++
++	if (meas_mode >= MEAS_MODE_INVALID)
++		return -EINVAL;
++
++	if (MEAS_MODE(rsmu) == meas_mode)
++		return 0;
++
++	/* Disable TDC first */
++	err = regmap_bulk_write(rsmu->regmap, TIME_CLOCK_MEAS_CTRL, &val, sizeof(val));
++	if (err)
++		return err;
++
++	/* Change TDC meas mode */
++	err = regmap_bulk_write(rsmu->regmap, TIME_CLOCK_MEAS_CNFG,
++				&meas_mode, sizeof(meas_mode));
++	if (err)
++		return err;
++
++	MEAS_MODE(rsmu) = meas_mode;
++
++	if (meas_mode == ONE_SHOT)
++		return 0;
++
++	/* Enable TDC and start measurement */
++	val = TDC_MEAS_START | TDC_MEAS_EN;
++	err = regmap_bulk_write(rsmu->regmap, TIME_CLOCK_MEAS_CTRL, &val, sizeof(val));
++	if (err)
++		return err;
++
++	return 0;
++}
++
++static int hw_init(struct rsmu_cdev *rsmu)
++{
++	int err;
++
++	if (DEVID(rsmu) == VFC3A)
++		return 0;
++
++	MEAS_MODE(rsmu) = MEAS_MODE_INVALID;
++	err = set_tdc_meas_mode(rsmu, ONE_SHOT);
++	if (err)
++		return err;
++
++	err = rsmu_get_time_ref_freq(rsmu);
++	if (err)
++		return err;
++
++	return rsmu_get_tdc_apll_freq(rsmu);
++}
++
++static int hw_calibrate(struct rsmu_cdev *rsmu)
++{
++	int err = 0;
++	u8 val;
++	u16 apll_reinit_reg_addr;
++	u8 apll_reinit_mask;
++	u8 devid = DEVID(rsmu);
++
++	err = get_apll_reinit_reg_offset(devid, &apll_reinit_reg_addr);
++	if (err)
++		return err;
++	apll_reinit_mask = IDTFC3_FW_FIELD(devid, VFC3A, APLL_REINIT);
++
++	/*
++	 * Toggle TDC_DAC_RECAL_REQ:
++	 * (1) set tdc_en to 1
++	 * (2) set tdc_dac_recal_req to 0
++	 * (3) set tdc_dac_recal_req to 1
++	 */
++	if (devid == VFC3A) {
++		val = TDC_EN;
++		err = regmap_bulk_write(rsmu->regmap, TDC_ENABLE_CTRL,
++					&val, sizeof(val));
++		if (err)
++			return err;
++		val = 0;
++		err = regmap_bulk_write(rsmu->regmap, TDC_DAC_CAL_CTRL,
++					&val, sizeof(val));
++		if (err)
++			return err;
++		val = TDC_DAC_RECAL_REQ_VFC3A;
++		err = regmap_bulk_write(rsmu->regmap, TDC_DAC_CAL_CTRL,
++					&val, sizeof(val));
++		if (err)
++			return err;
++	} else {
++		val = TDC_EN;
++		err = regmap_bulk_write(rsmu->regmap, TDC_CTRL,
++					&val, sizeof(val));
++		if (err)
++			return err;
++		val = TDC_EN | TDC_DAC_RECAL_REQ;
++		err = regmap_bulk_write(rsmu->regmap, TDC_CTRL,
++					&val, sizeof(val));
++		if (err)
++			return err;
++	}
++	mdelay(10);
++
++	/*
++	 * Toggle APLL_REINIT:
++	 * (1) set apll_reinit to 0
++	 * (2) set apll_reinit to 1
++	 */
++	err = regmap_bulk_read(rsmu->regmap, apll_reinit_reg_addr,
++			       &val, sizeof(val));
++	val &= ~apll_reinit_mask;
++	err = regmap_bulk_write(rsmu->regmap, apll_reinit_reg_addr,
++							&val, sizeof(val));
++	if (err)
++		return err;
++	val |= apll_reinit_mask;
++	err = regmap_bulk_write(rsmu->regmap, apll_reinit_reg_addr,
++							&val, sizeof(val));
++	if (err)
++		return err;
++	mdelay(10);
++
++	return hw_init(rsmu);
++}
++
++static int load_firmware(struct rsmu_cdev *rsmu, char fwname[FW_NAME_LEN_MAX])
++{
++	char fname[128] = FW_FILENAME;
++	const struct firmware *fw;
++	struct idtfc3_fwrc *rec;
++	u16 addr;
++	u8 val;
++	int err;
++	s32 len;
++
++	if (fwname) /* module parameter */
++		snprintf(fname, sizeof(fname), "%s", fwname);
++
++	dev_info(rsmu->dev, "requesting firmware '%s'\n", fname);
++
++	err = request_firmware(&fw, fname, rsmu->dev);
++
++	if (err) {
++		dev_err(rsmu->dev,
++			"requesting firmware failed with err %d!\n", err);
++		return err;
++	}
++
++	dev_dbg(rsmu->dev, "firmware size %zu bytes\n", fw->size);
++
++	rec = (struct idtfc3_fwrc *) fw->data;
++
++	for (len = fw->size; len > 0; len -= sizeof(*rec)) {
++		if (rec->reserved) {
++			dev_err(rsmu->dev,
++				"bad firmware, reserved field non-zero\n");
++			err = -EINVAL;
++		} else {
++			val = rec->value;
++			addr = rec->hiaddr << 8 | rec->loaddr;
++
++			rec++;
++
++			err = idtfc3_set_hw_param(HW_PARAM(rsmu), addr,
++						  get_unaligned_be32((void *)rec));
++			if (err == 0)
++				rec++;
++		}
++
++		if (err != -EINVAL) {
++			err = 0;
++
++			/* Max register */
++			if (addr > 0xE88)
++				continue;
++
++			err = regmap_bulk_write(rsmu->regmap, addr,
++						&val, sizeof(val));
++		}
++
++		if (err)
++			goto out;
++	}
++
++	err = hw_calibrate(rsmu);
++out:
++	release_firmware(fw);
++	return err;
++}
++
++static u8 clock_index_to_ref_index(struct rsmu_cdev *rsmu, u8 clock_index)
++{
++	u16 reg_addr;
++	u32 ref_sel_cnfg_reg;
++	u8 ref_index;
++	int err;
++	u8 devid = DEVID(rsmu);
++
++	reg_addr = IDTFC3_FW_REG(devid, VFC3A, REF_SEL_CNFG);
++	err = regmap_bulk_read(rsmu->regmap, reg_addr, &ref_sel_cnfg_reg, sizeof(ref_sel_cnfg_reg));
++	if (err)
++		return err;
++
++	for (ref_index = 0; ref_index <= MAX_REF_INDEX; ref_index++) {
++		if (clock_index == ((ref_sel_cnfg_reg >> (REF_MUX_SEL_SHIFT * ref_index)) &
++				     REF_MUX_SEL_MASK))
++			return ref_index;
++	}
++
++	return ref_index;
++}
++
++static int get_losmon_sts_reg_offset(u8 devid, u8 ref_index, u16 *losmon_sts_reg_offset)
++{
++	switch (ref_index) {
++	case 0:
++		*losmon_sts_reg_offset = IDTFC3_FW_REG(devid, VFC3A, LOSMON_STS_0);
++		break;
++	case 1:
++		*losmon_sts_reg_offset = IDTFC3_FW_REG(devid, VFC3A, LOSMON_STS_1);
++		break;
++	case 2:
++		*losmon_sts_reg_offset = IDTFC3_FW_REG(devid, VFC3A, LOSMON_STS_2);
++		break;
++	case 3:
++		*losmon_sts_reg_offset = IDTFC3_FW_REG(devid, VFC3A, LOSMON_STS_3);
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int get_freqmon_sts_reg_offset(u8 devid, u8 ref_index, u16 *freqmon_sts_reg_offset)
++{
++	switch (ref_index) {
++	case 0:
++		*freqmon_sts_reg_offset = IDTFC3_FW_REG(devid, VFC3A, FREQMON_STS_0);
++		break;
++	case 1:
++		*freqmon_sts_reg_offset = IDTFC3_FW_REG(devid, VFC3A, FREQMON_STS_1);
++		break;
++	case 2:
++		*freqmon_sts_reg_offset = IDTFC3_FW_REG(devid, VFC3A, FREQMON_STS_2);
++		break;
++	case 3:
++		*freqmon_sts_reg_offset = IDTFC3_FW_REG(devid, VFC3A, FREQMON_STS_3);
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static inline s64 tdc_meas2offset(struct rsmu_cdev *rsmu, u64 meas_read)
++{
++	s64 coarse, fine;
++
++	fine = sign_extend64(FIELD_GET(FINE_MEAS_MASK, meas_read), 12);
++	coarse = sign_extend64(FIELD_GET(COARSE_MEAS_MASK, meas_read), (39 - 13));
++
++	return div64_s64(coarse * NSEC_PER_SEC, TIME_REF(rsmu)) + div64_s64(
++			 fine * NSEC_PER_SEC, TDC_APLL(rsmu) * 62LL);
++}
++
++static inline int get_tdc_meas(struct rsmu_cdev *rsmu, s64 *offset_ns)
++{
++	u8 buf[9];
++	u8 val;
++	int err;
++
++	/* Waiting for measurement to be done */
++	err = read_poll_timeout_atomic(regmap_bulk_read, err, !(val & FIFO_EMPTY),
++				       0, 5 * USEC_PER_SEC, false, rsmu->regmap,
++				       TDC_FIFO_STS, &val, sizeof(val));
++	if (err) {
++		dev_err(rsmu->dev, "TDC measurement timeout !!!");
++		return err;
++	}
++
++	err = regmap_bulk_read(rsmu->regmap, TDC_FIFO_READ_REQ,
++			       &buf, sizeof(buf));
++	if (err)
++		return err;
++
++	*offset_ns = tdc_meas2offset(rsmu, get_unaligned_le64(&buf[1]));
++
++	return 0;
++}
++
++static inline int check_tdc_fifo_overrun(struct rsmu_cdev *rsmu)
++{
++	u8 val;
++	int err;
++
++	/* Check if FIFO is overrun */
++	err = regmap_bulk_read(rsmu->regmap, TDC_FIFO_STS, &val, sizeof(val));
++	if (err)
++		return err;
++
++	if (!(val & FIFO_FULL))
++		return 0;
++
++	dev_warn(rsmu->dev, "TDC FIFO overrun !!!");
++
++	MEAS_MODE(rsmu) = MEAS_MODE_INVALID;
++	err = set_tdc_meas_mode(rsmu, CONTINUOUS);
++	if (err)
++		return err;
++
++	return 0;
++}
++
++static int get_tdc_meas_one_shot(struct rsmu_cdev *rsmu, s64 *offset_ns)
++{
++	u8 val = TDC_MEAS_EN | TDC_MEAS_START;
++	int err;
++
++	err = regmap_bulk_write(rsmu->regmap, TIME_CLOCK_MEAS_CTRL, &val, sizeof(val));
++	if (err)
++		return err;
++
++	return get_tdc_meas(rsmu, offset_ns);
++}
++
++static int get_tdc_meas_continuous(struct rsmu_cdev *rsmu, s64 *offset_ns)
++{
++	int err;
++
++	err = check_tdc_fifo_overrun(rsmu);
++	if (err)
++		return err;
++
++	return get_tdc_meas(rsmu, offset_ns);
++}
++
++static int rsmu_fc3_get_dpll_state(struct rsmu_cdev *rsmu,
++				   u8 dpll,
++				   u8 *state)
++{
++	u16 reg_addr;
++	u8 reg;
++	int err;
++	u8 devid = DEVID(rsmu);
++
++	if (dpll > IDTFC3_FW_MACRO(devid, VFC3A, MAX_DPLL_INDEX))
++		return -EINVAL;
++
++	reg_addr = IDTFC3_FW_REG(devid, VFC3A, DPLL_STS);
++	if (devid == VFC3A)
++		(void)dpll;
++	else
++		reg_addr += dpll * 0x100;
++
++	err = regmap_bulk_read(rsmu->regmap, reg_addr, &reg, sizeof(reg));
++	if (err)
++		return err;
++
++	reg = (reg & DPLL_STATE_STS_MASK) >> DPLL_STATE_STS_SHIFT;
++
++	switch (reg) {
++	case DPLL_STATE_FREERUN:
++	case DPLL_STATE_WRITE_FREQUENCY:
++		*state = E_SRVLOUNQUALIFIEDSTATE;
++		break;
++	case DPLL_STATE_ACQUIRE:
++	case DPLL_STATE_HITLESS_SWITCH:
++		*state = E_SRVLOLOCKACQSTATE;
++		break;
++	case DPLL_STATE_LOCKED:
++		*state = E_SRVLOTIMELOCKEDSTATE;
++		break;
++	case DPLL_STATE_HOLDOVER:
++		*state = E_SRVLOHOLDOVERINSPECSTATE;
++		break;
++	default:
++		*state = E_SRVLOSTATEINVALID;
++		break;
++	}
++
++	return 0;
++}
++
++static int rsmu_fc3_get_clock_index(struct rsmu_cdev *rsmu,
++				    u8 dpll,
++				    s8 *clock_index)
++{
++	u16 reg_addr;
++	u8 dpll_sts_reg;
++	u32 ref_sel_cnfg_reg;
++	enum dpll_state dpll_state_sts;
++	u8 ref_index;
++	int err;
++	u8 devid = DEVID(rsmu);
++
++	*clock_index = -1;
++
++	if (dpll > IDTFC3_FW_MACRO(devid, VFC3A, MAX_DPLL_INDEX))
++		return -EINVAL;
++
++	reg_addr = IDTFC3_FW_REG(devid, VFC3A, DPLL_STS);
++	if (devid == VFC3A)
++		(void)dpll;
++	else
++		reg_addr += dpll * 0x100;
++
++	err = regmap_bulk_read(rsmu->regmap, reg_addr, &dpll_sts_reg, sizeof(dpll_sts_reg));
++	if (err)
++		return err;
++
++	dpll_state_sts = (enum dpll_state)((dpll_sts_reg & DPLL_STATE_STS_MASK) >>
++					   DPLL_STATE_STS_SHIFT);
++	if ((dpll_state_sts == DPLL_STATE_LOCKED) || (dpll_state_sts == DPLL_STATE_ACQUIRE) ||
++	    (dpll_state_sts == DPLL_STATE_HITLESS_SWITCH)) {
++		ref_index = (dpll_sts_reg & DPLL_REF_SEL_STS_MASK) >> DPLL_REF_SEL_STS_SHIFT;
++
++		reg_addr = IDTFC3_FW_REG(devid, VFC3A, REF_SEL_CNFG);
++		err = regmap_bulk_read(rsmu->regmap, reg_addr, &ref_sel_cnfg_reg,
++				       sizeof(ref_sel_cnfg_reg));
++		if (err)
++			return err;
++
++		*clock_index = (ref_sel_cnfg_reg >> (REF_MUX_SEL_SHIFT * ref_index)) &
++						    REF_MUX_SEL_MASK;
++	}
++
++	return err;
++}
++
++static int rsmu_fc3_set_clock_priorities(struct rsmu_cdev *rsmu, u8 dpll, u8 number_entries,
++					 struct rsmu_priority_entry *priority_entry)
++{
++	int priority_index;
++	u16 reg = 0;
++	u8 clock_index;
++	u8 ref_index;
++	u8 priority;
++	u8 buf[2] = {0};
++	int err;
++	u16 reg_addr;
++	u8 devid = DEVID(rsmu);
++
++	if (dpll > IDTFC3_FW_MACRO(devid, VFC3A, MAX_DPLL_INDEX))
++		return -EINVAL;
++
++	reg_addr = DPLL_REF_PRIORITY_CNFG;
++	if (devid == VFC3A)
++		(void)dpll;
++	else
++		reg_addr += dpll * 0x100;
++
++	/* MAX_NUM_REF_PRIORITY is maximum number of priorities */
++	if (number_entries > MAX_NUM_REF_PRIORITY)
++		return -EINVAL;
++
++	/*
++	 * Disable clock priorities initially and then enable as needed in loop
++	 * (dpll_refx_priority_disable[3:0])
++	 */
++	reg |= DPLL_REFX_PRIORITY_DISABLE_MASK;
++
++	for (priority_index = 0; priority_index < number_entries; priority_index++) {
++		clock_index = priority_entry->clock_index;
++		priority = priority_entry->priority;
++
++		if ((clock_index > MAX_INPUT_CLOCK_INDEX) || (priority >= MAX_NUM_REF_PRIORITY))
++			return -EINVAL;
++
++		ref_index = clock_index_to_ref_index(rsmu, clock_index);
++
++		/* Set clock priority disable bit to zero to enable it */
++		switch (ref_index) {
++		case 0:
++			reg = ((reg & (~DPLL_REF0_PRIORITY_ENABLE_AND_SET_MASK)) |
++			       (priority << DPLL_REF0_PRIORITY_SHIFT));
++			break;
++		case 1:
++			reg = ((reg & (~DPLL_REF1_PRIORITY_ENABLE_AND_SET_MASK)) |
++			       (priority << DPLL_REF1_PRIORITY_SHIFT));
++			break;
++		case 2:
++			reg = ((reg & (~DPLL_REF2_PRIORITY_ENABLE_AND_SET_MASK)) |
++			       (priority << DPLL_REF2_PRIORITY_SHIFT));
++			break;
++		case 3:
++			reg = ((reg & (~DPLL_REF3_PRIORITY_ENABLE_AND_SET_MASK)) |
++			       (priority << DPLL_REF3_PRIORITY_SHIFT));
++			break;
++		default:
++			return -EINVAL;
++		}
++
++		priority_entry++;
++	}
++
++	put_unaligned_le16(reg, buf);
++
++	err = regmap_bulk_write(rsmu->regmap, reg_addr, &buf, sizeof(buf));
++
++	if (err)
++		dev_err(rsmu->dev, "err\n");
++
++	return err;
++}
++
++static int rsmu_fc3_get_reference_monitor_status(struct rsmu_cdev *rsmu, u8 clock_index,
++					struct rsmu_reference_monitor_status_alarms *alarms)
++{
++	u8 ref_index;
++	u16 losmon_sts_reg_addr;
++	u16 freqmon_sts_reg_addr;
++	u8 los_reg;
++	u8 buf[4] = {0};
++	u32 freq_reg;
++	int err;
++	u8 devid = DEVID(rsmu);
++
++	if (clock_index > MAX_INPUT_CLOCK_INDEX)
++		return -EINVAL;
++
++	ref_index = clock_index_to_ref_index(rsmu, clock_index);
++	if (ref_index > MAX_REF_INDEX)
++		return -EINVAL;
++
++	err = get_losmon_sts_reg_offset(devid, ref_index, &losmon_sts_reg_addr);
++	if (err)
++		return err;
++
++	err = get_freqmon_sts_reg_offset(devid, ref_index, &freqmon_sts_reg_addr);
++	if (err)
++		return err;
++
++	err = regmap_bulk_read(rsmu->regmap, losmon_sts_reg_addr,
++			       &los_reg, sizeof(los_reg));
++	if (err)
++		return err;
++
++	alarms->los = los_reg & LOS_STS_MASK;
++
++	alarms->no_activity = 0;
++
++	err = regmap_bulk_read(rsmu->regmap, freqmon_sts_reg_addr,
++			       &buf, sizeof(buf));
++	if (err)
++		return err;
++
++	freq_reg = get_unaligned_le32(buf);
++	alarms->frequency_offset_limit = (freq_reg >> FREQ_FAIL_STS_SHIFT) & 1;
++
++	return err;
++}
++
++static int rsmu_fc3_get_tdc_meas(struct rsmu_cdev *rsmu, bool continuous, s64 *offset_ns)
++{
++	int err;
++	u8 mode = ONE_SHOT;
++
++	if (DEVID(rsmu) == VFC3A)
++		return -EOPNOTSUPP;
++
++	if (continuous)
++		mode = CONTINUOUS;
++
++	err = set_tdc_meas_mode(rsmu, mode);
++	if (err)
++		return err;
++
++	if (continuous)
++		err = get_tdc_meas_continuous(rsmu, offset_ns);
++	else
++		err = get_tdc_meas_one_shot(rsmu, offset_ns);
++
++	return err;
++}
++
++static int rsmu_fc3_init(struct rsmu_cdev *rsmu, char fwname[FW_NAME_LEN_MAX])
++{
++	struct rsmufc3 *ddata;
++	int err;
++
++	ddata = devm_kzalloc(rsmu->dev, sizeof(*ddata), GFP_KERNEL);
++	if (!ddata)
++		return -ENOMEM;
++	rsmu->ddata = ddata;
++
++	err = read_device_id(rsmu);
++	if (err) {
++		dev_err(rsmu->dev, "reading device id failed with %d", err);
++		return err;
++	}
++
++	err = load_firmware(rsmu, fwname);
++	if (err)
++		dev_warn(rsmu->dev, "loading firmware failed with %d", err);
++
++	return 0;
++}
++
++struct rsmu_ops fc3_ops = {
++	.type = RSMU_FC3,
++	.device_init = rsmu_fc3_init,
++	.set_combomode = NULL,
++	.get_dpll_state = rsmu_fc3_get_dpll_state,
++	.get_dpll_ffo = NULL,
++	.set_holdover_mode = NULL,
++	.set_output_tdc_go = NULL,
++	.get_clock_index = rsmu_fc3_get_clock_index,
++	.set_clock_priorities = rsmu_fc3_set_clock_priorities,
++	.get_reference_monitor_status = rsmu_fc3_get_reference_monitor_status,
++	.get_tdc_meas = rsmu_fc3_get_tdc_meas
++};
++
+diff --git a/drivers/misc/rsmu_sabre.c b/drivers/misc/rsmu_sabre.c
+new file mode 100755
+index 000000000000..839b3f5b39a2
+--- /dev/null
++++ b/drivers/misc/rsmu_sabre.c
+@@ -0,0 +1,367 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * This driver is developed for the IDT 82P33XXX series of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/device.h>
++#include <linux/mfd/idt82p33_reg.h>
++#include <linux/mfd/rsmu.h>
++#include <asm/unaligned.h>
++
++#include "rsmu_cdev.h"
++
++#define FW_FILENAME	"rsmu82p33xxx.bin"
++
++static u8 dpll_operating_mode_cnfg_prev[2] = {0xff, 0xff};
++
++static int check_and_set_masks(struct rsmu_cdev *rsmu, u8 page, u8 offset, u8 val)
++{
++	int err = 0;
++
++	return err;
++}
++
++static int load_firmware(struct rsmu_cdev *rsmu, char fwname[FW_NAME_LEN_MAX])
++{
++	char fname[128] = FW_FILENAME;
++	const struct firmware *fw;
++	struct idt82p33_fwrc *rec;
++	u8 loaddr, page, val;
++	int err;
++	s32 len;
++
++	if (fwname) /* module parameter */
++		snprintf(fname, sizeof(fname), "%s", fwname);
++
++	dev_info(rsmu->dev, "requesting firmware '%s'\n", fname);
++
++	err = request_firmware(&fw, fname, rsmu->dev);
++
++	if (err) {
++		dev_err(rsmu->dev,
++			"Failed in %s with err %d!\n", __func__, err);
++		return err;
++	}
++
++	dev_dbg(rsmu->dev, "firmware size %zu bytes\n", fw->size);
++
++	rec = (struct idt82p33_fwrc *) fw->data;
++
++	for (len = fw->size; len > 0; len -= sizeof(*rec)) {
++
++		if (rec->reserved) {
++			dev_err(rsmu->dev,
++				"bad firmware, reserved field non-zero\n");
++			err = -EINVAL;
++		} else {
++			val = rec->value;
++			loaddr = rec->loaddr;
++			page = rec->hiaddr;
++
++			rec++;
++
++			err = check_and_set_masks(rsmu, page, loaddr, val);
++		}
++
++		if (err == 0) {
++			/* Page size 128, last 4 bytes of page skipped */
++			if (loaddr > 0x7b)
++				continue;
++			err = regmap_bulk_write(rsmu->regmap, REG_ADDR(page, loaddr),
++						&val, sizeof(val));
++		}
++
++		if (err)
++			goto out;
++	}
++
++out:
++	release_firmware(fw);
++	return err;
++}
++
++static int reg_readwrite(struct rsmu_cdev *rsmu, u16 offset, u8 *val8, u8 write)
++{
++	int err;
++
++	if (write)
++		err = regmap_bulk_write(rsmu->regmap, offset, val8, sizeof(u8));
++	else
++		err = regmap_bulk_read(rsmu->regmap, offset, val8, sizeof(u8));
++
++	return err;
++}
++
++static int reg_rmw(struct rsmu_cdev *rsmu, u16 offset, u8 mask, u8 lsb, u8 *val8, u8 *prev8)
++{
++	u8 tmp_val8;
++	int err;
++
++	err = reg_readwrite(rsmu, offset, &tmp_val8, 0);
++	if (err)
++		return err;
++
++	if (prev8)
++		*prev8 = tmp_val8;
++
++	rsmu_set_bitfield(tmp_val8, mask, lsb, *val8);
++
++	return reg_readwrite(rsmu, offset, &tmp_val8, 1);
++}
++
++
++static int reg_dpll_operating_mode_cnfg_offset(u8 dpll, u16 *offset)
++{
++	switch (dpll) {
++	case 0:
++		*offset = DPLL1_OPERATING_MODE_CNFG;
++		break;
++	case 1:
++		*offset = DPLL2_OPERATING_MODE_CNFG;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int rmw_reg_dpll_operating_mode_cnfg(struct rsmu_cdev *rsmu, u8 dpll, u8 mask,
++					    u8 lsb, u8 val8, u8 *prev8)
++{
++	u16 offset;
++	int err;
++
++	err = reg_dpll_operating_mode_cnfg_offset(dpll, &offset);
++	if (err)
++		return err;
++
++	return reg_rmw(rsmu, offset, mask, lsb, &val8, prev8);
++}
++
++static int reg_dpll_holdover_mode_cnfg_msb_offset(u8 dpll, u16 *offset)
++{
++	switch (dpll) {
++	case 0:
++		*offset = DPLL1_HOLDOVER_MODE_CNFG_MSB;
++		break;
++	case 1:
++		*offset = DPLL2_HOLDOVER_MODE_CNFG_MSB;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int rmw_reg_dpll_holdover_mode_cnfg_msb(struct rsmu_cdev *rsmu, u8 dpll,
++					       u8 mask, u8 lsb, u8 val8, u8 *prev8)
++{
++	u16 offset;
++	int err;
++
++	err = reg_dpll_holdover_mode_cnfg_msb_offset(dpll, &offset);
++	if (err)
++		return err;
++
++	return reg_rmw(rsmu, offset, mask, lsb, &val8, prev8);
++}
++
++static int set_dpll_oper_mode(struct rsmu_cdev *rsmu, u8 dpll, enum pll_mode mode, bool save_prev)
++{
++	if (save_prev)
++		return rmw_reg_dpll_operating_mode_cnfg(rsmu, dpll, 0x1f, 0, mode,
++							&dpll_operating_mode_cnfg_prev[dpll]);
++	else
++		return rmw_reg_dpll_operating_mode_cnfg(rsmu, dpll, 0x1f, 0, mode, NULL);
++}
++
++static int set_manual_holdover_mode(struct rsmu_cdev *rsmu, u8 dpll,
++				    enum holdover_mode mode)
++{
++	/* Set dpll{1:2}_man_holdover Bit 7 */
++	return rmw_reg_dpll_holdover_mode_cnfg_msb(rsmu, dpll, 0x80, 7,
++						   mode, NULL);
++}
++
++static int rsmu_sabre_set_combomode(struct rsmu_cdev *rsmu, u8 dpll, u8 mode)
++{
++	u16 dpll_ctrl_n;
++	u8 cfg;
++	int err;
++
++	switch (dpll) {
++	case 0:
++		dpll_ctrl_n = DPLL1_OPERATING_MODE_CNFG;
++		break;
++	case 1:
++		dpll_ctrl_n = DPLL2_OPERATING_MODE_CNFG;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	if (mode >= E_COMBOMODE_MAX)
++		return -EINVAL;
++
++	err = regmap_bulk_read(rsmu->regmap, dpll_ctrl_n, &cfg, sizeof(cfg));
++	if (err)
++		return err;
++
++	cfg &= ~(COMBO_MODE_MASK << COMBO_MODE_SHIFT);
++	cfg |= mode << COMBO_MODE_SHIFT;
++
++	return regmap_bulk_write(rsmu->regmap, dpll_ctrl_n, &cfg, sizeof(cfg));
++}
++
++static int rsmu_sabre_get_dpll_state(struct rsmu_cdev *rsmu, u8 dpll, u8 *state)
++{
++	u16 dpll_sts_n;
++	u8 cfg;
++	int err;
++
++	switch (dpll) {
++	case 0:
++		dpll_sts_n = DPLL1_OPERATING_STS;
++		break;
++	case 1:
++		dpll_sts_n = DPLL2_OPERATING_STS;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	err = regmap_bulk_read(rsmu->regmap, dpll_sts_n, &cfg, sizeof(cfg));
++	if (err)
++		return err;
++
++	switch (cfg & OPERATING_STS_MASK) {
++	case DPLL_STATE_FREERUN:
++		*state = E_SRVLOUNQUALIFIEDSTATE;
++		break;
++	case DPLL_STATE_PRELOCKED2:
++	case DPLL_STATE_PRELOCKED:
++		*state = E_SRVLOLOCKACQSTATE;
++		break;
++	case DPLL_STATE_LOCKED:
++		*state = E_SRVLOTIMELOCKEDSTATE;
++		break;
++	case DPLL_STATE_HOLDOVER:
++		*state = E_SRVLOHOLDOVERINSPECSTATE;
++		break;
++	default:
++		*state = E_SRVLOSTATEINVALID;
++		break;
++	}
++
++	return 0;
++}
++
++static int rsmu_sabre_get_dpll_ffo(struct rsmu_cdev *rsmu, u8 dpll,
++				   struct rsmu_get_ffo *ffo)
++{
++	u8 buf[8] = {0};
++	s64 fcw = 0;
++	u16 dpll_freq_n;
++	int err;
++
++	/*
++	 * IDTDpll_GetCurrentDpllFreqOffset retrieves the FFO integrator only.
++	 * In order to get Proportional + Integrator, use the holdover FFO with
++	 * the filter bandwidth 0.5 Hz set by TCS file.
++	 */
++	switch (dpll) {
++	case 0:
++		dpll_freq_n = DPLL1_HOLDOVER_FREQ_CNFG;
++		break;
++	case 1:
++		dpll_freq_n = DPLL2_HOLDOVER_FREQ_CNFG;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	err = regmap_bulk_read(rsmu->regmap, dpll_freq_n, buf, 5);
++	if (err)
++		return err;
++
++	/* Convert to frequency control word */
++	fcw = sign_extend64(get_unaligned_le64(buf), 39);
++
++	/* FCW unit is 77760 / ( 1638400 * 2^48) = 1.68615121864946 * 10^-16 */
++	ffo->ffo = div_s64(fcw * 2107689, 12500);
++
++	return 0;
++}
++
++static int rsmu_sabre_set_holdover_mode(struct rsmu_cdev *rsmu, u8 dpll, u8 enable, u8 mode)
++{
++	int err = -EINVAL;
++	u8 prev_mode;
++
++	if (mode > HOLDOVER_MODE_MAX)
++		return -EINVAL;
++
++	if (enable) {
++		err = set_manual_holdover_mode(rsmu, dpll, (enum holdover_mode) mode);
++		if (err)
++			return err;
++
++		err = set_dpll_oper_mode(rsmu, dpll, PLL_MODE_FORCE_HOLDOVER, true);
++	} else {
++		prev_mode = rsmu_get_bitfield(dpll_operating_mode_cnfg_prev[dpll], 0x1f, 0);
++
++		switch (prev_mode) {
++		case PLL_MODE_DCO:
++			err = set_dpll_oper_mode(rsmu, dpll, PLL_MODE_DCO, false);
++			if (err)
++				return err;
++			err = set_manual_holdover_mode(rsmu, dpll, HOLDOVER_MODE_MANUAL);
++			break;
++
++		case PLL_MODE_WPH:
++			err = set_dpll_oper_mode(rsmu, dpll, PLL_MODE_WPH, false);
++			break;
++
++		case PLL_MODE_AUTOMATIC:
++			err = set_dpll_oper_mode(rsmu, dpll, PLL_MODE_AUTOMATIC, false);
++			break;
++
++		default:
++			/* Do nothing*/
++			dev_err(rsmu->dev, "%s: Unsupported operating mode 0x%02x",
++				__func__, prev_mode);
++			break;
++		}
++	}
++	return err;
++}
++
++static int rsmu_sabre_init(struct rsmu_cdev *rsmu, char fwname[FW_NAME_LEN_MAX])
++{
++	int err;
++
++	err = load_firmware(rsmu, fwname);
++	if (err)
++		dev_warn(rsmu->dev, "loading firmware failed with %d", err);
++
++	return 0;
++}
++
++struct rsmu_ops sabre_ops = {
++	.type = RSMU_SABRE,
++	.device_init = rsmu_sabre_init,
++	.set_combomode = rsmu_sabre_set_combomode,
++	.get_dpll_state = rsmu_sabre_get_dpll_state,
++	.get_dpll_ffo = rsmu_sabre_get_dpll_ffo,
++	.set_holdover_mode = rsmu_sabre_set_holdover_mode,
++	.set_output_tdc_go = NULL,
++	.get_clock_index = NULL,
++	.set_clock_priorities = NULL,
++	.get_reference_monitor_status = NULL
++};
+diff --git a/include/linux/mfd/idt82p33_reg.h b/include/linux/mfd/idt82p33_reg.h
+index 1db532feeb91..15828e205fa8 100644
+--- a/include/linux/mfd/idt82p33_reg.h
++++ b/include/linux/mfd/idt82p33_reg.h
+@@ -22,6 +22,12 @@
+ #define DPLL1_OPERATING_MODE_CNFG 0x120
+ #define DPLL2_OPERATING_MODE_CNFG 0x1A0
+ 
++#define DPLL1_HOLDOVER_MODE_CNFG_LSB 0x12A
++#define DPLL1_HOLDOVER_MODE_CNFG_MSB 0x12B
++
++#define DPLL2_HOLDOVER_MODE_CNFG_LSB 0x1A9
++#define DPLL2_HOLDOVER_MODE_CNFG_MSB 0x1AA
++
+ #define DPLL1_HOLDOVER_FREQ_CNFG 0x12C
+ #define DPLL2_HOLDOVER_FREQ_CNFG 0x1AC
+ 
+@@ -43,7 +49,6 @@
+ #define REG_SOFT_RESET 0X381
+ 
+ #define OUT_MUX_CNFG(outn) REG_ADDR(0x6, (0xC * (outn)))
+-#define TOD_TRIGGER(wr_trig, rd_trig) ((wr_trig & 0xf) << 4 | (rd_trig & 0xf))
+ 
+ /* Register bit definitions */
+ #define SYNC_TOD BIT(1)
+@@ -101,7 +106,7 @@ enum hw_tod_trig_sel {
+ 	WR_TRIG_SEL_MAX = HW_TOD_WR_TRIG_SEL_MSB_TOD_CNFG,
+ };
+ 
+-/** @brief Enumerated type listing DPLL operational modes */
++/* Enumerated type listing DPLL operational modes */
+ enum dpll_state {
+ 	DPLL_STATE_FREERUN = 1,
+ 	DPLL_STATE_HOLDOVER = 2,
+@@ -109,7 +114,34 @@ enum dpll_state {
+ 	DPLL_STATE_PRELOCKED2 = 5,
+ 	DPLL_STATE_PRELOCKED = 6,
+ 	DPLL_STATE_LOSTPHASE = 7,
+-	DPLL_STATE_MAX
++	DPLL_STATE_MAX = DPLL_STATE_LOSTPHASE,
+ };
+ 
++/* firmware interface */
++struct idt82p33_fwrc {
++	u8 hiaddr;
++	u8 loaddr;
++	u8 value;
++	u8 reserved;
++} __packed;
++
++#define PLLMASK_ADDR_HI	0xFF
++#define PLLMASK_ADDR_LO	0xA5
++
++#define PLL0_OUTMASK_ADDR_HI	0xFF
++#define PLL0_OUTMASK_ADDR_LO	0xB0
++
++#define PLL1_OUTMASK_ADDR_HI	0xFF
++#define PLL1_OUTMASK_ADDR_LO	0xB2
++
++#define PLL2_OUTMASK_ADDR_HI	0xFF
++#define PLL2_OUTMASK_ADDR_LO	0xB4
++
++#define PLL3_OUTMASK_ADDR_HI	0xFF
++#define PLL3_OUTMASK_ADDR_LO	0xB6
++
++#define DEFAULT_PLL_MASK	(0x01)
++#define DEFAULT_OUTPUT_MASK_PLL0	(0xc0)
++#define DEFAULT_OUTPUT_MASK_PLL1	DEFAULT_OUTPUT_MASK_PLL0
++
+ #endif
+diff --git a/include/linux/mfd/idt8a340_reg.h b/include/linux/mfd/idt8a340_reg.h
+index 0c706085c205..5aeb0820f876 100644
+--- a/include/linux/mfd/idt8a340_reg.h
++++ b/include/linux/mfd/idt8a340_reg.h
+@@ -7,20 +7,20 @@
+ #ifndef HAVE_IDT8A340_REG
+ #define HAVE_IDT8A340_REG
+ 
+-#define PAGE_ADDR_BASE                    0x0000
+-#define PAGE_ADDR                         0x00fc
++#define SCSR_BASE			  0x20100000
++#define SCSR_ADDR(x)			  ((x) & 0xffff)
+ 
+-#define HW_REVISION                       0x8180
++#define HW_REVISION                       0x20108180
+ #define REV_ID                            0x007a
+ 
+-#define HW_DPLL_0                         (0x8a00)
+-#define HW_DPLL_1                         (0x8b00)
+-#define HW_DPLL_2                         (0x8c00)
+-#define HW_DPLL_3                         (0x8d00)
+-#define HW_DPLL_4                         (0x8e00)
+-#define HW_DPLL_5                         (0x8f00)
+-#define HW_DPLL_6                         (0x9000)
+-#define HW_DPLL_7                         (0x9100)
++#define HW_DPLL_0                         (0x20108a00)
++#define HW_DPLL_1                         (0x20108b00)
++#define HW_DPLL_2                         (0x20108c00)
++#define HW_DPLL_3                         (0x20108d00)
++#define HW_DPLL_4                         (0x20108e00)
++#define HW_DPLL_5                         (0x20108f00)
++#define HW_DPLL_6                         (0x20109000)
++#define HW_DPLL_7                         (0x20109100)
+ 
+ #define HW_DPLL_TOD_SW_TRIG_ADDR__0       (0x080)
+ #define HW_DPLL_TOD_CTRL_1                (0x089)
+@@ -28,22 +28,22 @@
+ #define HW_DPLL_TOD_OVR__0                (0x098)
+ #define HW_DPLL_TOD_OUT_0__0              (0x0B0)
+ 
+-#define HW_Q0_Q1_CH_SYNC_CTRL_0           (0xa740)
+-#define HW_Q0_Q1_CH_SYNC_CTRL_1           (0xa741)
+-#define HW_Q2_Q3_CH_SYNC_CTRL_0           (0xa742)
+-#define HW_Q2_Q3_CH_SYNC_CTRL_1           (0xa743)
+-#define HW_Q4_Q5_CH_SYNC_CTRL_0           (0xa744)
+-#define HW_Q4_Q5_CH_SYNC_CTRL_1           (0xa745)
+-#define HW_Q6_Q7_CH_SYNC_CTRL_0           (0xa746)
+-#define HW_Q6_Q7_CH_SYNC_CTRL_1           (0xa747)
+-#define HW_Q8_CH_SYNC_CTRL_0              (0xa748)
+-#define HW_Q8_CH_SYNC_CTRL_1              (0xa749)
+-#define HW_Q9_CH_SYNC_CTRL_0              (0xa74a)
+-#define HW_Q9_CH_SYNC_CTRL_1              (0xa74b)
+-#define HW_Q10_CH_SYNC_CTRL_0             (0xa74c)
+-#define HW_Q10_CH_SYNC_CTRL_1             (0xa74d)
+-#define HW_Q11_CH_SYNC_CTRL_0             (0xa74e)
+-#define HW_Q11_CH_SYNC_CTRL_1             (0xa74f)
++#define HW_Q0_Q1_CH_SYNC_CTRL_0           (0x2010a740)
++#define HW_Q0_Q1_CH_SYNC_CTRL_1           (0x2010a741)
++#define HW_Q2_Q3_CH_SYNC_CTRL_0           (0x2010a742)
++#define HW_Q2_Q3_CH_SYNC_CTRL_1           (0x2010a743)
++#define HW_Q4_Q5_CH_SYNC_CTRL_0           (0x2010a744)
++#define HW_Q4_Q5_CH_SYNC_CTRL_1           (0x2010a745)
++#define HW_Q6_Q7_CH_SYNC_CTRL_0           (0x2010a746)
++#define HW_Q6_Q7_CH_SYNC_CTRL_1           (0x2010a747)
++#define HW_Q8_CH_SYNC_CTRL_0              (0x2010a748)
++#define HW_Q8_CH_SYNC_CTRL_1              (0x2010a749)
++#define HW_Q9_CH_SYNC_CTRL_0              (0x2010a74a)
++#define HW_Q9_CH_SYNC_CTRL_1              (0x2010a74b)
++#define HW_Q10_CH_SYNC_CTRL_0             (0x2010a74c)
++#define HW_Q10_CH_SYNC_CTRL_1             (0x2010a74d)
++#define HW_Q11_CH_SYNC_CTRL_0             (0x2010a74e)
++#define HW_Q11_CH_SYNC_CTRL_1             (0x2010a74f)
+ 
+ #define SYNC_SOURCE_DPLL0_TOD_PPS	0x14
+ #define SYNC_SOURCE_DPLL1_TOD_PPS	0x15
+@@ -58,8 +58,8 @@
+ #define SYNCTRL1_Q1_DIV_SYNC_TRIG	BIT(1)
+ #define SYNCTRL1_Q0_DIV_SYNC_TRIG	BIT(0)
+ 
+-#define HW_Q8_CTRL_SPARE  (0xa7d4)
+-#define HW_Q11_CTRL_SPARE (0xa7ec)
++#define HW_Q8_CTRL_SPARE  (0x2010a7d4)
++#define HW_Q11_CTRL_SPARE (0x2010a7ec)
+ 
+ /**
+  * Select FOD5 as sync_trigger for Q8 divider.
+@@ -95,12 +95,12 @@
+  */
+ #define Q10_TO_Q11_FANOUT_AND_CLOCK_SYNC_ENABLE_MASK  (BIT(0) | BIT(2))
+ 
+-#define RESET_CTRL                        0xc000
++#define RESET_CTRL                        0x2010c000
+ #define SM_RESET                          0x0012
+ #define SM_RESET_V520                     0x0013
+ #define SM_RESET_CMD                      0x5A
+ 
+-#define GENERAL_STATUS                    0xc014
++#define GENERAL_STATUS                    0x2010c014
+ #define BOOT_STATUS                       0x0000
+ #define HW_REV_ID                         0x000A
+ #define BOND_ID                           0x000B
+@@ -115,17 +115,42 @@
+ #define PRODUCT_ID                        0x001e
+ #define OTP_SCSR_CONFIG_SELECT            0x0022
+ 
+-#define STATUS                            0xc03c
+-#define DPLL0_STATUS			  0x0018
+-#define DPLL1_STATUS			  0x0019
+-#define DPLL2_STATUS			  0x001a
+-#define DPLL3_STATUS			  0x001b
+-#define DPLL4_STATUS			  0x001c
+-#define DPLL5_STATUS			  0x001d
+-#define DPLL6_STATUS			  0x001e
+-#define DPLL7_STATUS			  0x001f
++#define STATUS                            0x2010c03c
++#define IN0_MON_STATUS                    0x0008
++#define IN1_MON_STATUS                    0x0009
++#define IN2_MON_STATUS                    0x000a
++#define IN3_MON_STATUS                    0x000b
++#define IN4_MON_STATUS                    0x000c
++#define IN5_MON_STATUS                    0x000d
++#define IN6_MON_STATUS                    0x000e
++#define IN7_MON_STATUS                    0x000f
++#define IN8_MON_STATUS                    0x0010
++#define IN9_MON_STATUS                    0x0011
++#define IN10_MON_STATUS                   0x0012
++#define IN11_MON_STATUS                   0x0013
++#define IN12_MON_STATUS                   0x0014
++#define IN13_MON_STATUS                   0x0015
++#define IN14_MON_STATUS                   0x0016
++#define IN15_MON_STATUS                   0x0017
++#define DPLL0_STATUS                      0x0018
++#define DPLL1_STATUS                      0x0019
++#define DPLL2_STATUS                      0x001a
++#define DPLL3_STATUS                      0x001b
++#define DPLL4_STATUS                      0x001c
++#define DPLL5_STATUS                      0x001d
++#define DPLL6_STATUS                      0x001e
++#define DPLL7_STATUS                      0x001f
+ #define DPLL_SYS_STATUS                   0x0020
+ #define DPLL_SYS_APLL_STATUS              0x0021
++#define DPLL0_REF_STATUS                  0x0022
++#define DPLL1_REF_STATUS                  0x0023
++#define DPLL2_REF_STATUS                  0x0024
++#define DPLL3_REF_STATUS                  0x0025
++#define DPLL4_REF_STATUS                  0x0026
++#define DPLL5_REF_STATUS                  0x0027
++#define DPLL6_REF_STATUS                  0x0028
++#define DPLL7_REF_STATUS                  0x0029
++#define DPLL_SYS_REF_STATUS               0x002a
+ #define DPLL0_FILTER_STATUS               0x0044
+ #define DPLL1_FILTER_STATUS               0x004c
+ #define DPLL2_FILTER_STATUS               0x0054
+@@ -138,60 +163,82 @@
+ #define USER_GPIO0_TO_7_STATUS            0x008a
+ #define USER_GPIO8_TO_15_STATUS           0x008b
+ 
+-#define GPIO_USER_CONTROL                 0xc160
++#define GPIO_USER_CONTROL                 0x2010c160
+ #define GPIO0_TO_7_OUT                    0x0000
+ #define GPIO8_TO_15_OUT                   0x0001
+ #define GPIO0_TO_7_OUT_V520               0x0002
+ #define GPIO8_TO_15_OUT_V520              0x0003
+ 
+-#define STICKY_STATUS_CLEAR               0xc164
+-
+-#define GPIO_TOD_NOTIFICATION_CLEAR       0xc16c
+-
+-#define ALERT_CFG                         0xc188
+-
+-#define SYS_DPLL_XO                       0xc194
+-
+-#define SYS_APLL                          0xc19c
+-
+-#define INPUT_0                           0xc1b0
+-#define INPUT_1                           0xc1c0
+-#define INPUT_2                           0xc1d0
+-#define INPUT_3                           0xc200
+-#define INPUT_4                           0xc210
+-#define INPUT_5                           0xc220
+-#define INPUT_6                           0xc230
+-#define INPUT_7                           0xc240
+-#define INPUT_8                           0xc250
+-#define INPUT_9                           0xc260
+-#define INPUT_10                          0xc280
+-#define INPUT_11                          0xc290
+-#define INPUT_12                          0xc2a0
+-#define INPUT_13                          0xc2b0
+-#define INPUT_14                          0xc2c0
+-#define INPUT_15                          0xc2d0
+-
+-#define REF_MON_0                         0xc2e0
+-#define REF_MON_1                         0xc2ec
+-#define REF_MON_2                         0xc300
+-#define REF_MON_3                         0xc30c
+-#define REF_MON_4                         0xc318
+-#define REF_MON_5                         0xc324
+-#define REF_MON_6                         0xc330
+-#define REF_MON_7                         0xc33c
+-#define REF_MON_8                         0xc348
+-#define REF_MON_9                         0xc354
+-#define REF_MON_10                        0xc360
+-#define REF_MON_11                        0xc36c
+-#define REF_MON_12                        0xc380
+-#define REF_MON_13                        0xc38c
+-#define REF_MON_14                        0xc398
+-#define REF_MON_15                        0xc3a4
+-
+-#define DPLL_0                            0xc3b0
++#define STICKY_STATUS_CLEAR               0x2010c164
++
++#define GPIO_TOD_NOTIFICATION_CLEAR       0x2010c16c
++
++#define ALERT_CFG                         0x2010c188
++
++#define SYS_DPLL_XO                       0x2010c194
++
++#define SYS_APLL                          0x2010c19c
++
++#define INPUT_0                           0x2010c1b0
++#define INPUT_1                           0x2010c1c0
++#define INPUT_2                           0x2010c1d0
++#define INPUT_3                           0x2010c200
++#define INPUT_4                           0x2010c210
++#define INPUT_5                           0x2010c220
++#define INPUT_6                           0x2010c230
++#define INPUT_7                           0x2010c240
++#define INPUT_8                           0x2010c250
++#define INPUT_9                           0x2010c260
++#define INPUT_10                          0x2010c280
++#define INPUT_11                          0x2010c290
++#define INPUT_12                          0x2010c2a0
++#define INPUT_13                          0x2010c2b0
++#define INPUT_14                          0x2010c2c0
++#define INPUT_15                          0x2010c2d0
++
++#define REF_MON_0                         0x2010c2e0
++#define REF_MON_1                         0x2010c2ec
++#define REF_MON_2                         0x2010c300
++#define REF_MON_3                         0x2010c30c
++#define REF_MON_4                         0x2010c318
++#define REF_MON_5                         0x2010c324
++#define REF_MON_6                         0x2010c330
++#define REF_MON_7                         0x2010c33c
++#define REF_MON_8                         0x2010c348
++#define REF_MON_9                         0x2010c354
++#define REF_MON_10                        0x2010c360
++#define REF_MON_11                        0x2010c36c
++#define REF_MON_12                        0x2010c380
++#define REF_MON_13                        0x2010c38c
++#define REF_MON_14                        0x2010c398
++#define REF_MON_15                        0x2010c3a4
++
++#define DPLL_0                            0x2010c3b0
+ #define DPLL_CTRL_REG_0                   0x0002
+ #define DPLL_CTRL_REG_1                   0x0003
+ #define DPLL_CTRL_REG_2                   0x0004
++#define DPLL_REF_PRIORITY_0               0x000f
++#define DPLL_REF_PRIORITY_1               0x0010
++#define DPLL_REF_PRIORITY_2               0x0011
++#define DPLL_REF_PRIORITY_3               0x0012
++#define DPLL_REF_PRIORITY_4               0x0013
++#define DPLL_REF_PRIORITY_5               0x0014
++#define DPLL_REF_PRIORITY_6               0x0015
++#define DPLL_REF_PRIORITY_7               0x0016
++#define DPLL_REF_PRIORITY_8               0x0017
++#define DPLL_REF_PRIORITY_9               0x0018
++#define DPLL_REF_PRIORITY_10              0x0019
++#define DPLL_REF_PRIORITY_11              0x001a
++#define DPLL_REF_PRIORITY_12              0x001b
++#define DPLL_REF_PRIORITY_13              0x001c
++#define DPLL_REF_PRIORITY_14              0x001d
++#define DPLL_REF_PRIORITY_15              0x001e
++#define DPLL_REF_PRIORITY_16              0x001f
++#define DPLL_REF_PRIORITY_17              0x0020
++#define DPLL_REF_PRIORITY_18              0x0021
++#define DPLL_MAX_FREQ_OFFSET              0x0025
++#define DPLL_WF_TIMER                     0x002c
++#define DPLL_WP_TIMER                     0x002e
+ #define DPLL_TOD_SYNC_CFG                 0x0031
+ #define DPLL_COMBO_SLAVE_CFG_0            0x0032
+ #define DPLL_COMBO_SLAVE_CFG_1            0x0033
+@@ -200,69 +247,69 @@
+ #define DPLL_PHASE_MEASUREMENT_CFG        0x0036
+ #define DPLL_MODE                         0x0037
+ #define DPLL_MODE_V520                    0x003B
+-#define DPLL_1                            0xc400
+-#define DPLL_2                            0xc438
+-#define DPLL_2_V520                       0xc43c
+-#define DPLL_3                            0xc480
+-#define DPLL_4                            0xc4b8
+-#define DPLL_4_V520                       0xc4bc
+-#define DPLL_5                            0xc500
+-#define DPLL_6                            0xc538
+-#define DPLL_6_V520                       0xc53c
+-#define DPLL_7                            0xc580
+-#define SYS_DPLL                          0xc5b8
+-#define SYS_DPLL_V520                     0xc5bc
+-
+-#define DPLL_CTRL_0                       0xc600
++#define DPLL_1                            0x2010c400
++#define DPLL_2                            0x2010c438
++#define DPLL_2_V520                       0x2010c43c
++#define DPLL_3                            0x2010c480
++#define DPLL_4                            0x2010c4b8
++#define DPLL_4_V520                       0x2010c4bc
++#define DPLL_5                            0x2010c500
++#define DPLL_6                            0x2010c538
++#define DPLL_6_V520                       0x2010c53c
++#define DPLL_7                            0x2010c580
++#define SYS_DPLL                          0x2010c5b8
++#define SYS_DPLL_V520                     0x2010c5bc
++
++#define DPLL_CTRL_0                       0x2010c600
+ #define DPLL_CTRL_DPLL_MANU_REF_CFG       0x0001
+ #define DPLL_CTRL_DPLL_FOD_FREQ           0x001c
+ #define DPLL_CTRL_COMBO_MASTER_CFG        0x003a
+-#define DPLL_CTRL_1                       0xc63c
+-#define DPLL_CTRL_2                       0xc680
+-#define DPLL_CTRL_3                       0xc6bc
+-#define DPLL_CTRL_4                       0xc700
+-#define DPLL_CTRL_5                       0xc73c
+-#define DPLL_CTRL_6                       0xc780
+-#define DPLL_CTRL_7                       0xc7bc
+-#define SYS_DPLL_CTRL                     0xc800
+-
+-#define DPLL_PHASE_0                      0xc818
++#define DPLL_CTRL_1                       0x2010c63c
++#define DPLL_CTRL_2                       0x2010c680
++#define DPLL_CTRL_3                       0x2010c6bc
++#define DPLL_CTRL_4                       0x2010c700
++#define DPLL_CTRL_5                       0x2010c73c
++#define DPLL_CTRL_6                       0x2010c780
++#define DPLL_CTRL_7                       0x2010c7bc
++#define SYS_DPLL_CTRL                     0x2010c800
++
++#define DPLL_PHASE_0                      0x2010c818
+ /* Signed 42-bit FFO in units of 2^(-53) */
+ #define DPLL_WR_PHASE                     0x0000
+-#define DPLL_PHASE_1                      0xc81c
+-#define DPLL_PHASE_2                      0xc820
+-#define DPLL_PHASE_3                      0xc824
+-#define DPLL_PHASE_4                      0xc828
+-#define DPLL_PHASE_5                      0xc82c
+-#define DPLL_PHASE_6                      0xc830
+-#define DPLL_PHASE_7                      0xc834
+-
+-#define DPLL_FREQ_0                       0xc838
++#define DPLL_PHASE_1                      0x2010c81c
++#define DPLL_PHASE_2                      0x2010c820
++#define DPLL_PHASE_3                      0x2010c824
++#define DPLL_PHASE_4                      0x2010c828
++#define DPLL_PHASE_5                      0x2010c82c
++#define DPLL_PHASE_6                      0x2010c830
++#define DPLL_PHASE_7                      0x2010c834
++
++#define DPLL_FREQ_0                       0x2010c838
+ /* Signed 42-bit FFO in units of 2^(-53) */
+ #define DPLL_WR_FREQ                      0x0000
+-#define DPLL_FREQ_1                       0xc840
+-#define DPLL_FREQ_2                       0xc848
+-#define DPLL_FREQ_3                       0xc850
+-#define DPLL_FREQ_4                       0xc858
+-#define DPLL_FREQ_5                       0xc860
+-#define DPLL_FREQ_6                       0xc868
+-#define DPLL_FREQ_7                       0xc870
+-
+-#define DPLL_PHASE_PULL_IN_0              0xc880
++#define DPLL_FREQ_1                       0x2010c840
++#define DPLL_FREQ_2                       0x2010c848
++#define DPLL_FREQ_3                       0x2010c850
++#define DPLL_FREQ_4                       0x2010c858
++#define DPLL_FREQ_5                       0x2010c860
++#define DPLL_FREQ_6                       0x2010c868
++#define DPLL_FREQ_7                       0x2010c870
++
++#define DPLL_PHASE_PULL_IN_0              0x2010c880
+ #define PULL_IN_OFFSET                    0x0000 /* Signed 32 bit */
+ #define PULL_IN_SLOPE_LIMIT               0x0004 /* Unsigned 24 bit */
+ #define PULL_IN_CTRL                      0x0007
+-#define DPLL_PHASE_PULL_IN_1              0xc888
+-#define DPLL_PHASE_PULL_IN_2              0xc890
+-#define DPLL_PHASE_PULL_IN_3              0xc898
+-#define DPLL_PHASE_PULL_IN_4              0xc8a0
+-#define DPLL_PHASE_PULL_IN_5              0xc8a8
+-#define DPLL_PHASE_PULL_IN_6              0xc8b0
+-#define DPLL_PHASE_PULL_IN_7              0xc8b8
+-
+-#define GPIO_CFG                          0xc8c0
++#define DPLL_PHASE_PULL_IN_1              0x2010c888
++#define DPLL_PHASE_PULL_IN_2              0x2010c890
++#define DPLL_PHASE_PULL_IN_3              0x2010c898
++#define DPLL_PHASE_PULL_IN_4              0x2010c8a0
++#define DPLL_PHASE_PULL_IN_5              0x2010c8a8
++#define DPLL_PHASE_PULL_IN_6              0x2010c8b0
++#define DPLL_PHASE_PULL_IN_7              0x2010c8b8
++
++#define GPIO_CFG                          0x2010c8c0
+ #define GPIO_CFG_GBL                      0x0000
+-#define GPIO_0                            0xc8c2
++#define GPIO_0                            0x2010c8c2
+ #define GPIO_DCO_INC_DEC                  0x0000
+ #define GPIO_OUT_CTRL_0                   0x0001
+ #define GPIO_OUT_CTRL_1                   0x0002
+@@ -281,25 +328,25 @@
+ #define GPIO_TOD_NOTIFICATION_CFG         0x000f
+ #define GPIO_CTRL                         0x0010
+ #define GPIO_CTRL_V520                    0x0011
+-#define GPIO_1                            0xc8d4
+-#define GPIO_2                            0xc8e6
+-#define GPIO_3                            0xc900
+-#define GPIO_4                            0xc912
+-#define GPIO_5                            0xc924
+-#define GPIO_6                            0xc936
+-#define GPIO_7                            0xc948
+-#define GPIO_8                            0xc95a
+-#define GPIO_9                            0xc980
+-#define GPIO_10                           0xc992
+-#define GPIO_11                           0xc9a4
+-#define GPIO_12                           0xc9b6
+-#define GPIO_13                           0xc9c8
+-#define GPIO_14                           0xc9da
+-#define GPIO_15                           0xca00
+-
+-#define OUT_DIV_MUX                       0xca12
+-#define OUTPUT_0                          0xca14
+-#define OUTPUT_0_V520                     0xca20
++#define GPIO_1                            0x2010c8d4
++#define GPIO_2                            0x2010c8e6
++#define GPIO_3                            0x2010c900
++#define GPIO_4                            0x2010c912
++#define GPIO_5                            0x2010c924
++#define GPIO_6                            0x2010c936
++#define GPIO_7                            0x2010c948
++#define GPIO_8                            0x2010c95a
++#define GPIO_9                            0x2010c980
++#define GPIO_10                           0x2010c992
++#define GPIO_11                           0x2010c9a4
++#define GPIO_12                           0x2010c9b6
++#define GPIO_13                           0x2010c9c8
++#define GPIO_14                           0x2010c9da
++#define GPIO_15                           0x2010ca00
++
++#define OUT_DIV_MUX                       0x2010ca12
++#define OUTPUT_0                          0x2010ca14
++#define OUTPUT_0_V520                     0x2010ca20
+ /* FOD frequency output divider value */
+ #define OUT_DIV                           0x0000
+ #define OUT_DUTY_CYCLE_HIGH               0x0004
+@@ -307,88 +354,88 @@
+ #define OUT_CTRL_1                        0x0009
+ /* Phase adjustment in FOD cycles */
+ #define OUT_PHASE_ADJ                     0x000c
+-#define OUTPUT_1                          0xca24
+-#define OUTPUT_1_V520                     0xca30
+-#define OUTPUT_2                          0xca34
+-#define OUTPUT_2_V520                     0xca40
+-#define OUTPUT_3                          0xca44
+-#define OUTPUT_3_V520                     0xca50
+-#define OUTPUT_4                          0xca54
+-#define OUTPUT_4_V520                     0xca60
+-#define OUTPUT_5                          0xca64
+-#define OUTPUT_5_V520                     0xca80
+-#define OUTPUT_6                          0xca80
+-#define OUTPUT_6_V520                     0xca90
+-#define OUTPUT_7                          0xca90
+-#define OUTPUT_7_V520                     0xcaa0
+-#define OUTPUT_8                          0xcaa0
+-#define OUTPUT_8_V520                     0xcab0
+-#define OUTPUT_9                          0xcab0
+-#define OUTPUT_9_V520                     0xcac0
+-#define OUTPUT_10                         0xcac0
+-#define OUTPUT_10_V520                     0xcad0
+-#define OUTPUT_11                         0xcad0
+-#define OUTPUT_11_V520                    0xcae0
+-
+-#define SERIAL                            0xcae0
+-#define SERIAL_V520                       0xcaf0
+-
+-#define PWM_ENCODER_0                     0xcb00
+-#define PWM_ENCODER_1                     0xcb08
+-#define PWM_ENCODER_2                     0xcb10
+-#define PWM_ENCODER_3                     0xcb18
+-#define PWM_ENCODER_4                     0xcb20
+-#define PWM_ENCODER_5                     0xcb28
+-#define PWM_ENCODER_6                     0xcb30
+-#define PWM_ENCODER_7                     0xcb38
+-#define PWM_DECODER_0                     0xcb40
+-#define PWM_DECODER_1                     0xcb48
+-#define PWM_DECODER_1_V520                0xcb4a
+-#define PWM_DECODER_2                     0xcb50
+-#define PWM_DECODER_2_V520                0xcb54
+-#define PWM_DECODER_3                     0xcb58
+-#define PWM_DECODER_3_V520                0xcb5e
+-#define PWM_DECODER_4                     0xcb60
+-#define PWM_DECODER_4_V520                0xcb68
+-#define PWM_DECODER_5                     0xcb68
+-#define PWM_DECODER_5_V520                0xcb80
+-#define PWM_DECODER_6                     0xcb70
+-#define PWM_DECODER_6_V520                0xcb8a
+-#define PWM_DECODER_7                     0xcb80
+-#define PWM_DECODER_7_V520                0xcb94
+-#define PWM_DECODER_8                     0xcb88
+-#define PWM_DECODER_8_V520                0xcb9e
+-#define PWM_DECODER_9                     0xcb90
+-#define PWM_DECODER_9_V520                0xcba8
+-#define PWM_DECODER_10                    0xcb98
+-#define PWM_DECODER_10_V520               0xcbb2
+-#define PWM_DECODER_11                    0xcba0
+-#define PWM_DECODER_11_V520               0xcbbc
+-#define PWM_DECODER_12                    0xcba8
+-#define PWM_DECODER_12_V520               0xcbc6
+-#define PWM_DECODER_13                    0xcbb0
+-#define PWM_DECODER_13_V520               0xcbd0
+-#define PWM_DECODER_14                    0xcbb8
+-#define PWM_DECODER_14_V520               0xcbda
+-#define PWM_DECODER_15                    0xcbc0
+-#define PWM_DECODER_15_V520               0xcbe4
+-#define PWM_USER_DATA                     0xcbc8
+-#define PWM_USER_DATA_V520                0xcbf0
+-
+-#define TOD_0                             0xcbcc
+-#define TOD_0_V520                        0xcc00
++#define OUTPUT_1                          0x2010ca24
++#define OUTPUT_1_V520                     0x2010ca30
++#define OUTPUT_2                          0x2010ca34
++#define OUTPUT_2_V520                     0x2010ca40
++#define OUTPUT_3                          0x2010ca44
++#define OUTPUT_3_V520                     0x2010ca50
++#define OUTPUT_4                          0x2010ca54
++#define OUTPUT_4_V520                     0x2010ca60
++#define OUTPUT_5                          0x2010ca64
++#define OUTPUT_5_V520                     0x2010ca80
++#define OUTPUT_6                          0x2010ca80
++#define OUTPUT_6_V520                     0x2010ca90
++#define OUTPUT_7                          0x2010ca90
++#define OUTPUT_7_V520                     0x2010caa0
++#define OUTPUT_8                          0x2010caa0
++#define OUTPUT_8_V520                     0x2010cab0
++#define OUTPUT_9                          0x2010cab0
++#define OUTPUT_9_V520                     0x2010cac0
++#define OUTPUT_10                         0x2010cac0
++#define OUTPUT_10_V520                    0x2010cad0
++#define OUTPUT_11                         0x2010cad0
++#define OUTPUT_11_V520                    0x2010cae0
++
++#define SERIAL                            0x2010cae0
++#define SERIAL_V520                       0x2010caf0
++
++#define PWM_ENCODER_0                     0x2010cb00
++#define PWM_ENCODER_1                     0x2010cb08
++#define PWM_ENCODER_2                     0x2010cb10
++#define PWM_ENCODER_3                     0x2010cb18
++#define PWM_ENCODER_4                     0x2010cb20
++#define PWM_ENCODER_5                     0x2010cb28
++#define PWM_ENCODER_6                     0x2010cb30
++#define PWM_ENCODER_7                     0x2010cb38
++#define PWM_DECODER_0                     0x2010cb40
++#define PWM_DECODER_1                     0x2010cb48
++#define PWM_DECODER_1_V520                0x2010cb4a
++#define PWM_DECODER_2                     0x2010cb50
++#define PWM_DECODER_2_V520                0x2010cb54
++#define PWM_DECODER_3                     0x2010cb58
++#define PWM_DECODER_3_V520                0x2010cb5e
++#define PWM_DECODER_4                     0x2010cb60
++#define PWM_DECODER_4_V520                0x2010cb68
++#define PWM_DECODER_5                     0x2010cb68
++#define PWM_DECODER_5_V520                0x2010cb80
++#define PWM_DECODER_6                     0x2010cb70
++#define PWM_DECODER_6_V520                0x2010cb8a
++#define PWM_DECODER_7                     0x2010cb80
++#define PWM_DECODER_7_V520                0x2010cb94
++#define PWM_DECODER_8                     0x2010cb88
++#define PWM_DECODER_8_V520                0x2010cb9e
++#define PWM_DECODER_9                     0x2010cb90
++#define PWM_DECODER_9_V520                0x2010cba8
++#define PWM_DECODER_10                    0x2010cb98
++#define PWM_DECODER_10_V520               0x2010cbb2
++#define PWM_DECODER_11                    0x2010cba0
++#define PWM_DECODER_11_V520               0x2010cbbc
++#define PWM_DECODER_12                    0x2010cba8
++#define PWM_DECODER_12_V520               0x2010cbc6
++#define PWM_DECODER_13                    0x2010cbb0
++#define PWM_DECODER_13_V520               0x2010cbd0
++#define PWM_DECODER_14                    0x2010cbb8
++#define PWM_DECODER_14_V520               0x2010cbda
++#define PWM_DECODER_15                    0x2010cbc0
++#define PWM_DECODER_15_V520               0x2010cbe4
++#define PWM_USER_DATA                     0x2010cbc8
++#define PWM_USER_DATA_V520                0x2010cbf0
++
++#define TOD_0                             0x2010cbcc
++#define TOD_0_V520                        0x2010cc00
+ /* Enable TOD counter, output channel sync and even-PPS mode */
+ #define TOD_CFG                           0x0000
+ #define TOD_CFG_V520                      0x0001
+-#define TOD_1                             0xcbce
+-#define TOD_1_V520                        0xcc02
+-#define TOD_2                             0xcbd0
+-#define TOD_2_V520                        0xcc04
+-#define TOD_3                             0xcbd2
+-#define TOD_3_V520                        0xcc06
+-
+-#define TOD_WRITE_0                       0xcc00
+-#define TOD_WRITE_0_V520                  0xcc10
++#define TOD_1                             0x2010cbce
++#define TOD_1_V520                        0x2010cc02
++#define TOD_2                             0x2010cbd0
++#define TOD_2_V520                        0x2010cc04
++#define TOD_3                             0x2010cbd2
++#define TOD_3_V520                        0x2010cc06
++
++#define TOD_WRITE_0                       0x2010cc00
++#define TOD_WRITE_0_V520                  0x2010cc10
+ /* 8-bit subns, 32-bit ns, 48-bit seconds */
+ #define TOD_WRITE                         0x0000
+ /* Counter increments after TOD write is completed */
+@@ -397,15 +444,15 @@
+ #define TOD_WRITE_SELECT_CFG_0            0x000d
+ /* TOD write trigger selection */
+ #define TOD_WRITE_CMD                     0x000f
+-#define TOD_WRITE_1                       0xcc10
+-#define TOD_WRITE_1_V520                  0xcc20
+-#define TOD_WRITE_2                       0xcc20
+-#define TOD_WRITE_2_V520                  0xcc30
+-#define TOD_WRITE_3                       0xcc30
+-#define TOD_WRITE_3_V520                  0xcc40
+-
+-#define TOD_READ_PRIMARY_0                0xcc40
+-#define TOD_READ_PRIMARY_0_V520           0xcc50
++#define TOD_WRITE_1                       0x2010cc10
++#define TOD_WRITE_1_V520                  0x2010cc20
++#define TOD_WRITE_2                       0x2010cc20
++#define TOD_WRITE_2_V520                  0x2010cc30
++#define TOD_WRITE_3                       0x2010cc30
++#define TOD_WRITE_3_V520                  0x2010cc40
++
++#define TOD_READ_PRIMARY_0                0x2010cc40
++#define TOD_READ_PRIMARY_0_V520           0x2010cc50
+ /* 8-bit subns, 32-bit ns, 48-bit seconds */
+ #define TOD_READ_PRIMARY_BASE             0x0000
+ /* Counter increments after TOD write is completed */
+@@ -415,15 +462,15 @@
+ /* Read trigger selection */
+ #define TOD_READ_PRIMARY_CMD              0x000e
+ #define TOD_READ_PRIMARY_CMD_V520         0x000f
+-#define TOD_READ_PRIMARY_1                0xcc50
+-#define TOD_READ_PRIMARY_1_V520           0xcc60
+-#define TOD_READ_PRIMARY_2                0xcc60
+-#define TOD_READ_PRIMARY_2_V520           0xcc80
+-#define TOD_READ_PRIMARY_3                0xcc80
+-#define TOD_READ_PRIMARY_3_V520           0xcc90
+-
+-#define TOD_READ_SECONDARY_0              0xcc90
+-#define TOD_READ_SECONDARY_0_V520         0xcca0
++#define TOD_READ_PRIMARY_1                0x2010cc50
++#define TOD_READ_PRIMARY_1_V520           0x2010cc60
++#define TOD_READ_PRIMARY_2                0x2010cc60
++#define TOD_READ_PRIMARY_2_V520           0x2010cc80
++#define TOD_READ_PRIMARY_3                0x2010cc80
++#define TOD_READ_PRIMARY_3_V520           0x2010cc90
++
++#define TOD_READ_SECONDARY_0              0x2010cc90
++#define TOD_READ_SECONDARY_0_V520         0x2010cca0
+ /* 8-bit subns, 32-bit ns, 48-bit seconds */
+ #define TOD_READ_SECONDARY_BASE           0x0000
+ /* Counter increments after TOD write is completed */
+@@ -434,30 +481,34 @@
+ #define TOD_READ_SECONDARY_CMD            0x000e
+ #define TOD_READ_SECONDARY_CMD_V520       0x000f
+ 
+-#define TOD_READ_SECONDARY_1              0xcca0
+-#define TOD_READ_SECONDARY_1_V520         0xccb0
+-#define TOD_READ_SECONDARY_2              0xccb0
+-#define TOD_READ_SECONDARY_2_V520         0xccc0
+-#define TOD_READ_SECONDARY_3              0xccc0
+-#define TOD_READ_SECONDARY_3_V520         0xccd0
++#define TOD_READ_SECONDARY_1              0x2010cca0
++#define TOD_READ_SECONDARY_1_V520         0x2010ccb0
++#define TOD_READ_SECONDARY_2              0x2010ccb0
++#define TOD_READ_SECONDARY_2_V520         0x2010ccc0
++#define TOD_READ_SECONDARY_3              0x2010ccc0
++#define TOD_READ_SECONDARY_3_V520         0x2010ccd0
+ 
+-#define OUTPUT_TDC_CFG                    0xccd0
+-#define OUTPUT_TDC_CFG_V520               0xcce0
+-#define OUTPUT_TDC_0                      0xcd00
+-#define OUTPUT_TDC_1                      0xcd08
+-#define OUTPUT_TDC_2                      0xcd10
+-#define OUTPUT_TDC_3                      0xcd18
+-#define INPUT_TDC                         0xcd20
++#define OUTPUT_TDC_CFG                    0x2010ccd0
++#define OUTPUT_TDC_CFG_V520               0x2010cce0
++#define OUTPUT_TDC_0                      0x2010cd00
++#define OUTPUT_TDC_1                      0x2010cd08
++#define OUTPUT_TDC_2                      0x2010cd10
++#define OUTPUT_TDC_3                      0x2010cd18
+ 
+-#define SCRATCH                           0xcf50
+-#define SCRATCH_V520                      0xcf4c
++#define OUTPUT_TDC_CTRL_4                 0x0006
++#define OUTPUT_TDC_CTRL_4_V520            0x0007
+ 
+-#define EEPROM                            0xcf68
+-#define EEPROM_V520                       0xcf64
++#define INPUT_TDC                         0x2010cd20
+ 
+-#define OTP                               0xcf70
++#define SCRATCH                           0x2010cf50
++#define SCRATCH_V520                      0x2010cf4c
+ 
+-#define BYTE                              0xcf80
++#define EEPROM                            0x2010cf68
++#define EEPROM_V520                       0x2010cf64
++
++#define OTP                               0x2010cf70
++
++#define BYTE                              0x2010cf80
+ 
+ /* Bit definitions for the MAJ_REL register */
+ #define MAJOR_SHIFT                       (1)
+@@ -665,6 +716,38 @@
+ #define DPLL_STATE_MASK                   (0xf)
+ #define DPLL_STATE_SHIFT                  (0x0)
+ 
++/* Bit definitions for the DPLL0_REF_STAT register */
++#define DPLL_REF_STATUS_MASK              (0x1f)
++
++/* Bit definitions for the DPLL register */
++#define DPLL_REF_PRIORITY_ENABLE_SHIFT       (0)
++#define DPLL_REF_PRIORITY_REF_SHIFT          (1)
++#define DPLL_REF_PRIORITY_GROUP_NUMBER_SHIFT (6)
++
++/* Bit definitions for the IN0_MON_STATUS register */
++#define IN_MON_STATUS_LOS_SHIFT       (0)
++#define IN_MON_STATUS_NO_ACT_SHIFT    (1)
++#define IN_MON_STATUS_FFO_LIMIT_SHIFT (2)
++
++#define DEFAULT_PRIORITY_GROUP (0)
++#define MAX_PRIORITY_GROUP     (3)
++
++#define MAX_REF_PRIORITIES (19)
++
++#define MAX_ELECTRICAL_REFERENCES (16)
++
++#define NO_REFERENCE (0x1f)
++
++/*
++ * Return register address based on passed in firmware version
++ */
++#define IDTCM_FW_REG(FW, VER, REG)	(((FW) < (VER)) ? (REG) : (REG##_##VER))
++enum fw_version {
++	V_DEFAULT = 0,
++	V487 = 1,
++	V520 = 2,
++};
++
+ /* Values of DPLL_N.DPLL_MODE.PLL_MODE */
+ enum pll_mode {
+ 	PLL_MODE_MIN = 0,
+@@ -765,4 +848,39 @@ enum scsr_tod_write_type_sel {
+ 	SCSR_TOD_WR_TYPE_SEL_DELTA_MINUS = 2,
+ 	SCSR_TOD_WR_TYPE_SEL_MAX = SCSR_TOD_WR_TYPE_SEL_DELTA_MINUS,
+ };
++
++/* firmware interface */
++struct idtcm_fwrc {
++	u8 hiaddr;
++	u8 loaddr;
++	u8 value;
++	u8 reserved;
++} __packed;
++
++#define SET_U16_LSB(orig, val8) (orig = (0xff00 & (orig)) | (val8))
++#define SET_U16_MSB(orig, val8) (orig = (0x00ff & (orig)) | (val8 << 8))
++
++#define TOD_MASK_ADDR		(0xFFA5)
++#define DEFAULT_TOD_MASK	(0x04)
++
++#define TOD0_PTP_PLL_ADDR		(0xFFA8)
++#define TOD1_PTP_PLL_ADDR		(0xFFA9)
++#define TOD2_PTP_PLL_ADDR		(0xFFAA)
++#define TOD3_PTP_PLL_ADDR		(0xFFAB)
++
++#define TOD0_OUT_ALIGN_MASK_ADDR	(0xFFB0)
++#define TOD1_OUT_ALIGN_MASK_ADDR	(0xFFB2)
++#define TOD2_OUT_ALIGN_MASK_ADDR	(0xFFB4)
++#define TOD3_OUT_ALIGN_MASK_ADDR	(0xFFB6)
++
++#define DEFAULT_OUTPUT_MASK_PLL0	(0x003)
++#define DEFAULT_OUTPUT_MASK_PLL1	(0x00c)
++#define DEFAULT_OUTPUT_MASK_PLL2	(0x030)
++#define DEFAULT_OUTPUT_MASK_PLL3	(0x0c0)
++
++#define DEFAULT_TOD0_PTP_PLL		(0)
++#define DEFAULT_TOD1_PTP_PLL		(1)
++#define DEFAULT_TOD2_PTP_PLL		(2)
++#define DEFAULT_TOD3_PTP_PLL		(3)
++
+ #endif
+diff --git a/include/linux/mfd/idtRC38xxx_reg.h b/include/linux/mfd/idtRC38xxx_reg.h
+new file mode 100755
+index 000000000000..5cfc4828e52e
+--- /dev/null
++++ b/include/linux/mfd/idtRC38xxx_reg.h
+@@ -0,0 +1,260 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * Register Map - Based on PolarBear_CSRs.RevA.xlsx (2023-04-21)
++ *
++ * Copyright (C) 2023 Integrated Device Technology, Inc., a Renesas Company.
++ */
++#ifndef MFD_IDTRC38XXX_REG
++#define MFD_IDTRC38XXX_REG
++
++/* GLOBAL */
++#define SOFT_RESET_CTRL		(0x15) /* Specific to FC3W */
++#define MISC_CTRL		(0x14) /* Specific to FC3A */
++#define SOFT_RESET		BIT(0)
++#define APLL_REINIT		BIT(1)
++#define APLL_REINIT_VFC3A	BIT(2)
++
++#define DEVICE_ID		(0x2)
++#define DEVICE_ID_MASK		(0x1000) /* Bit 12 is 1 if FC3W and 0 if FC3A */
++#define DEVICE_ID_SHIFT		(12)
++
++/* APLL */
++#define APLL_STS	(0xBD)
++#define IDET_LOCK_STS	BIT(0)
++
++/* FOD */
++#define FOD_0		(0x300)
++#define FOD_0_VFC3A	(0x400)
++#define FOD_1		(0x340)
++#define FOD_1_VFC3A	(0x440)
++#define FOD_2		(0x380)
++#define FOD_2_VFC3A	(0x480)
++
++/* TDCAPLL */
++#define TDC_CTRL		(0x44a) /* Specific to FC3W */
++#define TDC_ENABLE_CTRL		(0x169) /* Specific to FC3A */
++#define TDC_DAC_CAL_CTRL	(0x16a) /* Specific to FC3A */
++#define TDC_EN			BIT(0)
++#define TDC_DAC_RECAL_REQ	BIT(1)
++#define TDC_DAC_RECAL_REQ_VFC3A	BIT(0)
++
++#define TDC_FB_DIV_INT_CNFG		(0x442)
++#define TDC_FB_DIV_INT_CNFG_VFC3A	(0x162)
++#define TDC_FB_DIV_INT_MASK		GENMASK(7, 0)
++#define TDC_REF_DIV_CNFG		(0x443)
++#define TDC_REF_DIV_CNFG_VFC3A		(0x163)
++#define TDC_REF_DIV_CONFIG_MASK		GENMASK(2, 0)
++
++/* TIME SYNC CHANNEL */
++#define TIME_CLOCK_SRC		(0xa01) /* Specific to FC3W */
++#define TIME_CLOCK_COUNT	(0xa00) /* Specific to FC3W */
++#define TIME_CLOCK_COUNT_MASK	GENMASK(5, 0)
++
++#define SUB_SYNC_GEN_CNFG	(0xa04)
++
++#define TOD_COUNTER_READ_REQ		(0xa5f)
++#define TOD_COUNTER_READ_REQ_VFC3A	(0x6df)
++#define TOD_SYNC_LOAD_VAL_CTRL		(0xa10)
++#define TOD_SYNC_LOAD_VAL_CTRL_VFC3A	(0x690)
++#define SYNC_COUNTER_MASK		GENMASK_ULL(51, 0)
++#define SUB_SYNC_COUNTER_MASK		GENMASK(30, 0)
++#define TOD_SYNC_LOAD_REQ_CTRL		(0xa21)
++#define TOD_SYNC_LOAD_REQ_CTRL_VFC3A	(0x6a1)
++#define SYNC_LOAD_ENABLE		BIT(1)
++#define SUB_SYNC_LOAD_ENABLE		BIT(0)
++#define SYNC_LOAD_REQ			BIT(0)
++
++#define LPF_MODE_CNFG		(0xa80)
++#define LPF_MODE_CNFG_VFC3A	(0x700)
++enum lpf_mode {
++	LPF_DISABLED = 0,
++	LPF_WP       = 1,
++	LPF_HOLDOVER = 2,
++	LPF_WF       = 3,
++	LPF_INVALID  = 4
++};
++#define LPF_CTRL	(0xa98)
++#define LPF_CTRL_VFC3A	(0x718)
++#define LPF_EN		BIT(0)
++
++#define LPF_DIS_CTRL	(0xa99)
++#define LPF_FILTER_DIS	BIT(0)
++
++#define LPF_BW_CNFG	(0xa81)
++#define LPF_BW_SHIFT	GENMASK(7, 3)
++#define LPF_BW_MULT		GENMASK(2, 0)
++/* 100mHz */
++#define LPF_BW_SHIFT_DEFAULT	(0x6)
++#define LPF_BW_MULT_DEFAULT		(0x4)
++/* 20mHz */
++#define LPF_BW_SHIFT_1PPS		(0x4)
++#define LPF_BW_MULT_1PPS		(0x2)
++
++#define LPF_WR_PHASE_CTRL	(0xaa8)
++#define LPF_WR_PHASE_CTRL_VFC3A	(0x728)
++#define LPF_WR_FREQ_CTRL	(0xab0)
++#define LPF_WR_FREQ_CTRL_VFC3A	(0x730)
++
++#define TIME_CLOCK_TDC_FANOUT_CNFG	(0xB00)
++#define TIME_SYNC_TO_TDC_EN	BIT(0)
++#define SIG1_MUX_SEL_MASK	GENMASK(7, 4)
++#define SIG2_MUX_SEL_MASK	GENMASK(11, 8)
++enum tdc_mux_sel {
++	REF0 = 0,
++	REF1 = 1,
++	REF2 = 2,
++	REF3 = 3,
++	REF_CLK5 = 4,
++	REF_CLK6 = 5,
++	DPLL_FB_TO_TDC = 6,
++	DPLL_FB_DIVIDED_TO_TDC = 7,
++	TIME_CLK_DIVIDED = 8,
++	TIME_SYNC = 9,
++};
++
++#define TIME_CLOCK_MEAS_CNFG	(0xB04)
++#define TDC_MEAS_MODE	BIT(0)
++enum tdc_meas_mode {
++	CONTINUOUS = 0,
++	ONE_SHOT = 1,
++	MEAS_MODE_INVALID = 2,
++};
++
++#define TIME_CLOCK_MEAS_DIV_CNFG	(0xB08)
++#define TIME_REF_DIV_MASK	GENMASK(29, 24)
++
++#define TIME_CLOCK_MEAS_CTRL	(0xB10)
++#define TDC_MEAS_EN	BIT(0)
++#define TDC_MEAS_START	BIT(1)
++
++#define TDC_FIFO_READ_REQ	(0xB2F)
++#define TDC_FIFO_READ		(0xB30)
++#define COARSE_MEAS_MASK	GENMASK_ULL(39, 13)
++#define FINE_MEAS_MASK		GENMASK(12, 0)
++
++#define TDC_FIFO_CTRL		(0xB12)
++#define FIFO_CLEAR		BIT(0)
++#define TDC_FIFO_STS		(0xB38)
++#define FIFO_FULL		BIT(1)
++#define FIFO_EMPTY		BIT(0)
++#define TDC_FIFO_EVENT		(0xB39)
++#define FIFO_OVERRUN		BIT(1)
++
++/* INPUTS */
++#define MAX_INPUT_CLOCK_INDEX	(7)
++#define MAX_NUM_REF_PRIORITY	(4)
++#define MAX_REF_INDEX		(3)
++#define REF_SEL_CNFG		(0x410)
++#define REF_SEL_CNFG_VFC3A	(0x80)
++#define REF_MUX_SEL_MASK	(0x7)
++#define REF_MUX_SEL_SHIFT	(3)
++
++/* DPLL */
++#define MAX_DPLL_INDEX		(2)
++#define MAX_DPLL_INDEX_VFC3A	(0)
++
++#define DPLL_STS		(0x580)
++#define DPLL_STS_VFC3A		(0x571)
++#define DPLL_STATE_STS_MASK	(0x70)
++#define DPLL_STATE_STS_SHIFT	(4)
++#define DPLL_REF_SEL_STS_MASK	(0x6)
++#define DPLL_REF_SEL_STS_SHIFT	(1)
++#define DPLL_LOCK_STS	BIT(0)
++
++#define DPLL_REF_PRIORITY_CNFG			(0x502)
++#define DPLL_REFX_PRIORITY_DISABLE_MASK		(0xf)
++#define DPLL_REF0_PRIORITY_ENABLE_AND_SET_MASK	(0x31)
++#define DPLL_REF1_PRIORITY_ENABLE_AND_SET_MASK	(0xc2)
++#define DPLL_REF2_PRIORITY_ENABLE_AND_SET_MASK	(0x304)
++#define DPLL_REF3_PRIORITY_ENABLE_AND_SET_MASK	(0xc08)
++#define DPLL_REF0_PRIORITY_SHIFT		(4)
++#define DPLL_REF1_PRIORITY_SHIFT		(6)
++#define DPLL_REF2_PRIORITY_SHIFT		(8)
++#define DPLL_REF3_PRIORITY_SHIFT		(10)
++
++enum dpll_state {
++	DPLL_STATE_MIN             = 0,
++	DPLL_STATE_FREERUN         = DPLL_STATE_MIN,
++	DPLL_STATE_LOCKED          = 1,
++	DPLL_STATE_HOLDOVER        = 2,
++	DPLL_STATE_WRITE_FREQUENCY = 3,
++	DPLL_STATE_ACQUIRE         = 4,
++	DPLL_STATE_HITLESS_SWITCH  = 5,
++	DPLL_STATE_MAX             = DPLL_STATE_HITLESS_SWITCH
++};
++
++/* REFMON */
++#define LOSMON_STS_0		(0x81e)
++#define LOSMON_STS_0_VFC3A	(0x18e)
++#define LOSMON_STS_1		(0x82e)
++#define LOSMON_STS_1_VFC3A	(0x19e)
++#define LOSMON_STS_2		(0x83e)
++#define LOSMON_STS_2_VFC3A	(0x1ae)
++#define LOSMON_STS_3		(0x84e)
++#define LOSMON_STS_3_VFC3A	(0x1be)
++#define LOS_STS_MASK		(0x1)
++
++#define FREQMON_STS_0		(0x874)
++#define FREQMON_STS_0_VFC3A	(0x1d4)
++#define FREQMON_STS_1		(0x894)
++#define FREQMON_STS_1_VFC3A	(0x1f4)
++#define FREQMON_STS_2		(0x8b4)
++#define FREQMON_STS_2_VFC3A	(0x214)
++#define FREQMON_STS_3		(0x8d4)
++#define FREQMON_STS_3_VFC3A	(0x234)
++#define FREQ_FAIL_STS_SHIFT	(31)
++
++/* Firmware interface */
++#define TIME_CLK_FREQ_ADDR	(0xffa0)
++#define TDC_REF_FREQ_ADDR	(0xffa1)
++
++/*
++ * Return register address and field mask based on passed in firmware version
++ */
++#define IDTFC3_FW_REG(FW, VER, REG)	(((FW) < (VER)) ? (REG) : (REG##_##VER))
++#define IDTFC3_FW_FIELD(FW, VER, FIELD)	(((FW) < (VER)) ? (FIELD) : (FIELD##_##VER))
++#define IDTFC3_FW_MACRO(FW, VER, MACRO)	(((FW) < (VER)) ? (MACRO) : (MACRO##_##VER))
++enum fw_version {
++	V_DEFAULT = 0,
++	VFC3W     = 1,
++	VFC3A     = 2
++};
++
++struct idtfc3_hw_param {
++	u32 tdc_ref_freq;
++	u32 time_clk_freq;
++};
++
++struct idtfc3_fwrc {
++	u8 hiaddr;
++	u8 loaddr;
++	u8 value;
++	u8 reserved;
++} __packed;
++
++static inline void idtfc3_default_hw_param(struct idtfc3_hw_param *hw_param)
++{
++	hw_param->tdc_ref_freq = 49152000;
++	hw_param->time_clk_freq = 25000000;
++}
++
++static inline int idtfc3_set_hw_param(struct idtfc3_hw_param *hw_param,
++				      u16 addr, u32 val)
++{
++	if (addr == TDC_REF_FREQ_ADDR) {
++		/* The supported frequency range is 10MHz to 80MHz */
++		if (val > 80000000 || val < 10000000)
++			return -EINVAL;
++		hw_param->tdc_ref_freq = val;
++	} else if (addr == TIME_CLK_FREQ_ADDR) {
++		/* Time clock period must be whole nanoseconds */
++		if (NSEC_PER_SEC % val)
++			return -EINVAL;
++		hw_param->time_clk_freq = val;
++	} else
++		return -EFAULT;
++
++	return 0;
++}
++
++#endif
+diff --git a/include/linux/mfd/rsmu.h b/include/linux/mfd/rsmu.h
+index 6870de608233..b4a90fc8168d 100644
+--- a/include/linux/mfd/rsmu.h
++++ b/include/linux/mfd/rsmu.h
+@@ -8,11 +8,14 @@
+ #ifndef __LINUX_MFD_RSMU_H
+ #define __LINUX_MFD_RSMU_H
+ 
+-/* The supported devices are ClockMatrix, Sabre and SnowLotus */
++#define RSMU_MAX_WRITE_COUNT	(255)
++#define RSMU_MAX_READ_COUNT	(255)
++
++/* The supported devices are ClockMatrix, Sabre and FemtoClock3 */
+ enum rsmu_type {
+ 	RSMU_CM		= 0x34000,
+ 	RSMU_SABRE	= 0x33810,
+-	RSMU_SL		= 0x19850,
++	RSMU_FC3	= 0x38312,
+ };
+ 
+ /**
+@@ -31,6 +34,6 @@ struct rsmu_ddata {
+ 	struct regmap *regmap;
+ 	struct mutex lock;
+ 	enum rsmu_type type;
+-	u16 page;
++	u32 page;
+ };
+ #endif /*  __LINUX_MFD_RSMU_H */
+diff --git a/include/uapi/linux/rsmu.h b/include/uapi/linux/rsmu.h
+new file mode 100755
+index 000000000000..ae9329d5d2be
+--- /dev/null
++++ b/include/uapi/linux/rsmu.h
+@@ -0,0 +1,184 @@
++/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
++/*
++ * Driver for the IDT ClockMatrix(TM) and 82p33xxx families of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++
++#ifndef __UAPI_LINUX_RSMU_CDEV_H
++#define __UAPI_LINUX_RSMU_CDEV_H
++
++#include <linux/types.h>
++#include <linux/ioctl.h>
++//#include <stdbool.h>
++
++#define MAX_NUM_PRIORITY_ENTRIES 32
++#define TDC_FIFO_SIZE 16
++
++/* Set dpll combomode */
++struct rsmu_combomode {
++	__u8 dpll;
++	__u8 mode;
++};
++
++/* Get dpll state */
++struct rsmu_get_state {
++	__u8 dpll;
++	__u8 state;
++};
++
++/* Get dpll fractional frequency offset (ffo) in ppqt */
++struct rsmu_get_ffo {
++	__u8 dpll;
++	__s64 ffo;
++};
++
++/* Set holdover mode */
++struct rsmu_holdover_mode {
++	__u8 dpll;
++	__u8 enable;
++	__u8 mode;
++};
++
++/* Set output TDC go bit */
++struct rsmu_set_output_tdc_go {
++	__u8 tdc;
++	__u8 enable;
++};
++
++/* Read/write register */
++struct rsmu_reg_rw {
++	__u32 offset;
++	__u8 byte_count;
++	__u8 bytes[256];
++};
++
++/* Get current clock index */
++struct rsmu_current_clock_index {
++	__u8 dpll;
++	__s8 clock_index;
++};
++
++struct rsmu_priority_entry {
++	__u8 clock_index;
++	__u8 priority;
++};
++
++/* Set clock priorities */
++struct rsmu_clock_priorities {
++	__u8 dpll;
++	__u8 num_entries;
++	struct rsmu_priority_entry priority_entry[MAX_NUM_PRIORITY_ENTRIES];
++};
++
++struct rsmu_reference_monitor_status_alarms {
++	__u8 los;
++	__u8 no_activity;
++	__u8 frequency_offset_limit;
++};
++
++/* Get reference monitor status */
++struct rsmu_reference_monitor_status
++{
++	__u8 clock_index;
++	struct rsmu_reference_monitor_status_alarms alarms;
++};
++
++/* Get a TDC single-shot measurement in nanosecond */
++struct rsmu_get_tdc_meas {
++	int continuous;
++	__s64 offset;
++};
++
++/*
++ * RSMU IOCTL List
++ */
++#define RSMU_MAGIC '?'
++
++/**
++ * @Description
++ * ioctl to set SMU combo mode. Combo mode provides physical layer frequency
++ * support from the Ethernet Equipment Clock to the PTP clock.
++ *
++ * @Parameters
++ * pointer to struct rsmu_combomode that contains dpll combomode setting
++ */
++#define RSMU_SET_COMBOMODE  _IOW(RSMU_MAGIC, 1, struct rsmu_combomode)
++
++/**
++ * @Description
++ * ioctl to get SMU dpll state. Application can call this API to tell if
++ * SMU is locked to the GNSS signal.
++ *
++ * @Parameters
++ * pointer to struct rsmu_get_state that contains dpll state
++ */
++#define RSMU_GET_STATE  _IOR(RSMU_MAGIC, 2, struct rsmu_get_state)
++
++/**
++ * @Description
++ * ioctl to get SMU dpll fractional frequency offset (ffo).
++ *
++ * @Parameters
++ * pointer to struct rsmu_get_ffo that contains dpll ffo in ppqt
++ */
++#define RSMU_GET_FFO  _IOR(RSMU_MAGIC, 3, struct rsmu_get_ffo)
++
++/**
++ * @Description
++ * ioctl to enable/disable SMU HW holdover mode.
++ *
++ * @Parameters
++ * pointer to struct rsmu_holdover_mode that contains enable flag
++ */
++#define RSMU_SET_HOLDOVER_MODE  _IOW(RSMU_MAGIC, 4, struct rsmu_holdover_mode)
++
++/**
++ * @Description
++ * ioctl to set SMU output TDC go bit.
++ *
++ * @Parameters
++ * pointer to struct rsmu_set_output_tdc_go that contains enable flag
++ */
++#define RSMU_SET_OUTPUT_TDC_GO  _IOW(RSMU_MAGIC, 5, struct rsmu_set_output_tdc_go)
++
++/**
++ * @Description
++ * ioctl to get current SMU dpll clock index.
++ *
++ * @Parameters
++ * pointer to struct rsmu_current_clock_index that contains clock index
++ */
++#define RSMU_GET_CURRENT_CLOCK_INDEX  _IOR(RSMU_MAGIC, 6, struct rsmu_current_clock_index)
++
++/**
++ * @Description
++ * ioctl to set SMU dpll clock priorities.
++ *
++ * @Parameters
++ * pointer to struct rsmu_clock_priorities that contains number of entries, clock index, and priority
++ */
++#define RSMU_SET_CLOCK_PRIORITIES  _IOW(RSMU_MAGIC, 7, struct rsmu_clock_priorities)
++
++/**
++ * @Description
++ * ioctl to get SMU reference monitor status.
++ *
++ * @Parameters
++ * pointer to struct rsmu_reference_monitor_status that contains reference monitor status
++ */
++#define RSMU_GET_REFERENCE_MONITOR_STATUS  _IOR(RSMU_MAGIC, 8, struct rsmu_reference_monitor_status)
++
++/**
++ * @Description
++ * ioctl to get a one-shot tdc measurement (FC3W only).
++ *
++ * @Parameters
++ * pointer to struct rsmu_get_tdc_meas that contains a one-shot tdc measurement
++ */
++#define RSMU_GET_TDC_MEAS  _IOR(RSMU_MAGIC, 9, struct rsmu_get_tdc_meas)
++
++#define RSMU_REG_READ   _IOR(RSMU_MAGIC, 100, struct rsmu_reg_rw)
++#define RSMU_REG_WRITE  _IOR(RSMU_MAGIC, 101, struct rsmu_reg_rw)
++#endif /* __UAPI_LINUX_RSMU_CDEV_H */
+-- 
+2.25.1
+

@@ -1,0 +1,13 @@
+diff --git a/include/configs/xilinx_zynqmp.h b/include/configs/xilinx_zynqmp.h
+index 3d980b9e01..4bc9cbfdc7 100644
+--- a/include/configs/xilinx_zynqmp.h
++++ b/include/configs/xilinx_zynqmp.h
+@@ -87,7 +87,7 @@
+ #define CONFIG_CLOCKS
+ 
+ #define ENV_MEM_LAYOUT_SETTINGS \
+-	"initrd_high=0x38000000\0" \
++	"initrd_high=0x28000000\0" \
+ 	"fdt_addr_r=0x40000000\0" \
+ 	"fdt_size_r=0x400000\0" \
+ 	"pxefile_addr_r=0x10000000\0" \

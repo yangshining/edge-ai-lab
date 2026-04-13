@@ -1,0 +1,5882 @@
+From 539e09c7008e7e8da8532ac4c369dae047494822 Mon Sep 17 00:00:00 2001
+From: sbjf0005 <chao.fang@zillnk.com>
+Date: Tue, 1 Apr 2025 17:53:55 +0800
+Subject: [PATCH] mega maint br20211 migration
+
+---
+ arch/microblaze/Makefile                      |    4 -
+ drivers/mfd/Kconfig                           |   27 +
+ drivers/mfd/Makefile                          |    2 +
+ drivers/mfd/rsmu_i2c.c                        |  344 ++++
+ drivers/mfd/rsmu_private.h                    |   32 +
+ drivers/mfd/rsmu_spi.c                        |  371 ++++
+ drivers/misc/Kconfig                          |   18 +
+ drivers/misc/Makefile                         |    3 +
+ drivers/misc/rmdom.c                          |  448 +++++
+ drivers/misc/rmdom.h                          |   81 +
+ drivers/misc/rsmu_cdev.c                      |  373 ++++
+ drivers/misc/rsmu_cdev.h                      |   74 +
+ drivers/misc/rsmu_cm.c                        |  190 ++
+ drivers/misc/rsmu_sabre.c                     |  145 ++
+ drivers/mtd/spi-nor/gigadevice.c              |    2 +
+ drivers/mtd/spi-nor/macronix.c                |    3 +
+ .../net/ethernet/xilinx/xilinx_axienet_main.c |   22 +-
+ drivers/net/phy/Kconfig                       |    5 +
+ drivers/net/phy/Makefile                      |    1 +
+ drivers/net/phy/mars.c                        |  907 ++++++++++
+ drivers/ptp/Makefile                          |    3 +-
+ drivers/ptp/ptp_clockmatrix.c                 | 1590 ++++++++---------
+ drivers/ptp/ptp_clockmatrix.h                 |   96 +-
+ drivers/spi/spi-cadence.c                     |    2 +-
+ drivers/spi/spi-zynqmp-gqspi.c                |    4 +-
+ drivers/uio/uio_pdrv_genirq.c                 |    2 +-
+ 26 files changed, 3852 insertions(+), 897 deletions(-)
+ create mode 100644 drivers/mfd/rsmu_i2c.c
+ create mode 100644 drivers/mfd/rsmu_private.h
+ create mode 100644 drivers/mfd/rsmu_spi.c
+ create mode 100644 drivers/misc/rmdom.c
+ create mode 100644 drivers/misc/rmdom.h
+ create mode 100644 drivers/misc/rsmu_cdev.c
+ create mode 100644 drivers/misc/rsmu_cdev.h
+ create mode 100644 drivers/misc/rsmu_cm.c
+ create mode 100644 drivers/misc/rsmu_sabre.c
+ create mode 100644 drivers/net/phy/mars.c
+
+diff --git a/arch/microblaze/Makefile b/arch/microblaze/Makefile
+index e368c35ad..bb9808918 100644
+--- a/arch/microblaze/Makefile
++++ b/arch/microblaze/Makefile
+@@ -48,10 +48,6 @@ CPUFLAGS-1 += $(call cc-option,-mcpu=v$(CPU_VER))
+ # r31 holds current when in kernel mode
+ KBUILD_CFLAGS += -ffixed-r31 $(CPUFLAGS-y) $(CPUFLAGS-1) $(CPUFLAGS-2)
+ 
+-# GCC 10.x now has -ftree-loop-distribute-patterns by default in -O2
+-# This causes a boot failure, so disable it
+-KBUILD_CFLAGS += -fno-tree-loop-distribute-patterns
+-
+ head-y := arch/microblaze/kernel/head.o
+ libs-y += arch/microblaze/lib/
+ core-y += arch/microblaze/kernel/
+diff --git a/drivers/mfd/Kconfig b/drivers/mfd/Kconfig
+index 8b99a1366..4258213dc 100644
+--- a/drivers/mfd/Kconfig
++++ b/drivers/mfd/Kconfig
+@@ -2097,6 +2097,33 @@ config MFD_KHADAS_MCU
+ 	  additional drivers must be enabled in order to use the functionality
+ 	  of the device.
+ 
++config MFD_RSMU_SPI
++	tristate "Renesas Synchronization Management Unit with SPI"
++	depends on SPI && OF
++	select MFD_CORE
++	help
++	  Support for the Renesas synchronization management unit, such as
++	  Clockmatrix and 82P33XXX series. This option supports SPI as
++	  the control interface.
++
++	  This driver provides common support for accessing the device,
++	  additional drivers must be enabled in order to use the functionality
++	  of the device.
++
++config MFD_RSMU_I2C
++	tristate "Renesas Synchronization Management Unit with I2C"
++	depends on I2C && OF
++	depends on MFD_RSMU_SPI=n
++	select MFD_CORE
++	help
++	  Support for the Renesas synchronization management unit, such as
++	  Clockmatrix and 82P33XXX series. This option supports I2C as
++	  the control interface.
++
++	  This driver provides common support for accessing the device,
++	  additional drivers must be enabled in order to use the functionality
++	  of the device.
++	  
+ menu "Multimedia Capabilities Port drivers"
+ 	depends on ARCH_SA1100
+ 
+diff --git a/drivers/mfd/Makefile b/drivers/mfd/Makefile
+index 1780019d2..d4497e951 100644
+--- a/drivers/mfd/Makefile
++++ b/drivers/mfd/Makefile
+@@ -237,6 +237,8 @@ obj-$(CONFIG_MFD_HI655X_PMIC)   += hi655x-pmic.o
+ obj-$(CONFIG_MFD_DLN2)		+= dln2.o
+ obj-$(CONFIG_MFD_RT5033)	+= rt5033.o
+ obj-$(CONFIG_MFD_SKY81452)	+= sky81452.o
++obj-$(CONFIG_MFD_RSMU_I2C)	+= rsmu_i2c.o
++obj-$(CONFIG_MFD_RSMU_SPI)	+= rsmu_spi.o
+ 
+ intel-soc-pmic-objs		:= intel_soc_pmic_core.o intel_soc_pmic_crc.o
+ obj-$(CONFIG_INTEL_SOC_PMIC)	+= intel-soc-pmic.o
+diff --git a/drivers/mfd/rsmu_i2c.c b/drivers/mfd/rsmu_i2c.c
+new file mode 100644
+index 000000000..06f582b09
+--- /dev/null
++++ b/drivers/mfd/rsmu_i2c.c
+@@ -0,0 +1,344 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Multi-function driver for the IDT ClockMatrix(TM) and 82P33xxx families of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/slab.h>
++#include <linux/i2c.h>
++#include <linux/regmap.h>
++#include <linux/of.h>
++#include <linux/mfd/core.h>
++#include <linux/mfd/rsmu.h>
++#include "rsmu_private.h"
++
++/*
++ * 16-bit register address: the lower 8 bits of the register address come
++ * from the offset addr byte and the upper 8 bits come from the page register.
++ */
++#define	RSMU_CM_PAGE_ADDR		0xFD
++#define	RSMU_CM_PAGE_WINDOW		256
++
++/*
++ * 15-bit register address: the lower 7 bits of the register address come
++ * from the offset addr byte and the upper 8 bits come from the page register.
++ */
++#define	RSMU_SABRE_PAGE_ADDR		0x7F
++#define	RSMU_SABRE_PAGE_WINDOW		128
++
++static bool rsmu_cm_volatile_reg(struct device *dev, unsigned int reg);
++static bool rsmu_sabre_volatile_reg(struct device *dev, unsigned int reg);
++
++/* Current mfd device index */
++static atomic_t rsmu_ndevs = ATOMIC_INIT(0);
++
++/* Platform data */
++static struct rsmu_pdata rsmu_pdata[RSMU_MAX_MFD_DEV];
++
++/* clockmatrix phc devices */
++static struct mfd_cell rsmu_cm_pdev[RSMU_MAX_MFD_DEV] = {
++	[0] = {
++		.name = "idtcm-ptp0",
++		.of_compatible	= "renesas,idtcm-ptp0",
++	},
++	[1] = {
++		.name = "idtcm-ptp1",
++		.of_compatible	= "renesas,idtcm-ptp1",
++	},
++	[2] = {
++		.name = "idtcm-ptp2",
++		.of_compatible	= "renesas,idtcm-ptp2",
++	},
++	[3] = {
++		.name = "idtcm-ptp3",
++		.of_compatible	= "renesas,idtcm-ptp3",
++	},
++};
++
++/* sabre phc devices */
++static struct mfd_cell rsmu_sabre_pdev[RSMU_MAX_MFD_DEV] = {
++	[0] = {
++		.name = "idt82p33-ptp0",
++		.of_compatible	= "renesas,idt82p33-ptp0",
++	},
++	[1] = {
++		.name = "idt82p33-ptp1",
++		.of_compatible	= "renesas,idt82p33-ptp1",
++	},
++	[2] = {
++		.name = "idt82p33-ptp2",
++		.of_compatible	= "renesas,idt82p33-ptp2",
++	},
++	[3] = {
++		.name = "idt82p33-ptp3",
++		.of_compatible	= "renesas,idt82p33-ptp3",
++	},
++};
++
++/* rsmu character devices */
++static struct mfd_cell rsmu_cdev[RSMU_MAX_MFD_DEV] = {
++	[0] = {
++		.name = "rsmu-cdev0",
++		.of_compatible	= "renesas,rsmu-cdev0",
++	},
++	[1] = {
++		.name = "rsmu-cdev1",
++		.of_compatible	= "renesas,rsmu-cdev1",
++	},
++	[2] = {
++		.name = "rsmu-cdev2",
++		.of_compatible	= "renesas,rsmu-cdev2",
++	},
++	[3] = {
++		.name = "rsmu-cdev3",
++		.of_compatible	= "renesas,rsmu-cdev3",
++	},
++};
++
++static const struct regmap_range_cfg rsmu_cm_range_cfg[] = {
++	{
++		.range_min = 0,
++		.range_max = 0xD000,
++		.selector_reg = RSMU_CM_PAGE_ADDR,
++		.selector_mask = 0xFF,
++		.selector_shift = 0,
++		.window_start = 0,
++		.window_len = RSMU_CM_PAGE_WINDOW,
++	}
++};
++
++static const struct regmap_range_cfg rsmu_sabre_range_cfg[] = {
++	{
++		.range_min = 0,
++		.range_max = 0x400,
++		.selector_reg = RSMU_SABRE_PAGE_ADDR,
++		.selector_mask = 0xFF,
++		.selector_shift = 0,
++		.window_start = 0,
++		.window_len = RSMU_SABRE_PAGE_WINDOW,
++	}
++};
++
++static const struct regmap_config rsmu_regmap_configs[] = {
++	[RSMU_CM] = {
++		.reg_bits = 8,
++		.val_bits = 8,
++		.max_register = 0xD000,
++		.ranges = rsmu_cm_range_cfg,
++		.num_ranges = ARRAY_SIZE(rsmu_cm_range_cfg),
++		.volatile_reg = rsmu_cm_volatile_reg,
++		.cache_type = REGCACHE_RBTREE,
++		.can_multi_write = true,
++	},
++	[RSMU_SABRE] = {
++		.reg_bits = 8,
++		.val_bits = 8,
++		.max_register = 0x400,
++		.ranges = rsmu_sabre_range_cfg,
++		.num_ranges = ARRAY_SIZE(rsmu_sabre_range_cfg),
++		.volatile_reg = rsmu_sabre_volatile_reg,
++		.cache_type = REGCACHE_RBTREE,
++		.can_multi_write = true,
++	},
++};
++
++static bool rsmu_cm_volatile_reg(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case RSMU_CM_PAGE_ADDR:
++		return false;
++	default:
++		return true;
++	}
++}
++
++static bool rsmu_sabre_volatile_reg(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case RSMU_SABRE_PAGE_ADDR:
++		return false;
++	default:
++		return true;
++	}
++}
++
++int rsmu_read(struct device *dev, u16 reg, u8 *buf, u16 size)
++{
++	struct rsmu_dev *rsmu = dev_get_drvdata(dev);
++
++	return regmap_bulk_read(rsmu->regmap, reg, buf, size);
++}
++EXPORT_SYMBOL_GPL(rsmu_read);
++
++int rsmu_write(struct device *dev, u16 reg, u8 *buf, u16 size)
++{
++	struct rsmu_dev *rsmu = dev_get_drvdata(dev);
++
++	return regmap_bulk_write(rsmu->regmap, reg, buf, size);
++}
++EXPORT_SYMBOL_GPL(rsmu_write);
++
++static int rsmu_mfd_init(struct rsmu_dev *rsmu, struct mfd_cell *mfd,
++			 struct rsmu_pdata *pdata)
++{
++	int ret;
++
++	mfd->platform_data = pdata;
++	mfd->pdata_size = sizeof(struct rsmu_pdata);
++
++	ret = mfd_add_devices(rsmu->dev, -1, mfd, 1, NULL, 0, NULL);
++	if (ret < 0) {
++		dev_err(rsmu->dev, "mfd_add_devices failed with %s\n",
++			mfd->name);
++		return ret;
++	}
++
++	return ret;
++}
++
++static int rsmu_dev_init(struct rsmu_dev *rsmu)
++{
++	struct rsmu_pdata *pdata;
++	struct mfd_cell *pmfd;
++	struct mfd_cell *cmfd;
++	int ret;
++
++	/* Initialize regmap */
++	rsmu->regmap = devm_regmap_init_i2c(rsmu->client,
++					    &rsmu_regmap_configs[rsmu->type]);
++	if (IS_ERR(rsmu->regmap)) {
++		ret = PTR_ERR(rsmu->regmap);
++		dev_err(rsmu->dev, "Failed to allocate register map: %d\n",
++			ret);
++		return ret;
++	}
++
++	/* Initialize device index */
++	rsmu->index = atomic_read(&rsmu_ndevs);
++	if (rsmu->index >= RSMU_MAX_MFD_DEV)
++		return -ENODEV;
++
++	/* Initialize platform data */
++	pdata = &rsmu_pdata[rsmu->index];
++	pdata->lock = &rsmu->lock;
++	pdata->type = rsmu->type;
++	pdata->index = rsmu->index;
++
++	/* Initialize MFD devices */
++	cmfd = &rsmu_cdev[rsmu->index];
++	if (rsmu->type == RSMU_CM)
++		pmfd = &rsmu_cm_pdev[rsmu->index];
++	else if (rsmu->type == RSMU_SABRE)
++		pmfd = &rsmu_sabre_pdev[rsmu->index];
++	else
++		return -EINVAL;
++
++	ret = rsmu_mfd_init(rsmu, pmfd, pdata);
++	if (ret)
++		return ret;
++
++	return rsmu_mfd_init(rsmu, cmfd, pdata);
++}
++
++static int rsmu_dt_init(struct rsmu_dev *rsmu)
++{
++	struct device_node *np = rsmu->dev->of_node;
++
++	rsmu->type = RSMU_NONE;
++	if (of_device_is_compatible(np, "idt,8a34000")) {
++		rsmu->type = RSMU_CM;
++	} else if (of_device_is_compatible(np, "idt,82p33810")) {
++		rsmu->type = RSMU_SABRE;
++	} else {
++		dev_err(rsmu->dev, "unknown RSMU device\n");
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int rsmu_probe(struct i2c_client *client, const struct i2c_device_id *id)
++{
++	struct rsmu_dev *rsmu;
++	int ret;
++
++	rsmu = devm_kzalloc(&client->dev, sizeof(struct rsmu_dev),
++			       GFP_KERNEL);
++	if (rsmu == NULL)
++		return -ENOMEM;
++
++	i2c_set_clientdata(client, rsmu);
++	mutex_init(&rsmu->lock);
++	rsmu->dev = &client->dev;
++	rsmu->client = client;
++
++	ret = rsmu_dt_init(rsmu);
++	if (ret)
++		return ret;
++
++	mutex_lock(&rsmu->lock);
++
++	ret = rsmu_dev_init(rsmu);
++	if (ret == 0)
++		atomic_inc(&rsmu_ndevs);
++
++	mutex_unlock(&rsmu->lock);
++
++	return ret;
++}
++
++static int rsmu_remove(struct i2c_client *client)
++{
++	struct rsmu_dev *rsmu = i2c_get_clientdata(client);
++
++	mfd_remove_devices(&client->dev);
++	mutex_destroy(&rsmu->lock);
++	atomic_dec(&rsmu_ndevs);
++
++	return 0;
++}
++
++static const struct i2c_device_id rsmu_id[] = {
++	{ "8a34000", 0 },
++	{ "82p33810", 0 },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, rsmu_id);
++
++static const struct of_device_id rsmu_of_match[] = {
++	{.compatible = "idt,8a34000", },
++	{.compatible = "idt,82p33810", },
++	{},
++};
++MODULE_DEVICE_TABLE(of, rsmu_of_match);
++
++static struct i2c_driver rsmu_driver = {
++	.driver = {
++		   .name = "rsmu-i2c",
++		   .of_match_table = of_match_ptr(rsmu_of_match),
++	},
++	.probe = rsmu_probe,
++	.remove	= rsmu_remove,
++	.id_table = rsmu_id,
++};
++
++static int __init rsmu_init(void)
++{
++	return i2c_add_driver(&rsmu_driver);
++}
++/* init early so consumer devices can complete system boot */
++subsys_initcall(rsmu_init);
++
++static void __exit rsmu_exit(void)
++{
++	i2c_del_driver(&rsmu_driver);
++}
++module_exit(rsmu_exit);
++
++MODULE_DESCRIPTION("Renesas SMU I2C multi-function driver");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/mfd/rsmu_private.h b/drivers/mfd/rsmu_private.h
+new file mode 100644
+index 000000000..8841a2406
+--- /dev/null
++++ b/drivers/mfd/rsmu_private.h
+@@ -0,0 +1,32 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * Multi-function driver for the IDT ClockMatrix(TM) and 82p33xxx families of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++
++#ifndef __RSMU_MFD_PRIVATE_H
++#define __RSMU_MFD_PRIVATE_H
++
++#include <linux/mfd/rsmu.h>
++
++/* Maximum number of mfd devices */
++#define RSMU_MAX_MFD_DEV		4
++
++struct rsmu_dev {
++	struct device *dev;
++	void *client;
++	struct regmap *regmap;
++	struct mutex lock;
++	enum rsmu_type type;
++	u8 index;
++	u16 page;
++};
++
++enum rsmu_mfd_type {
++	RSMU_MFD_PTP		= 0,
++	RSMU_MFD_CDEV		= 1,
++	RSMU_MFD_NUM		= 2,
++};
++#endif /*  __LINUX_MFD_RSMU_H */
+diff --git a/drivers/mfd/rsmu_spi.c b/drivers/mfd/rsmu_spi.c
+new file mode 100644
+index 000000000..25a471add
+--- /dev/null
++++ b/drivers/mfd/rsmu_spi.c
+@@ -0,0 +1,371 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Multi-function driver for the IDT ClockMatrix(TM) and 82P33xxx families of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/init.h>
++#include <linux/slab.h>
++#include <linux/spi/spi.h>
++#include <linux/regmap.h>
++#include <linux/of.h>
++#include <linux/mfd/core.h>
++#include <linux/mfd/rsmu.h>
++#include "rsmu_private.h"
++
++/*
++ * 16-bit register address: the lower 7 bits of the register address come
++ * from the offset addr byte and the upper 9 bits come from the page register.
++ */
++#define	RSMU_CM_PAGE_ADDR		0x7C
++#define	RSMU_SABRE_PAGE_ADDR		0x7F
++#define	RSMU_HIGHER_ADDR_MASK		0xFF80
++#define	RSMU_HIGHER_ADDR_SHIFT		7
++#define	RSMU_LOWER_ADDR_MASK		0x7F
++
++/* Current mfd device index */
++static atomic_t rsmu_ndevs = ATOMIC_INIT(0);
++
++/* Platform data */
++static struct rsmu_pdata rsmu_pdata[RSMU_MAX_MFD_DEV];
++
++/* clockmatrix phc devices */
++static struct mfd_cell rsmu_cm_pdev[RSMU_MAX_MFD_DEV] = {
++	[0] = {
++		.name = "idtcm-ptp0",
++		.of_compatible	= "renesas,idtcm-ptp0",
++	},
++	[1] = {
++		.name = "idtcm-ptp1",
++		.of_compatible	= "renesas,idtcm-ptp1",
++	},
++	[2] = {
++		.name = "idtcm-ptp2",
++		.of_compatible	= "renesas,idtcm-ptp2",
++	},
++	[3] = {
++		.name = "idtcm-ptp3",
++		.of_compatible	= "renesas,idtcm-ptp3",
++	},
++};
++
++/* sabre phc devices */
++static struct mfd_cell rsmu_sabre_pdev[RSMU_MAX_MFD_DEV] = {
++	[0] = {
++		.name = "idt82p33-ptp0",
++		.of_compatible	= "renesas,idt82p33-ptp0",
++	},
++	[1] = {
++		.name = "idt82p33-ptp1",
++		.of_compatible	= "renesas,idt82p33-ptp1",
++	},
++	[2] = {
++		.name = "idt82p33-ptp2",
++		.of_compatible	= "renesas,idt82p33-ptp2",
++	},
++	[3] = {
++		.name = "idt82p33-ptp3",
++		.of_compatible	= "renesas,idt82p33-ptp3",
++	},
++};
++
++/* rsmu character devices */
++static struct mfd_cell rsmu_cdev[RSMU_MAX_MFD_DEV] = {
++	[0] = {
++		.name = "rsmu-cdev0",
++		.of_compatible	= "renesas,rsmu-cdev0",
++	},
++	[1] = {
++		.name = "rsmu-cdev1",
++		.of_compatible	= "renesas,rsmu-cdev1",
++	},
++	[2] = {
++		.name = "rsmu-cdev2",
++		.of_compatible	= "renesas,rsmu-cdev2",
++	},
++	[3] = {
++		.name = "rsmu-cdev3",
++		.of_compatible	= "renesas,rsmu-cdev3",
++	},
++};
++
++static int rsmu_read_device(struct rsmu_dev *rsmu, u8 reg, u8 *buf, u16 bytes)
++{
++	struct spi_device *client = rsmu->client;
++	struct spi_transfer xfer = {0};
++	struct spi_message msg;
++	u8 cmd[256] = {0};
++	u8 rsp[256] = {0};
++	int ret;
++
++	cmd[0] = reg | 0x80;
++	xfer.rx_buf = rsp;
++	xfer.len = bytes + 1;
++	xfer.tx_buf = cmd;
++	xfer.bits_per_word = client->bits_per_word;
++	xfer.speed_hz = client->max_speed_hz;
++
++	spi_message_init(&msg);
++	spi_message_add_tail(&xfer, &msg);
++
++	ret = spi_sync(client, &msg);
++	if (ret >= 0)
++		memcpy(buf, &rsp[1], xfer.len-1);
++
++	return ret;
++}
++
++static int rsmu_write_device(struct rsmu_dev *rsmu, u8 reg, u8 *buf, u16 bytes)
++{
++	struct spi_device *client = rsmu->client;
++	struct spi_transfer xfer = {0};
++	struct spi_message msg;
++	u8 cmd[256] = {0};
++	int ret = -1;
++
++	cmd[0] = reg;
++	memcpy(&cmd[1], buf, bytes);
++
++	xfer.len = bytes + 1;
++	xfer.tx_buf = cmd;
++	xfer.bits_per_word = client->bits_per_word;
++	xfer.speed_hz = client->max_speed_hz;
++	spi_message_init(&msg);
++	spi_message_add_tail(&xfer, &msg);
++
++	ret = spi_sync(client, &msg);
++	return ret;
++}
++
++static int rsmu_write_page_register(struct rsmu_dev *rsmu, u16 reg)
++{
++	u8 buf[2];
++	u16 bytes;
++	u16 page;
++	u8 preg;
++	int err;
++
++	switch (rsmu->type) {
++	case RSMU_CM:
++		preg = RSMU_CM_PAGE_ADDR;
++		page = reg & RSMU_HIGHER_ADDR_MASK;
++		buf[0] = (u8)(page & 0xff);
++		buf[1] = (u8)((page >> 8) & 0xff);
++		bytes = 2;
++		break;
++	case RSMU_SABRE:
++		preg = RSMU_SABRE_PAGE_ADDR;
++		page = reg >> RSMU_HIGHER_ADDR_SHIFT;
++		buf[0] = (u8)(page & 0xff);
++		bytes = 1;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	if (rsmu->page == page)
++		return 0;
++
++	err = rsmu_write_device(rsmu, preg, buf, bytes);
++
++	if (err) {
++		rsmu->page = 0xffff;
++		dev_err(rsmu->dev,
++			"failed to set page offset 0x%x\n", page);
++	} else {
++		rsmu->page = page;
++	}
++
++	return err;
++}
++
++int rsmu_read(struct device *dev, u16 reg, u8 *buf, u16 size)
++{
++	struct rsmu_dev *rsmu = dev_get_drvdata(dev);
++	u8 addr = (u8)(reg & RSMU_LOWER_ADDR_MASK);
++	int err;
++
++	err = rsmu_write_page_register(rsmu, reg);
++	if (err)
++		return err;
++
++	err = rsmu_read_device(rsmu, addr, buf, size);
++	if (err)
++		dev_err(rsmu->dev,
++			"failed to read offset address 0x%x\n", addr);
++
++	return err;
++}
++EXPORT_SYMBOL_GPL(rsmu_read);
++
++int rsmu_write(struct device *dev, u16 reg, u8 *buf, u16 size)
++{
++	struct rsmu_dev *rsmu = dev_get_drvdata(dev);
++	u8 addr = (u8)(reg & RSMU_LOWER_ADDR_MASK);
++	int err;
++
++	err = rsmu_write_page_register(rsmu, reg);
++	if (err)
++		return err;
++
++	err = rsmu_write_device(rsmu, addr, buf, size);
++	if (err)
++		dev_err(rsmu->dev,
++			"failed to write offset address 0x%x\n", addr);
++
++	return err;
++}
++EXPORT_SYMBOL_GPL(rsmu_write);
++
++static int rsmu_mfd_init(struct rsmu_dev *rsmu, struct mfd_cell *mfd,
++			 struct rsmu_pdata *pdata)
++{
++	int ret;
++
++	mfd->platform_data = pdata;
++	mfd->pdata_size = sizeof(struct rsmu_pdata);
++
++	ret = mfd_add_devices(rsmu->dev, -1, mfd, 1, NULL, 0, NULL);
++	if (ret < 0) {
++		dev_err(rsmu->dev, "mfd_add_devices failed with %s\n",
++			mfd->name);
++		return ret;
++	}
++
++	return ret;
++}
++
++static int rsmu_dev_init(struct rsmu_dev *rsmu)
++{
++	struct rsmu_pdata *pdata;
++	struct mfd_cell *pmfd;
++	struct mfd_cell *cmfd;
++	int ret;
++
++	/* Initialize device index */
++	rsmu->index = atomic_read(&rsmu_ndevs);
++	if (rsmu->index >= RSMU_MAX_MFD_DEV)
++		return -ENODEV;
++
++	/* Initialize platform data */
++	pdata = &rsmu_pdata[rsmu->index];
++	pdata->lock = &rsmu->lock;
++	pdata->type = rsmu->type;
++	pdata->index = rsmu->index;
++
++	/* Initialize MFD devices */
++	cmfd = &rsmu_cdev[rsmu->index];
++	if (rsmu->type == RSMU_CM)
++		pmfd = &rsmu_cm_pdev[rsmu->index];
++	else if (rsmu->type == RSMU_SABRE)
++		pmfd = &rsmu_sabre_pdev[rsmu->index];
++	else
++		return -EINVAL;
++
++	ret = rsmu_mfd_init(rsmu, pmfd, pdata);
++	if (ret)
++		return ret;
++
++	return rsmu_mfd_init(rsmu, cmfd, pdata);
++}
++
++static int rsmu_dt_init(struct rsmu_dev *rsmu)
++{
++	struct device_node *np = rsmu->dev->of_node;
++
++	rsmu->type = RSMU_NONE;
++	if (of_device_is_compatible(np, "idt,8a34000")) {
++		rsmu->type = RSMU_CM;
++	} else if (of_device_is_compatible(np, "idt,82p33810")) {
++		rsmu->type = RSMU_SABRE;
++	} else {
++		dev_err(rsmu->dev, "unknown RSMU device\n");
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int rsmu_probe(struct spi_device *client)
++{
++	struct rsmu_dev *rsmu;
++	int ret;
++
++	rsmu = devm_kzalloc(&client->dev, sizeof(struct rsmu_dev), GFP_KERNEL);
++	if (rsmu == NULL)
++		return -ENOMEM;
++
++	spi_set_drvdata(client, rsmu);
++	mutex_init(&rsmu->lock);
++	rsmu->dev = &client->dev;
++	rsmu->client = client;
++
++	ret = rsmu_dt_init(rsmu);
++	if (ret)
++		return ret;
++
++	mutex_lock(&rsmu->lock);
++
++	ret = rsmu_dev_init(rsmu);
++	if (ret == 0)
++		atomic_inc(&rsmu_ndevs);
++
++	mutex_unlock(&rsmu->lock);
++
++	return ret;
++}
++
++static int rsmu_remove(struct spi_device *client)
++{
++	struct rsmu_dev *rsmu = spi_get_drvdata(client);
++
++	mfd_remove_devices(&client->dev);
++	mutex_destroy(&rsmu->lock);
++	atomic_dec(&rsmu_ndevs);
++
++	return 0;
++}
++
++static const struct spi_device_id rsmu_id[] = {
++	{ "8a34000", 0 },
++	{ "82p33810", 0 },
++	{ }
++};
++MODULE_DEVICE_TABLE(spi, rsmu_id);
++
++static const struct of_device_id rsmu_of_match[] = {
++	{.compatible = "idt,8a34000", },
++	{.compatible = "idt,82p33810", },
++	{},
++};
++MODULE_DEVICE_TABLE(of, rsmu_of_match);
++
++static struct spi_driver rsmu_driver = {
++	.driver = {
++		   .name = "rsmu-spi",
++		   .of_match_table = of_match_ptr(rsmu_of_match),
++	},
++	.probe = rsmu_probe,
++	.remove	= rsmu_remove,
++	.id_table = rsmu_id,
++};
++
++static int __init rsmu_init(void)
++{
++	return spi_register_driver(&rsmu_driver);
++}
++/* init early so consumer devices can complete system boot */
++subsys_initcall(rsmu_init);
++
++static void __exit rsmu_exit(void)
++{
++	spi_unregister_driver(&rsmu_driver);
++}
++module_exit(rsmu_exit);
++
++MODULE_DESCRIPTION("Renesas SMU SPI multi-function driver");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/misc/Kconfig b/drivers/misc/Kconfig
+index edfbc2540..f70c29bd2 100644
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -501,6 +501,24 @@ config HISI_HIKEY_USB
+ 	  switching between the dual-role USB-C port and the USB-A host ports
+ 	  using only one USB controller.
+ 
++config RSMU
++	tristate "Renesas Synchronization Management Unit (SMU)"
++	depends on MFD_RSMU_I2C || MFD_RSMU_SPI
++	help
++	  This option enables support for Renesas SMU, such as Clockmatrix and
++	  82P33XXX series. It will be used by Renesas PTP Clock Manager for
++	  Linux (pcm4l) software to provide support to GNSS assisted partial
++	  timing support (APTS) and other networking timing functions.
++
++config RMDOM
++	bool "Remaining Memory Domains"
++	default n
++	help
++	  This driver manages domains of remaining memory after reboot, it's used
++	  to create other drivers using persistent ram with dt. The main goal 
++	  is to be able to divide parts of SRAM of the layout as its reserved regions
++	  that couldn't be touched by Kernel except with FS access.
++
+ source "drivers/misc/jesd204b/Kconfig"
+ source "drivers/misc/c2port/Kconfig"
+ source "drivers/misc/eeprom/Kconfig"
+diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
+index 7bdb21a14..cb69db1bb 100644
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -13,6 +13,8 @@ obj-$(CONFIG_ATMEL_SSC)		+= atmel-ssc.o
+ obj-$(CONFIG_ATMEL_TCLIB)	+= atmel_tclib.o
+ obj-$(CONFIG_DUMMY_IRQ)		+= dummy-irq.o
+ obj-$(CONFIG_ICS932S401)	+= ics932s401.o
++rsmu-objs					:= rsmu_cdev.o rsmu_cm.o rsmu_sabre.o
++obj-$(CONFIG_RSMU)			+= rsmu.o
+ obj-$(CONFIG_LKDTM)		+= lkdtm/
+ obj-$(CONFIG_TIFM_CORE)       	+= tifm_core.o
+ obj-$(CONFIG_TIFM_7XX1)       	+= tifm_7xx1.o
+@@ -61,3 +63,4 @@ obj-$(CONFIG_XILINX_FLEX_PM)	+= xilinx_flex_pm.o
+ obj-$(CONFIG_XILINX_TRAFGEN)	+= xilinx_trafgen.o
+ obj-$(CONFIG_XILINX_JESD204B)	+= jesd204b/
+ obj-$(CONFIG_XILINX_AIE)	+= xilinx-ai-engine/
++obj-$(CONFIG_RMDOM)	+= rmdom.o
+diff --git a/drivers/misc/rmdom.c b/drivers/misc/rmdom.c
+new file mode 100644
+index 000000000..ee28f6788
+--- /dev/null
++++ b/drivers/misc/rmdom.c
+@@ -0,0 +1,448 @@
++/*
++ * Remaining Memory Domains Header
++ * 
++ * set a separate domain/region into fs for log system after system reboot
++ */
++
++#include <linux/platform_device.h>
++#include <linux/io.h>
++#include <linux/module.h>
++
++#include <linux/pstore_ram.h>
++#include <linux/slab.h>
++
++#include <linux/of.h>
++#include <linux/of_address.h>
++
++#include <linux/crc32.h>
++#include "rmdom.h"
++
++// create rmdom unique ids
++DEFINE_IDA(rmdom_uni_ida);
++static const struct of_device_id rmdom_ids[] = {
++    { .compatible = "linux,rmdom", }, { },
++};
++
++// Init a resource for pmem from DT
++static void populate_part_res(const struct rmdom_dev *rmddev, const struct rmdom_part *part, const char *name, struct resource *res)
++{
++    res->name = name;
++    res->flags = IORESOURCE_MEM;
++    res->start = rmddev->start + part->start;
++    res->end = res->start + part->size - 1;
++    res->parent = res->sibling =  res->child = NULL;
++}
++
++// set ramoops private data by DT
++static void populate_oops_pl_data(const struct rmdom_dev *rmddev, const struct rmdom_part *part, struct ramoops_platform_data *pdata)
++{
++    const struct rmdom_ramoops *params = &part->params.ramoops;
++
++    pdata->mem_size     = part->size;
++    pdata->mem_type     = params->mem_type;
++    pdata->mem_address  = rmddev->start + part->start;
++    pdata->record_size  = params->record_size;
++    pdata->console_size = params->console_size;
++    pdata->pmsg_size    = params->rmsg_size;
++    pdata->ftrace_size  = params->ftrace_size;
++    pdata->ecc_info.ecc_size = (params->ecc_size == 1 ? 16 : params->ecc_size);
++    pdata->max_reason = KMSG_DUMP_OOPS;
++}
++
++// Helper function to read a size from a dtb
++static u32 read_size_data(const struct device_node *node, const char *name)
++{
++    u32 val = 0;
++    int ret;
++
++    ret = of_property_read_u32(node, name, &val);
++    if (ret < 0 && ret != -EINVAL) {
++        pr_err("Parse meta-data failed - %s: %d\n", name, ret);
++        return -1;
++    }
++    return val;
++}
++
++static void printout_hdr(struct rmdom_header *cfg_rh)
++{
++    struct rmdom_header *rh = cfg_rh;
++    struct rmdom_part *part = &rh->parts[0];
++    int i;
++    printk("printout_hdr started - [mg:%x, v:%x.%x]\n", rh->magic, rh->major, rh->minor);
++    printk("printout_hdr checksum - [checksum:%x]\n", rh->cs);
++    for ( i = 0; i < 3; i++ )
++    {
++        printk("\tPart%x -- [categ:%x]\n", i, part->categ);
++        printk("\t ---- [part_sub_version:%x.%x]\n", part->major, part->minor);
++        printk("\t ---- [mem-reg:0x%x - 0x%x]\n", part->start, part->size);
++        part++;
++    }
++}
++
++static int register_nvdimm_bus(struct rmdom_dev *rmddev, struct device_node *dn)
++{
++    int ret = 0;
++    dn = dev_of_node(rmddev->dev);
++    if (!dn) {
++        dev_err(rmddev->dev, "Node pointer empty\n");
++        ret = -ENODEV;
++        goto end;
++    }
++
++    rmddev->bus_desc.provider_name = "rmdom_rmem";
++    rmddev->bus_desc.module = THIS_MODULE;
++    rmddev->bus_desc.of_node = dn;
++
++    rmddev->bus = nvdimm_bus_register(rmddev->dev, &rmddev->bus_desc);
++    if (!rmddev->bus) {
++        dev_err(rmddev->dev, "Can't register nvdimm bus\n");
++        ret = -ENODEV;
++        goto end;
++    }
++end:
++    return ret;
++}
++
++// Register devices as pointed by current header
++static void register_subdevices(struct rmdom_dev *rmddev)
++{
++    const struct rmdom_header *hdr = &rmddev->curr;
++    int i;
++    struct device_node *dnp;
++
++    //dev_info(rmddev->dev, "####reg subdevices config dump:\n");
++    //printout_hdr(hdr);
++    if(register_nvdimm_bus(rmddev, dnp)) {
++        dev_warn(rmddev->dev, "Failed to register nvdimm bus\n");
++        return;
++    }
++
++    // Register all known platform devices pointed by the header
++    dev_info(rmddev->dev, "current subdevices num %x\n", ARRAY_SIZE(hdr->parts)); 
++    for (i = 0; i < ARRAY_SIZE(hdr->parts); i++) {
++        const struct rmdom_part *part = &hdr->parts[i];
++        switch (part->categ) {
++        case RMDOM_CATEG_EMPTY:
++            break;
++        case RMDOM_CATEG_RMEM:
++        {
++            struct resource res;
++            struct nd_region_desc desc;
++            struct nd_region *region;
++
++            if (part->major != RMDOM_RMEM_MAJOR) {
++                dev_info(rmddev->dev, "Query DT to get major version %d but expected %d for rmem in part %d\n", part->major, RMDOM_RMEM_MAJOR, i);
++                continue;
++            }
++
++            populate_part_res(rmddev, part, "rmdom_rmem", &res);
++            dev_dbg(rmddev->dev, "rmem in slot %d in %p\n", i, &res);
++
++            memset(&desc, 0, sizeof(desc));
++            desc.numa_node = dev_to_node(rmddev->dev);
++            desc.res = &res;
++            desc.of_node = dnp;
++            set_bit(ND_REGION_PAGEMAP, &desc.flags);
++
++            region = nvdimm_pmem_region_create(rmddev->bus, &desc);
++
++            if (!region)
++                dev_warn(rmddev->dev, "Can't register region %p with %p\n", desc.res, dnp);
++            else
++                dev_dbg(rmddev->dev, "Registered region %p with %p\n", desc.res, dnp);
++            dev_info(rmddev->dev, "Register rmem device\n");
++            break;
++        }
++        case RMDOM_CATEG_RAMOOPS:
++        {
++            struct ramoops_platform_data pldata;
++            struct resource res;
++
++            if (!rmddev->pstore)
++                continue;
++
++            if (part->major != RMDOM_RAMOOPS_MAJOR) {
++                dev_info(rmddev->dev, "Query DT to get major version %d but expected %d for ramoops in part %d\n", part->major, RMDOM_RAMOOPS_MAJOR, i);
++                continue;
++            }
++            populate_oops_pl_data(rmddev, part, &pldata);
++
++            res.start = pldata.mem_address;
++            res.end = res.start + pldata.mem_size + 1;
++            dev_dbg(rmddev->dev, "ramoops in slot %d %pR\n", i, &res);
++
++            rmddev->pdevs[i] = platform_device_register_data(NULL, "ramoops", -1, &pldata, sizeof(pldata));
++            if (IS_ERR(rmddev->pdevs[i])) {
++                dev_warn(rmddev->dev, "Failed to register ramoops device in part %d with err=%ld\n", i, PTR_ERR(rmddev->pdevs[i]));
++            }
++            dev_info(rmddev->dev, "Register ramoops device\n");            
++            break;
++        }
++        default:
++            dev_warn(rmddev->dev, "Unexpected part %d\n", part->categ);
++            break;
++        }
++    }
++}
++
++// Deregister the subdevices registered
++static int deregister_subdevices(struct rmdom_dev *rmddev)
++{
++    int i;
++
++    if (rmddev->bus) {
++        nvdimm_bus_unregister(rmddev->bus);
++        rmddev->bus = NULL;
++    }
++
++    for (i = 0; i < RMDOM_PART_NUM; i++) {
++        struct platform_device *pdev = rmddev->pdevs[i];
++
++        if (!IS_ERR(pdev)) {
++            platform_device_unregister(pdev);
++        }
++        rmddev->pdevs[i] = NULL;
++    }
++    return 0;
++}
++
++//populate header with DT info
++static int populate_hdr(struct rmdom_header *cfg_rh, struct platform_device *pdev)
++{
++    int ret = 0;
++    struct rmdom_header *rh = cfg_rh;
++    struct rmdom_dev *rmddev = platform_get_drvdata(pdev);
++    struct rmdom_part *part = &rh->parts[0];
++    const struct device_node *of_node = pdev->dev.of_node;
++    struct device_node *subnode;
++
++    rmddev->pstore = false;
++    rh->magic = RMDOM_MAGIC;
++    rh->minor = RMDOM_MINOR;
++    rh->major = RMDOM_MAJOR;
++
++    for_each_child_of_node(of_node, subnode) {
++        struct resource res;
++        if (of_address_to_resource(subnode, 0, &res)) {
++            dev_warn(&pdev->dev, "Can't get resource for subnode %s\n", subnode->full_name);
++            continue;
++        }
++        part->start = res.start;
++        part->size = resource_size(&res);
++        dev_info(&pdev->dev, "Detect a part range: 0x%x : 0x%x\n", part->start, part->size);
++        if (of_device_is_compatible(subnode, "linux,rmdom-rmem")) {
++            part->categ = RMDOM_CATEG_RMEM;
++            part->major = RMDOM_RMEM_MAJOR;
++            part->minor = RMDOM_RMEM_MINOR;
++            part++;
++            dev_info(&pdev->dev, "A regular part\n");
++        } else if (of_device_is_compatible(subnode, "linux,rmdom-ramoops")) {
++            struct rmdom_ramoops *p = &part->params.ramoops;
++
++            part->categ = RMDOM_CATEG_RAMOOPS;
++            part->major = RMDOM_RAMOOPS_MAJOR;
++            part->minor = RMDOM_RAMOOPS_MINOR;
++
++            p->mem_type = of_property_read_bool(subnode, "unbuffered");
++            p->dump_oops = !of_property_read_bool(subnode, "no-dump-oops");
++
++            p->record_size = read_size_data(subnode, "record-size");
++            p->console_size = read_size_data(subnode, "console-size");
++            p->ftrace_size = read_size_data(subnode, "ftrace-size");
++            p->rmsg_size = read_size_data(subnode, "rmsg-size");
++            p->ecc_size = read_size_data(subnode, "ecc-size");
++            p->flags = read_size_data(subnode, "flags");
++            rmddev->pstore = true;
++            part++;
++            dev_info(&pdev->dev, "A ramoops part to enable pstore\n");
++        } else {
++            dev_warn(&pdev->dev, "Unexpected subnode node: %s\n", subnode->full_name);
++        }
++    }
++
++    rh->cs = crc32(0, rh, sizeof(struct rmdom_header));
++    return ret;
++}
++
++//alignment size to 1024bytes
++static void header_def_sanity_check(void)
++{
++    // check header's with the correct size
++    BUILD_BUG_ON(sizeof(struct rmdom_header) != RMDOM_HDR_SIZE);
++    BUILD_BUG_ON(sizeof(struct rmdom_part) != RMDOM_HDR_REGION_PADDING_SIZE);
++    BUILD_BUG_ON(offsetof(struct rmdom_header, parts) != RMDOM_HDR_REGION_PADDING_SIZE);
++}
++
++//get reserved memory range and mmap
++static int rmdom_memmap(struct platform_device *pdev)
++{
++    struct device_node *memdom;
++    struct device_node *of_node = pdev->dev.of_node;
++    struct rmdom_dev *rmddev = platform_get_drvdata(pdev);
++    struct resource res;
++    int ret = 0;
++    /* Map the persistent memory and copy out the header*/
++    memdom = of_parse_phandle(of_node, "memory-domain", 0);
++    if (!memdom) {
++        dev_err(&pdev->dev, "Not set memory-domain: %s\n", of_node->full_name);
++        ret = -ENODEV;
++        goto end;
++    }
++    ret = of_address_to_resource(memdom, 0, &res);
++    if (ret) {
++        dev_err(&pdev->dev, "Memory resource incorrect: %s\n", memdom->full_name);
++        goto end;
++    }
++
++    rmddev->start = res.start;
++    rmddev->size = resource_size(&res);
++    rmddev->virt = ioremap(rmddev->start, rmddev->size);
++    dev_info(&pdev->dev, "Reserved memory region range: 0x%x : 0x%x - virt %x\n", 
++        rmddev->start, rmddev->size, rmddev->virt);
++    if (!rmddev->virt) {
++        ret = -ENOMEM;
++        goto end;
++    }
++end:    
++    return ret;
++}
++
++static int rmdom_remove(struct platform_device *pdev)
++{
++    int ret;
++    struct rmdom_dev *rmddev = platform_get_drvdata(pdev);
++
++    dev_info(&pdev->dev, "rmdom_remove called\n");
++    ret = deregister_subdevices(rmddev);
++    if (ret)
++        return ret;
++
++    //rmdom_release_sysfs(rmddev);
++    iounmap(rmddev->virt);
++    kfree(rmddev);
++    dev_info(&pdev->dev, "rmdom_remove exit\n");
++    ret = 0;
++    return ret;
++}
++
++static int rmdom_probe(struct platform_device *pdev)
++{
++    struct device_node *of_node = pdev->dev.of_node;
++    struct device_node *memdom;
++    int valid_hdr = 1;
++    int ret = 0;
++    u32 cs;
++    struct rmdom_dev *rmddev;
++    struct rmdom_header *hdr;
++    struct rmdom_header cfg_hdr;
++    struct resource res;
++
++    //set zero for its init
++    memset(&cfg_hdr, 0, sizeof(cfg_hdr));
++    dev_info(&pdev->dev, "rmdom_probe called\n");
++    rmddev = kzalloc(sizeof(*rmddev), GFP_KERNEL);
++    if (!rmddev)  {
++        ret = -ENOMEM;
++        dev_info(&pdev->dev, "rmdom kzalloc failed\n");
++        return ret;
++    }
++
++    header_def_sanity_check();
++
++    rmddev->id = ida_simple_get(&rmdom_uni_ida, 0, 0, GFP_KERNEL);
++    rmddev->dev = &pdev->dev;
++    dev_info(&pdev->dev, "Get ida id %d\n", rmddev->id);
++    if (rmddev->id < 0)
++        goto err_free_dev;
++    
++    // attach private data to platform device
++    platform_set_drvdata(pdev, rmddev);
++    // Init the defaulted header with DT info
++    (void) populate_hdr(&cfg_hdr, pdev);
++    //dev_info(&pdev->dev, "####local data config dump:\n");
++    //printout_hdr(&cfg_hdr);
++    //get memory range from DT
++    if(rmdom_memmap(pdev)) {
++        goto err_free;
++    }
++
++    // Init the current header
++    hdr = &rmddev->curr;
++
++    // Read out current reserved region header
++    memcpy(hdr, rmddev->virt, sizeof(struct rmdom_header));
++    //dev_info(&pdev->dev, "@@@current RAM read-back config dump:\n");
++    //printout_hdr(hdr);
++    // compare the header info from RAM with the one by default
++    cs = hdr->cs;
++    hdr->cs = 0;
++
++    if (hdr->magic != RMDOM_MAGIC) {
++        dev_info(&pdev->dev, "No RMDOM header magic\n");
++        valid_hdr = 0;
++    } else if (cs != crc32(0, hdr, sizeof(struct rmdom_header))) {
++        dev_info(&pdev->dev, "Incorrect checksum [0x%x != 0x%x]\n", cs, crc32(0, hdr, sizeof(struct rmdom_header)));
++        valid_hdr = 0;
++    }
++    // set value back
++    hdr->cs = cs;
++
++
++    if (valid_hdr)
++        dev_info(&pdev->dev, "Detected correct RMDOM header with version %d.%d\n", hdr->major, hdr->minor);
++
++    // No correct header, create a default one from DT
++    if (!valid_hdr) {
++        memcpy(&rmddev->curr, &cfg_hdr, sizeof(rmddev->curr));
++        dev_info(&pdev->dev, "Using meta-data config from DT -- version %d.%d\n", hdr->major, hdr->minor);
++    }
++    //dev_info(&pdev->dev, "####current segment config dump:\n");
++    //printout_hdr(&rmddev->curr);
++
++    if (hdr->major != RMDOM_MAJOR) {
++        dev_err(&pdev->dev, "Found major version %d but expected %d for main header\n", hdr->major, RMDOM_MAJOR);
++    } else {
++        memcpy(rmddev->virt, &rmddev->curr, sizeof(rmddev->curr));
++        dev_info(&pdev->dev, "Set back to the header inside RAM.\n");
++        dev_info(&pdev->dev, "####virt segment config dump:\n");
++        printout_hdr((struct rmdom_header*)rmddev->virt); 
++        register_subdevices(rmddev);
++    }
++
++    dev_info(&pdev->dev, "rmdom_probe exit - no sysfs\n");
++    return 0;
++
++ err_free:
++    ida_simple_remove(&rmdom_uni_ida, rmddev->id);
++ err_free_dev:
++    kfree(rmddev);
++ err:
++    return ret;
++}
++
++MODULE_DEVICE_TABLE(of, rmdom_ids);
++static struct platform_driver rmdom_pl_drv = {
++    .remove = rmdom_remove,    
++    .probe = rmdom_probe,
++    .driver = {
++        .of_match_table = rmdom_ids,
++        .name   = "rmdom",
++        .owner  = THIS_MODULE,
++    }
++};
++
++static void __exit rmdom_exit(void)
++{
++    platform_driver_unregister(&rmdom_pl_drv);
++}
++
++static int __init rmdom_init(void)
++{
++    return platform_driver_register(&rmdom_pl_drv);
++}
++
++module_exit(rmdom_exit);
++fs_initcall(rmdom_init);
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("null.com");
+diff --git a/drivers/misc/rmdom.h b/drivers/misc/rmdom.h
+new file mode 100644
+index 000000000..35152dff1
+--- /dev/null
++++ b/drivers/misc/rmdom.h
+@@ -0,0 +1,81 @@
++/*
++ * Remaining Memory Domains Header
++ * 
++ * set a separate domain/region for log system/racd after system warm reboot
++ */
++#ifndef _RM_DOM_H_
++#define _RM_DOM_H_
++
++#include <linux/types.h>
++
++#include <linux/libnvdimm.h>
++
++// set magic field
++#define RMDOM_MAGIC 0xCA693737
++
++// header's major and minor version
++#define RMDOM_MAJOR 1
++#define RMDOM_MINOR 1
++
++// Remaining memory domain category definition
++#define RMDOM_CATEG_EMPTY    0
++#define RMDOM_CATEG_RMEM     1
++#define RMDOM_CATEG_RAMOOPS  2
++
++#define RMDOM_RMEM_MAJOR    1
++#define RMDOM_RMEM_MINOR    1
++struct rmdom_rmem {};
++
++#define RMDOM_RAMOOPS_MAJOR 1
++#define RMDOM_RAMOOPS_MINOR 1
++struct rmdom_ramoops {
++    u8 mem_type;
++    u8 dump_oops;
++    u8 reserved[2];
++    u32 record_size;
++    u32 console_size;
++    u32 ftrace_size;
++    u32 rmsg_size;
++    u32 ecc_size;
++    u32 flags;
++};
++
++#define RMDOM_HDR_SIZE 1024
++#define RMDOM_HDR_REGION_PADDING_SIZE 128
++#define RMDOM_PART_NUM  7
++
++// the header placed into the 1KB at the begining of RMDOM reserved memory
++struct rmdom_header {
++    u32 magic;
++    u16 major;
++    u16 minor;
++    u32 cs; //its CRC32 checksum value
++    u8 padding1[RMDOM_HDR_REGION_PADDING_SIZE - 3 * sizeof(u32)];
++    struct rmdom_part {
++        u32 categ;//one of category for rmemory management
++        u16 major;
++        u16 minor;
++        u64 start;
++        u64 size;
++        union {
++            u8 padding2[RMDOM_HDR_REGION_PADDING_SIZE - 2 * sizeof(u32) - 2 * sizeof(u64)];
++            struct rmdom_ramoops ramoops;
++            struct rmdom_rmem rmem;
++        } params;
++    } parts[RMDOM_PART_NUM];
++} __packed;
++
++struct rmdom_dev {
++    int id;
++    struct device *dev;
++    phys_addr_t start;
++    resource_size_t size;
++    char *virt;    
++    struct rmdom_header curr; //current configuration for RMDOM
++    struct platform_device *pdevs[RMDOM_PART_NUM];
++    bool pstore;
++    struct nvdimm_bus *bus;
++    struct nvdimm_bus_descriptor bus_desc;
++};
++
++#endif
+diff --git a/drivers/misc/rsmu_cdev.c b/drivers/misc/rsmu_cdev.c
+new file mode 100644
+index 000000000..51a585de7
+--- /dev/null
++++ b/drivers/misc/rsmu_cdev.c
+@@ -0,0 +1,373 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * This driver is developed for the IDT ClockMatrix(TM) and 82P33xxx families
++ * of timing and synchronization devices. It will be used by Renesas PTP Clock
++ * Manager for Linux (pcm4l) software to provide support to GNSS assisted
++ * partial timing support (APTS) and other networking timing functions.
++ *
++ * Please note it must work with Renesas MFD driver to access device through
++ * I2C/SPI.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++
++#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
++
++#include <linux/cdev.h>
++#include <linux/device.h>
++#include <linux/fs.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <linux/mfd/rsmu.h>
++#include <uapi/linux/rsmu.h>
++
++#include "rsmu_cdev.h"
++
++#define DRIVER_NAME	"rsmu"
++#define DRIVER_MAX_DEV	BIT(MINORBITS)
++
++static struct class *rsmu_class;
++static dev_t rsmu_cdevt;
++static struct rsmu_ops *ops_array[] = {
++	[RSMU_CM] = &cm_ops,
++	[RSMU_SABRE] = &sabre_ops,
++};
++
++static int
++rsmu_set_combomode(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_combomode mode;
++	int err;
++
++	if (copy_from_user(&mode, arg, sizeof(mode)))
++		return -EFAULT;
++
++	if (ops->set_combomode == NULL)
++		return -ENOTSUPP;
++
++	mutex_lock(rsmu->lock);
++	err = ops->set_combomode(rsmu, mode.dpll, mode.mode);
++	mutex_unlock(rsmu->lock);
++
++	return err;
++}
++
++static int
++rsmu_get_dpll_state(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_get_state state_request;
++	u8 state;
++	int err;
++
++	if (copy_from_user(&state_request, arg, sizeof(state_request)))
++		return -EFAULT;
++
++	if (ops->get_dpll_state == NULL)
++		return -ENOTSUPP;
++
++	mutex_lock(rsmu->lock);
++	err = ops->get_dpll_state(rsmu, state_request.dpll, &state);
++	mutex_unlock(rsmu->lock);
++
++	state_request.state = state;
++	if (copy_to_user(arg, &state_request, sizeof(state_request)))
++		return -EFAULT;
++
++	return err;
++}
++
++static int
++rsmu_get_dpll_ffo(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_get_ffo ffo_request;
++	int err;
++
++	if (copy_from_user(&ffo_request, arg, sizeof(ffo_request)))
++		return -EFAULT;
++
++	if (ops->get_dpll_ffo == NULL)
++		return -ENOTSUPP;
++
++	mutex_lock(rsmu->lock);
++	err = ops->get_dpll_ffo(rsmu, ffo_request.dpll, &ffo_request);
++	mutex_unlock(rsmu->lock);
++
++	if (copy_to_user(arg, &ffo_request, sizeof(ffo_request)))
++		return -EFAULT;
++
++	return err;
++}
++
++static int
++rsmu_get_regval(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_regval reg_info;
++	int err;
++
++	if (copy_from_user(&reg_info, arg, sizeof(reg_info)))
++		return -EFAULT;
++
++	if (ops->get_reg_val == NULL)
++		return -ENOTSUPP;
++
++	mutex_lock(rsmu->lock);
++	err = ops->get_reg_val(rsmu, &reg_info);
++	mutex_unlock(rsmu->lock);
++
++	if (copy_to_user(arg, &reg_info, sizeof(reg_info)))
++		return -EFAULT;
++
++	return err;
++}
++
++static int
++rsmu_set_regval(struct rsmu_cdev *rsmu, void __user *arg)
++{
++	struct rsmu_ops *ops = rsmu->ops;
++	struct rsmu_regval reg_info;
++	int err;
++
++	if (copy_from_user(&reg_info, arg, sizeof(reg_info)))
++		return -EFAULT;
++
++	if (ops->set_reg_val == NULL)
++		return -ENOTSUPP;
++
++	mutex_lock(rsmu->lock);
++	err = ops->set_reg_val(rsmu, &reg_info);
++	mutex_unlock(rsmu->lock);
++
++	if (copy_to_user(arg, &reg_info, sizeof(reg_info)))
++		return -EFAULT;
++
++	return err;
++}
++
++static int
++rsmu_open(struct inode *iptr, struct file *fptr)
++{
++	struct rsmu_cdev *rsmu;
++
++	rsmu = container_of(iptr->i_cdev, struct rsmu_cdev, rsmu_cdev);
++	fptr->private_data = rsmu;
++	return 0;
++}
++
++static int
++rsmu_release(struct inode *iptr, struct file *fptr)
++{
++	return 0;
++}
++
++static long
++rsmu_ioctl(struct file *fptr, unsigned int cmd, unsigned long data)
++{
++	struct rsmu_cdev *rsmu = fptr->private_data;
++	void __user *arg = (void __user *)data;
++	int err = 0;
++
++	switch (cmd) {
++	case RSMU_SET_COMBOMODE:
++		err = rsmu_set_combomode(rsmu, arg);
++		break;
++	case RSMU_GET_STATE:
++		err = rsmu_get_dpll_state(rsmu, arg);
++		break;
++	case RSMU_GET_FFO:
++		err = rsmu_get_dpll_ffo(rsmu, arg);
++		break;
++	case RSMU_GET_REGVAL:
++		err = rsmu_get_regval(rsmu, arg);
++		break;
++	case RSMU_SET_REGVAL:
++		err = rsmu_set_regval(rsmu, arg);
++		break;
++	default:
++		/* Should not get here */
++		dev_err(rsmu->dev, "Undefined RSMU IOCTL");
++		err = -EINVAL;
++		break;
++	}
++
++	return err;
++}
++
++static long rsmu_compat_ioctl(struct file *fptr, unsigned int cmd,
++			      unsigned long data)
++{
++	return rsmu_ioctl(fptr, cmd, data);
++}
++
++static const struct file_operations rsmu_fops = {
++	.owner = THIS_MODULE,
++	.open = rsmu_open,
++	.release = rsmu_release,
++	.unlocked_ioctl = rsmu_ioctl,
++	.compat_ioctl =	rsmu_compat_ioctl,
++};
++
++static int rsmu_init_ops(struct rsmu_cdev *rsmu)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(ops_array); i++)
++		if (ops_array[i]->type == rsmu->type)
++			break;
++
++	if (i == ARRAY_SIZE(ops_array))
++		return -EINVAL;
++
++	rsmu->ops = ops_array[i];
++	return 0;
++}
++
++static int
++rsmu_probe(struct platform_device *pdev)
++{
++	struct rsmu_pdata *pdata = dev_get_platdata(&pdev->dev);
++	struct rsmu_cdev *rsmu;
++	struct device *rsmu_cdev;
++	int err;
++
++	rsmu = devm_kzalloc(&pdev->dev, sizeof(*rsmu), GFP_KERNEL);
++	if (!rsmu)
++		return -ENOMEM;
++
++	rsmu->dev = &pdev->dev;
++	rsmu->mfd = pdev->dev.parent;
++	rsmu->type = pdata->type;
++	rsmu->lock = pdata->lock;
++	rsmu->index = pdata->index;
++
++	/* Save driver private data */
++	platform_set_drvdata(pdev, rsmu);
++
++	cdev_init(&rsmu->rsmu_cdev, &rsmu_fops);
++	rsmu->rsmu_cdev.owner = THIS_MODULE;
++	err = cdev_add(&rsmu->rsmu_cdev,
++		       MKDEV(MAJOR(rsmu_cdevt), 0), 1);
++	if (err < 0) {
++		dev_err(rsmu->dev, "cdev_add failed");
++		err = -EIO;
++		goto err_rsmu_dev;
++	}
++
++	if (!rsmu_class) {
++		err = -EIO;
++		dev_err(rsmu->dev, "rsmu class not created correctly");
++		goto err_rsmu_cdev;
++	}
++
++	rsmu_cdev = device_create(rsmu_class, rsmu->dev,
++				  MKDEV(MAJOR(rsmu_cdevt), 0),
++				  rsmu, "rsmu%d", rsmu->index);
++	if (IS_ERR(rsmu_cdev)) {
++		dev_err(rsmu->dev, "Unable to create char device");
++		err = PTR_ERR(rsmu_cdev);
++		goto err_rsmu_cdev;
++	}
++
++	err = rsmu_init_ops(rsmu);
++	if (err) {
++		dev_err(rsmu->dev, "Unable to match type %d", rsmu->type);
++		goto err_rsmu_cdev;
++	}
++
++	dev_info(rsmu->dev, "Probe SMU type %d successful\n", rsmu->type);
++	return 0;
++
++	/* Failure cleanup */
++err_rsmu_cdev:
++	cdev_del(&rsmu->rsmu_cdev);
++err_rsmu_dev:
++	return err;
++}
++
++static int
++rsmu_remove(struct platform_device *pdev)
++{
++	struct rsmu_cdev *rsmu = platform_get_drvdata(pdev);
++	struct device *dev = &pdev->dev;
++
++	if (!rsmu_class) {
++		dev_err(dev, "rsmu_class is NULL");
++		return -EIO;
++	}
++
++	device_destroy(rsmu_class, MKDEV(MAJOR(rsmu_cdevt), 0));
++	cdev_del(&rsmu->rsmu_cdev);
++
++	return 0;
++}
++
++static const struct platform_device_id rsmu_id_table[] = {
++	{ "rsmu-cdev0", },
++	{ "rsmu-cdev1", },
++	{ "rsmu-cdev2", },
++	{ "rsmu-cdev3", },
++	{}
++};
++MODULE_DEVICE_TABLE(platform, rsmu_id_table);
++
++static struct platform_driver rsmu_driver = {
++	.driver = {
++		.name = DRIVER_NAME,
++	},
++	.probe = rsmu_probe,
++	.remove =  rsmu_remove,
++	.id_table = rsmu_id_table,
++};
++
++static int __init rsmu_init(void)
++{
++	int err;
++
++	rsmu_class = class_create(THIS_MODULE, DRIVER_NAME);
++	if (IS_ERR(rsmu_class)) {
++		err = PTR_ERR(rsmu_class);
++		pr_err("Unable to register rsmu class");
++		return err;
++	}
++
++	err = alloc_chrdev_region(&rsmu_cdevt, 0, DRIVER_MAX_DEV, DRIVER_NAME);
++	if (err < 0) {
++		pr_err("Unable to get major number");
++		goto err_rsmu_class;
++	}
++
++	err = platform_driver_register(&rsmu_driver);
++	if (err < 0) {
++		pr_err("Unabled to register %s driver", DRIVER_NAME);
++		goto err_rsmu_drv;
++	}
++	return 0;
++
++	/* Error Path */
++err_rsmu_drv:
++	unregister_chrdev_region(rsmu_cdevt, DRIVER_MAX_DEV);
++err_rsmu_class:
++	class_destroy(rsmu_class);
++	return err;
++}
++
++static void __exit rsmu_exit(void)
++{
++	platform_driver_unregister(&rsmu_driver);
++	unregister_chrdev_region(rsmu_cdevt, DRIVER_MAX_DEV);
++	class_destroy(rsmu_class);
++	rsmu_class = NULL;
++}
++
++module_init(rsmu_init);
++module_exit(rsmu_exit);
++
++MODULE_DESCRIPTION("Renesas SMU character device driver");
++MODULE_LICENSE("GPL");
+diff --git a/drivers/misc/rsmu_cdev.h b/drivers/misc/rsmu_cdev.h
+new file mode 100644
+index 000000000..0521f1aed
+--- /dev/null
++++ b/drivers/misc/rsmu_cdev.h
+@@ -0,0 +1,74 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * This driver is developed for the IDT ClockMatrix(TM) of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++#ifndef __LINUX_RSMU_CDEV_H
++#define __LINUX_RSMU_CDEV_H
++
++#include <linux/cdev.h>
++
++struct rsmu_ops;
++
++/**
++ * struct rsmu_cdev - Driver data for RSMU character device
++ * @dev: pointer to platform device
++ * @mfd: pointer to MFD device
++ * @rsmu_cdev: character device handle
++ * @lock: mutex to protect operations from being interrupted
++ * @type: rsmu device type
++ * @ops: rsmu device methods
++ * @index: rsmu device index
++ */
++struct rsmu_cdev {
++	struct device *dev;
++	struct device *mfd;
++	struct cdev rsmu_cdev;
++	struct mutex *lock;
++	enum rsmu_type type;
++	struct rsmu_ops *ops;
++	u8 index;
++};
++
++extern struct rsmu_ops cm_ops;
++extern struct rsmu_ops sabre_ops;
++
++struct rsmu_ops {
++	enum rsmu_type type;
++	int (*set_combomode)(struct rsmu_cdev *rsmu, u8 dpll, u8 mode);
++	int (*get_dpll_state)(struct rsmu_cdev *rsmu, u8 dpll, u8 *state);
++	int (*get_dpll_ffo)(struct rsmu_cdev *rsmu, u8 dpll,
++			    struct rsmu_get_ffo *ffo);
++	int (*get_reg_val)(struct rsmu_cdev *rsmu, struct rsmu_regval *reg_info);
++	int (*set_reg_val)(struct rsmu_cdev *rsmu, struct rsmu_regval *reg_info);
++};
++
++/**
++ * Enumerated type listing DPLL combination modes
++ */
++enum rsmu_dpll_combomode {
++	E_COMBOMODE_CURRENT = 0,
++	E_COMBOMODE_FASTAVG,
++	E_COMBOMODE_SLOWAVG,
++	E_COMBOMODE_HOLDOVER,
++	E_COMBOMODE_MAX
++};
++
++/**
++ * An id used to identify the respective child class states.
++ */
++enum rsmu_class_state {
++	E_SRVLOINITIALSTATE = 0,
++	E_SRVLOUNQUALIFIEDSTATE = 1,
++	E_SRVLOLOCKACQSTATE = 2,
++	E_SRVLOFREQUENCYLOCKEDSTATE = 3,
++	E_SRVLOTIMELOCKEDSTATE = 4,
++	E_SRVLOHOLDOVERINSPECSTATE = 5,
++	E_SRVLOHOLDOVEROUTOFSPECSTATE = 6,
++	E_SRVLOFREERUNSTATE = 7,
++	E_SRVNUMBERLOSTATES = 8,
++	E_SRVLOSTATEINVALID = 9,
++};
++#endif
+diff --git a/drivers/misc/rsmu_cm.c b/drivers/misc/rsmu_cm.c
+new file mode 100644
+index 000000000..cd0f234d5
+--- /dev/null
++++ b/drivers/misc/rsmu_cm.c
+@@ -0,0 +1,190 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * This driver is developed for the IDT ClockMatrix(TM) of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/device.h>
++#include <linux/mfd/idt8a340_reg.h>
++#include <linux/mfd/rsmu.h>
++#include <uapi/linux/rsmu.h>
++#include <asm/unaligned.h>
++
++#include "rsmu_cdev.h"
++
++static int rsmu_cm_set_combomode(struct rsmu_cdev *rsmu, u8 dpll, u8 mode)
++{
++	u16 dpll_ctrl_n;
++	u8 cfg;
++	int err;
++
++	switch (dpll) {
++	case 0:
++		dpll_ctrl_n = DPLL_CTRL_0;
++		break;
++	case 1:
++		dpll_ctrl_n = DPLL_CTRL_1;
++		break;
++	case 2:
++		dpll_ctrl_n = DPLL_CTRL_2;
++		break;
++	case 3:
++		dpll_ctrl_n = DPLL_CTRL_3;
++		break;
++	case 4:
++		dpll_ctrl_n = DPLL_CTRL_4;
++		break;
++	case 5:
++		dpll_ctrl_n = DPLL_CTRL_5;
++		break;
++	case 6:
++		dpll_ctrl_n = DPLL_CTRL_6;
++		break;
++	case 7:
++		dpll_ctrl_n = DPLL_CTRL_7;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	if (mode >= E_COMBOMODE_MAX)
++		return -EINVAL;
++
++	err = rsmu_read(rsmu->mfd, dpll_ctrl_n + DPLL_CTRL_COMBO_MASTER_CFG,
++			&cfg, sizeof(cfg));
++	if (err)
++		return err;
++
++	/* Only need to enable/disable COMBO_MODE_HOLD. */
++	if (mode)
++		cfg |= COMBO_MASTER_HOLD;
++	else
++		cfg &= ~COMBO_MASTER_HOLD;
++
++	return rsmu_write(rsmu->mfd, dpll_ctrl_n + DPLL_CTRL_COMBO_MASTER_CFG,
++			  &cfg, sizeof(cfg));
++}
++
++static int rsmu_cm_get_dpll_state(struct rsmu_cdev *rsmu, u8 dpll, u8 *state)
++{
++	u8 cfg;
++	int err;
++
++	/* 8 is sys dpll */
++	if (dpll > 8)
++		return -EINVAL;
++
++	err = rsmu_read(rsmu->mfd,
++			  STATUS + DPLL0_STATUS + dpll,
++			  &cfg, sizeof(cfg));
++	if (err)
++		return err;
++
++	switch (cfg & DPLL_STATE_MASK) {
++	case DPLL_STATE_FREERUN:
++		*state = E_SRVLOUNQUALIFIEDSTATE;
++		break;
++	case DPLL_STATE_LOCKACQ:
++	case DPLL_STATE_LOCKREC:
++		*state = E_SRVLOLOCKACQSTATE;
++		break;
++	case DPLL_STATE_LOCKED:
++		*state = E_SRVLOTIMELOCKEDSTATE;
++		break;
++	case DPLL_STATE_HOLDOVER:
++		*state = E_SRVLOHOLDOVERINSPECSTATE;
++		break;
++	default:
++		*state = E_SRVLOSTATEINVALID;
++		break;
++	}
++
++	return 0;
++}
++
++static int rsmu_cm_get_dpll_ffo(struct rsmu_cdev *rsmu, u8 dpll,
++				struct rsmu_get_ffo *ffo)
++{
++	u8 buf[8] = {0};
++	s64 fcw = 0;
++	u16 dpll_filter_status;
++	int err;
++
++	switch (dpll) {
++	case 0:
++		dpll_filter_status = DPLL0_FILTER_STATUS;
++		break;
++	case 1:
++		dpll_filter_status = DPLL1_FILTER_STATUS;
++		break;
++	case 2:
++		dpll_filter_status = DPLL2_FILTER_STATUS;
++		break;
++	case 3:
++		dpll_filter_status = DPLL3_FILTER_STATUS;
++		break;
++	case 4:
++		dpll_filter_status = DPLL4_FILTER_STATUS;
++		break;
++	case 5:
++		dpll_filter_status = DPLL5_FILTER_STATUS;
++		break;
++	case 6:
++		dpll_filter_status = DPLL6_FILTER_STATUS;
++		break;
++	case 7:
++		dpll_filter_status = DPLL7_FILTER_STATUS;
++		break;
++	case 8:
++		dpll_filter_status = DPLLSYS_FILTER_STATUS;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	err = rsmu_read(rsmu->mfd, STATUS + dpll_filter_status, buf, 6);
++	if (err)
++		return err;
++
++	/* Convert to frequency control word */
++	fcw = sign_extend64(get_unaligned_le64(buf), 47);
++
++	/* FCW unit is 2 ^ -53 = 1.1102230246251565404236316680908e-16 */
++	ffo->ffo = fcw * 111;
++
++	return 0;
++}
++
++static int rsmu_cm_get_reg_val(struct rsmu_cdev *rsmu, struct rsmu_regval *reg_info)
++{
++	int err;
++
++	err = rsmu_read(rsmu->mfd, reg_info->reg_addr, (u8 *)&reg_info->value, 4);
++	if (err)
++		return err;
++
++	return 0;
++}
++
++static int rsmu_cm_set_reg_val(struct rsmu_cdev *rsmu, struct rsmu_regval *reg_info)
++{
++	int err;
++
++	err = rsmu_write(rsmu->mfd, reg_info->reg_addr, (u8 *)&reg_info->value, 4);
++	if (err)
++		return err;
++
++	return 0;
++}
++
++struct rsmu_ops cm_ops = {
++	.type = RSMU_CM,
++	.set_combomode = rsmu_cm_set_combomode,
++	.get_dpll_state = rsmu_cm_get_dpll_state,
++	.get_dpll_ffo = rsmu_cm_get_dpll_ffo,
++	.get_reg_val = rsmu_cm_get_reg_val,
++	.set_reg_val = rsmu_cm_set_reg_val,
++};
+diff --git a/drivers/misc/rsmu_sabre.c b/drivers/misc/rsmu_sabre.c
+new file mode 100644
+index 000000000..2abe18769
+--- /dev/null
++++ b/drivers/misc/rsmu_sabre.c
+@@ -0,0 +1,145 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * This driver is developed for the IDT 82P33XXX series of
++ * timing and synchronization devices.
++ *
++ * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
++ */
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/device.h>
++#include <linux/mfd/idt82p33_reg.h>
++#include <linux/mfd/rsmu.h>
++#include <uapi/linux/rsmu.h>
++#include <asm/unaligned.h>
++
++#include "rsmu_cdev.h"
++
++static int rsmu_sabre_set_combomode(struct rsmu_cdev *rsmu, u8 dpll, u8 mode)
++{
++	u16 dpll_ctrl_n;
++	u8 cfg;
++	int err;
++
++	switch (dpll) {
++	case 0:
++		dpll_ctrl_n = DPLL1_OPERATING_MODE_CNFG;
++		break;
++	case 1:
++		dpll_ctrl_n = DPLL2_OPERATING_MODE_CNFG;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	if (mode >= E_COMBOMODE_MAX)
++		return -EINVAL;
++
++	err = rsmu_read(rsmu->mfd, dpll_ctrl_n, &cfg, sizeof(cfg));
++	if (err)
++		return err;
++
++	cfg &= ~(COMBO_MODE_MASK << COMBO_MODE_SHIFT);
++	cfg |= mode << COMBO_MODE_SHIFT;
++
++	return rsmu_write(rsmu->mfd, dpll_ctrl_n, &cfg, sizeof(cfg));
++}
++
++static int rsmu_sabre_get_dpll_state(struct rsmu_cdev *rsmu, u8 dpll, u8 *state)
++{
++	u16 dpll_sts_n;
++	u8 cfg;
++	int err;
++
++	switch (dpll) {
++	case 0:
++		dpll_sts_n = DPLL1_OPERATING_STS;
++		break;
++	case 1:
++		dpll_sts_n = DPLL2_OPERATING_STS;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	err = rsmu_read(rsmu->mfd, dpll_sts_n, &cfg, sizeof(cfg));
++	if (err)
++		return err;
++
++	switch (cfg & OPERATING_STS_MASK) {
++	case DPLL_STATE_FREERUN:
++		*state = E_SRVLOUNQUALIFIEDSTATE;
++		break;
++	case DPLL_STATE_PRELOCKED2:
++	case DPLL_STATE_PRELOCKED:
++		*state = E_SRVLOLOCKACQSTATE;
++		break;
++	case DPLL_STATE_LOCKED:
++		*state = E_SRVLOTIMELOCKEDSTATE;
++		break;
++	case DPLL_STATE_HOLDOVER:
++		*state = E_SRVLOHOLDOVERINSPECSTATE;
++		break;
++	default:
++		*state = E_SRVLOSTATEINVALID;
++		break;
++	}
++
++	return 0;
++}
++
++static int rsmu_sabre_get_dpll_ffo(struct rsmu_cdev *rsmu, u8 dpll,
++				   struct rsmu_get_ffo *ffo)
++{
++	u8 buf[8] = {0};
++	s64 fcw = 0;
++	u16 dpll_freq_n;
++	int err;
++
++	/* 
++	 * IDTDpll_GetCurrentDpllFreqOffset retrieves the FFO integrator only. 
++	 * In order to get Proportional + Integrator, use the holdover FFO with
++	 * the filter bandwidth 0.5 Hz set by TCS file.
++	 */
++	switch (dpll) {
++	case 0:
++		dpll_freq_n = DPLL1_HOLDOVER_FREQ_CNFG;
++		break;
++	case 1:
++		dpll_freq_n = DPLL2_HOLDOVER_FREQ_CNFG;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	err = rsmu_read(rsmu->mfd, dpll_freq_n, buf, 5);
++	if (err)
++		return err;
++
++	/* Convert to frequency control word */
++	fcw = sign_extend64(get_unaligned_le64(buf), 39);
++
++	/* FCW unit is 77760 / ( 1638400 * 2^48) = 1.68615121864946 * 10^-16 */
++	ffo->ffo = div_s64(fcw * 2107689, 12500);
++
++	return 0;
++}
++
++static int rsmu_sabre_get_reg_val(struct rsmu_cdev *rsmu, struct rsmu_regval *reg_info)
++{
++	int err;
++
++	/* int rsmu_read(struct device *dev, u16 reg, u8 *buf, u16 size) */
++	err = rsmu_read(rsmu->mfd, reg_info->reg_addr, (u8 *)&reg_info->value, 4);
++	if (err)
++		return err;
++
++	return 0;
++}
++
++struct rsmu_ops sabre_ops = {
++	.type = RSMU_SABRE,
++	.set_combomode = rsmu_sabre_set_combomode,
++	.get_dpll_state = rsmu_sabre_get_dpll_state,
++	.get_dpll_ffo = rsmu_sabre_get_dpll_ffo,
++};
+diff --git a/drivers/mtd/spi-nor/gigadevice.c b/drivers/mtd/spi-nor/gigadevice.c
+index 86b5ace62..c6ccb972d 100644
+--- a/drivers/mtd/spi-nor/gigadevice.c
++++ b/drivers/mtd/spi-nor/gigadevice.c
+@@ -92,6 +92,8 @@ static const struct flash_info gigadevice_parts[] = {
+ 			      SECT_4K | USE_FSR | SPI_NOR_OCTAL_READ |
+ 			      SPI_NOR_OCTAL_WRITE | SPI_NOR_4B_OPCODES)
+ 		.fixups = &gd25lx256e_fixups },
++	{ "gd55b02ge",  INFO(0xc8471c, 0, 64 * 1024, 4096,
++			   SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ | SPI_NOR_4B_OPCODES) },
+ };
+ 
+ const struct spi_nor_manufacturer spi_nor_gigadevice = {
+diff --git a/drivers/mtd/spi-nor/macronix.c b/drivers/mtd/spi-nor/macronix.c
+index 45465ba09..5f7a7af26 100644
+--- a/drivers/mtd/spi-nor/macronix.c
++++ b/drivers/mtd/spi-nor/macronix.c
+@@ -137,6 +137,9 @@ static struct flash_info macronix_parts[] = {
+ 				SECT_4K | SPI_NOR_OCTAL_READ |
+ 				SPI_NOR_OCTAL_WRITE | SPI_NOR_4B_OPCODES)
+ 		.fixups = &mx25um51345g_fixups },
++	{ "mx66l2g45g",  INFO(0xc2201c, 0, 64 * 1024, 4096,
++				SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ |
++				SPI_NOR_4B_OPCODES) },
+ };
+ 
+ static void macronix_default_init(struct spi_nor *nor)
+diff --git a/drivers/net/ethernet/xilinx/xilinx_axienet_main.c b/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
+index 3911718d5..81120e764 100644
+--- a/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
++++ b/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
+@@ -1076,9 +1076,7 @@ static int axienet_create_tsheader(u8 *buf, u8 msg_type,
+ 	cur_p = &q->tx_bd_v[q->tx_bd_tail];
+ #endif
+ 
+-	if ((msg_type & 0xF) == TX_TS_OP_NOOP) {
+-		buf[0] = TX_TS_OP_NOOP;
+-	} else if ((msg_type & 0xF) == TX_TS_OP_ONESTEP) {
++	if ((msg_type & 0xF) == TX_TS_OP_ONESTEP) {
+ 		if (lp->axienet_config->mactype == XAXIENET_MRMAC) {
+ 			/* For Sync Packet */
+ 			if ((msg_type & 0xF0) == MSG_TYPE_SYNC_FLAG) {
+@@ -2734,6 +2732,8 @@ static const struct ethtool_ops axienet_ethtool_ops = {
+ 	.set_link_ksettings = phy_ethtool_set_link_ksettings,
+ };
+ 
++void __iomem *g_mcdma_regs = NULL;
++
+ #ifdef CONFIG_AXIENET_HAS_MCDMA
+ static int __maybe_unused axienet_mcdma_probe(struct platform_device *pdev,
+ 					      struct axienet_local *lp,
+@@ -2783,11 +2783,17 @@ static int __maybe_unused axienet_mcdma_probe(struct platform_device *pdev,
+ 		lp->dma_mask = XAE_DMA_MASK_MIN;
+ 	}
+ 
+-	lp->mcdma_regs = devm_ioremap_resource(&pdev->dev, &dmares);
+-	if (IS_ERR(lp->mcdma_regs)) {
+-		dev_err(&pdev->dev, "iormeap failed for the dma\n");
+-		ret = PTR_ERR(lp->mcdma_regs);
+-		return ret;
++	if (g_mcdma_regs) {
++		lp->mcdma_regs = g_mcdma_regs;
++		g_mcdma_regs = NULL;
++	} else {
++		lp->mcdma_regs = devm_ioremap_resource(&pdev->dev, &dmares);
++		if (IS_ERR(lp->mcdma_regs)) {
++			dev_err(&pdev->dev, "iormeap failed for the dma\n");
++			ret = PTR_ERR(lp->mcdma_regs);
++			return ret;
++		}
++		g_mcdma_regs = lp->mcdma_regs;
+ 	}
+ 
+ 	axienet_mcdma_tx_probe(pdev, np, lp);
+diff --git a/drivers/net/phy/Kconfig b/drivers/net/phy/Kconfig
+index 5b5ea91d5..0c3b4b71d 100644
+--- a/drivers/net/phy/Kconfig
++++ b/drivers/net/phy/Kconfig
+@@ -320,6 +320,11 @@ config XILINX_GMII2RGMII
+ 	  the Reduced Gigabit Media Independent Interface(RGMII) between
+ 	  Ethernet physical media devices and the Gigabit Ethernet controller.
+ 
++config CTC_PHY
++	tristate "Centec PHYs"
++	help
++	  Supports the Centec PHY.
++
+ endif # PHYLIB
+ 
+ config MICREL_KS8995MA
+diff --git a/drivers/net/phy/Makefile b/drivers/net/phy/Makefile
+index f5caf9d5c..5a1451468 100644
+--- a/drivers/net/phy/Makefile
++++ b/drivers/net/phy/Makefile
+@@ -81,3 +81,4 @@ obj-$(CONFIG_TERANETICS_PHY)	+= teranetics.o
+ obj-$(CONFIG_VITESSE_PHY)	+= vitesse.o
+ obj-$(CONFIG_XILINX_PHY)	+= xilinx_phy.o
+ obj-$(CONFIG_XILINX_GMII2RGMII) += xilinx_gmii2rgmii.o
++obj-$(CONFIG_CTC_PHY)			+= mars.o
+\ No newline at end of file
+diff --git a/drivers/net/phy/mars.c b/drivers/net/phy/mars.c
+new file mode 100644
+index 000000000..529c1a20c
+--- /dev/null
++++ b/drivers/net/phy/mars.c
+@@ -0,0 +1,907 @@
++// SPDX-License-Identifier: GPL-2.0
++
++/* Driver for Centec PHYs
++ * Author: liuht
++ *
++ * Copyright 2002-2021, Centec Networks (Suzhou) Co., Ltd.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 2 as published by the Free Software Foundation.
++ */
++
++#include <linux/kernel.h>
++#include <linux/string.h>
++#include <linux/errno.h>
++#include <linux/unistd.h>
++#include <linux/interrupt.h>
++#include <linux/init.h>
++#include <linux/delay.h>
++#include <linux/netdevice.h>
++#include <linux/etherdevice.h>
++#include <linux/skbuff.h>
++#include <linux/spinlock.h>
++#include <linux/mm.h>
++#include <linux/module.h>
++#include <linux/mii.h>
++#include <linux/ethtool.h>
++#include <linux/phy.h>
++#include <linux/of.h>
++#include <linux/io.h>
++#include <asm/irq.h>
++#include <linux/uaccess.h>
++#include <linux/version.h>
++
++ /* Mask used for ID comparisons */
++#define CTC_PHY_ID_MASK             0xffffffff
++
++/* Known PHY IDs */
++#define CTC_PHY_ID_MARS1S_V1        0x00782013
++#define CTC_PHY_ID_MARS1S           0x01E04013
++#define CTC_PHY_ID_MARS1P_V1        0x00782011
++#define CTC_PHY_ID_MARS1P           0x01E04011
++#define CTC_PHY_IMASK                     0x12
++#define CTC_PHY_IEVENT                    0x13
++
++#define CTC_PHY_IMASK_INIT              0x6c00
++#define CTC_PHY_IMASK_CLEAR             0x0000
++
++#define CTC_PHY_REG_SPACE                    0
++#define CTC_SDS_REG_SPACE                    1
++
++/* Mars page register */
++#define CTC_MARS_PAGE_REG               0xa000
++#define CTC_MARS_CHIP_CFG_REG           0xa001
++
++#define CTC_PHY_GLB_DISABLE                  0
++#define CTC_PHY_GLB_ENABLE                   1
++
++/* Mars specific status register */
++#define CTC_MARS_SSREG                    0x11
++
++/* Interrupt Enable Register */
++#define CTC_MARS_INTR_REG                 0x12
++/* WOL Event Interrupt Enable */
++#define CTC_MARS_WOL_INTR               BIT(6)
++/* Magic Packet MAC address registers */
++#define CTC_MARS_MAGIC_PACKET_MAC_ADDR2 0xa007
++#define CTC_MARS_MAGIC_PACKET_MAC_ADDR1 0xa008
++#define CTC_MARS_MAGIC_PACKET_MAC_ADDR0 0xa009
++/* Mars wol config register */
++#define CTC_MARS_WOL_CFG_REG            0xa00a
++/* WOL TYPE */
++#define CTC_MARS_WOL_TYPE               BIT(0)
++/* WOL Enable */
++#define CTC_MARS_WOL_EN                 BIT(3)
++/* External Loopback */
++#define CTC_MARS_EXTERNAL_LOOPBACK      BIT(4)
++/* WOL Event Interrupt Enable */
++#define CTC_MARS_WOL_INTR_SEL           BIT(6)
++/* WOL Pulse Width */
++#define CTC_MARS_WOL_WIDTH1             BIT(1)
++#define CTC_MARS_WOL_WIDTH2             BIT(2)
++/* WOL Enable Flag: disable by default */
++// #define CTC_MARS_WOL_ENABLE
++/* CDR Enable Flag: CDR register modified */
++#define CTC_MARS_DSA_REG				0x3
++
++static int g_port_type;
++static int g_port_status;
++
++enum mars_port_type_e {
++	MARS_PORT_TYPE_UTP,
++	MARS_PORT_TYPE_FIBER,
++	MARS_PORT_TYPE_COMBO,
++	MARS_PORT_TYPE_MAX
++};
++
++enum mars_wol_type_e {
++	MARS_WOL_TYPE_LEVEL,
++	MARS_WOL_TYPE_PULSE,
++	MARS_WOL_TYPE_MAX
++};
++
++enum mars_wol_width_e {
++	MARS_WOL_WIDTH_84MS,
++	MARS_WOL_WIDTH_168MS,
++	MARS_WOL_WIDTH_336MS,
++	MARS_WOL_WIDTH_672MS,
++	MARS_WOL_WIDTH_MAX
++};
++
++struct mars_wol_cfg_t {
++	int enable;
++	int type;
++	int width;
++};
++
++static int mars_ext_read(struct phy_device *phydev, u32 regnum)
++{
++	int ret;
++
++	ret = phy_write(phydev, 0x1e, regnum);
++	if (ret < 0)
++		return ret;
++
++	return phy_read(phydev, 0x1f);
++}
++
++static int mars_ext_write(struct phy_device *phydev, u32 regnum, u16 val)
++{
++	int ret;
++
++	ret = phy_write(phydev, 0x1e, regnum);
++	if (ret < 0)
++		return ret;
++
++	return phy_write(phydev, 0x1f, val);
++}
++
++static int mars_select_reg_space(struct phy_device *phydev, int space)
++{
++	int ret;
++
++	if (space == CTC_PHY_REG_SPACE)
++		ret = mars_ext_write(phydev, 0xa000, 0x0);
++	else
++		ret = mars_ext_write(phydev, 0xa000, 0x2);
++
++	return ret;
++}
++
++static int mars_page_read(struct phy_device *phydev, int page, u32 regnum)
++{
++	int ret, oldpage, val;
++
++	oldpage = mars_ext_read(phydev, CTC_MARS_PAGE_REG);
++	if (oldpage < 0)
++		return oldpage;
++
++	ret = mars_select_reg_space(phydev, page);
++	if (ret < 0)
++		return ret;
++
++	val = phy_read(phydev, regnum);
++	/* Recover to old page */
++	ret = mars_select_reg_space(phydev, (oldpage & 0x2));
++	if (ret < 0)
++		return ret;
++
++	return val;
++}
++
++static int mars_page_write(struct phy_device *phydev, int page, u32 regnum,
++			   u16 value)
++{
++	int ret, oldpage, val;
++
++	oldpage = mars_ext_read(phydev, CTC_MARS_PAGE_REG);
++	if (oldpage < 0)
++		return oldpage;
++
++	ret = mars_select_reg_space(phydev, page);
++	if (ret < 0)
++		return ret;
++
++	val = phy_write(phydev, regnum, value);
++	/* Recover to old page */
++	ret = mars_select_reg_space(phydev, (oldpage & 0x2));
++	if (ret < 0)
++		return ret;
++
++	return val;
++}
++
++static int mars_page_ext_write(struct phy_device *phydev, int page, u32 regnum,
++			       u16 value)
++{
++	int ret, oldpage, val;
++
++	oldpage = mars_ext_read(phydev, CTC_MARS_PAGE_REG);
++	if (oldpage < 0)
++		return oldpage;
++
++	ret = mars_select_reg_space(phydev, page);
++	if (ret < 0)
++		return ret;
++
++	val = mars_ext_write(phydev, regnum, value);
++	/* Recover to old page */
++	ret = mars_select_reg_space(phydev, (oldpage & 0x2));
++	if (ret < 0)
++		return ret;
++
++	return val;
++}
++
++static int mars_setup_forced(struct phy_device *phydev)
++{
++	int ctl = 0;
++	int ret = 0;
++
++	if (g_port_type == MARS_PORT_TYPE_UTP ||
++	    g_port_type == MARS_PORT_TYPE_COMBO) {
++		ctl = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMCR);
++		if (ctl < 0)
++			return ctl;
++		ctl &= BMCR_LOOPBACK | BMCR_ISOLATE | BMCR_PDOWN;
++		phydev->pause = 0;
++		phydev->asym_pause = 0;
++
++		if (phydev->speed == SPEED_1000)
++			ctl |= BMCR_SPEED1000;
++		else if (phydev->speed == SPEED_100)
++			ctl |= BMCR_SPEED100;
++
++		if (phydev->duplex == DUPLEX_FULL)
++			ctl |= BMCR_FULLDPLX;
++
++		ret = mars_page_write(phydev, CTC_PHY_REG_SPACE, MII_BMCR, ctl);
++		if (ret < 0)
++			return ret;
++	}
++
++	if (g_port_type == MARS_PORT_TYPE_FIBER ||
++	    g_port_type == MARS_PORT_TYPE_COMBO) {
++		ctl = mars_page_read(phydev, CTC_SDS_REG_SPACE, MII_BMCR);
++		if (ctl < 0)
++			return ctl;
++		ctl &= ~BMCR_ANENABLE;
++		ret = mars_page_write(phydev, CTC_SDS_REG_SPACE, MII_BMCR, ctl);
++		if (ret < 0)
++			return ret;
++	}
++	return 0;
++}
++
++static int mars_restart_aneg(struct phy_device *phydev)
++{
++	int ctl = 0;
++	int ret = 0;
++
++	if (g_port_type == MARS_PORT_TYPE_UTP ||
++	    g_port_type == MARS_PORT_TYPE_COMBO) {
++		ctl = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMCR);
++
++		if (ctl < 0)
++			return ctl;
++
++		ctl |= BMCR_ANENABLE | BMCR_ANRESTART;
++
++		/* Don't isolate the PHY if we're negotiating */
++		ctl &= ~BMCR_ISOLATE;
++
++		ret = mars_page_write(phydev, CTC_PHY_REG_SPACE, MII_BMCR, ctl);
++		if (ret < 0)
++			return ret;
++	}
++
++	if (g_port_type == MARS_PORT_TYPE_FIBER ||
++	    g_port_type == MARS_PORT_TYPE_COMBO) {
++		ctl = mars_page_read(phydev, CTC_SDS_REG_SPACE, MII_BMCR);
++		if (ctl < 0)
++			return ctl;
++		ctl |= BMCR_ANENABLE;
++		ret = mars_page_write(phydev, CTC_SDS_REG_SPACE, MII_BMCR, ctl);
++		if (ret < 0)
++			return ret;
++	}
++	return 0;
++}
++
++static int mars_config_advert(struct phy_device *phydev)
++{
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0))
++	__ETHTOOL_DECLARE_LINK_MODE_MASK(advertise);
++	u32 advertise_legacy;
++#else
++	u32 advertise;
++#endif
++	int oldadv, adv, bmsr;
++	int err, changed = 0;
++
++	/* Only allow advertising what this PHY supports */
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0))
++	linkmode_and(phydev->advertising, phydev->advertising,
++		     phydev->supported);
++	linkmode_copy(advertise, phydev->advertising);
++#else
++	phydev->advertising &= phydev->supported;
++	advertise = phydev->advertising;
++#endif
++
++	/* Setup standard advertisement */
++	adv = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_ADVERTISE);
++	if (adv < 0)
++		return adv;
++
++	oldadv = adv;
++	adv &= ~(ADVERTISE_ALL | ADVERTISE_100BASE4 | ADVERTISE_PAUSE_CAP |
++		 ADVERTISE_PAUSE_ASYM);
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0))
++	ethtool_convert_link_mode_to_legacy_u32(&advertise_legacy, advertise);
++	adv |= ethtool_adv_to_mii_adv_t(advertise_legacy);
++#else
++	adv |= ethtool_adv_to_mii_adv_t(advertise);
++#endif
++
++	if (adv != oldadv) {
++		err =
++		    mars_page_write(phydev, CTC_PHY_REG_SPACE, MII_ADVERTISE,
++				    adv);
++
++		if (err < 0)
++			return err;
++		changed = 1;
++	}
++
++	bmsr = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMSR);
++	if (bmsr < 0)
++		return bmsr;
++
++	/* Per 802.3-2008, Section 22.2.4.2.16 Extended status all
++	 * 1000Mbits/sec capable PHYs shall have the BMSR_ESTATEN bit set to a
++	 * logical 1.
++	 */
++	if (!(bmsr & BMSR_ESTATEN))
++		return changed;
++
++	/* Configure gigabit if it's supported */
++	adv = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_CTRL1000);
++	if (adv < 0)
++		return adv;
++
++	oldadv = adv;
++	adv &= ~(ADVERTISE_1000FULL | ADVERTISE_1000HALF);
++
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0))
++	if (linkmode_test_bit(ETHTOOL_LINK_MODE_1000baseT_Half_BIT, phydev->supported) ||
++	    linkmode_test_bit(ETHTOOL_LINK_MODE_1000baseT_Full_BIT, phydev->supported)) {
++		ethtool_convert_link_mode_to_legacy_u32(&advertise_legacy,
++							advertise);
++		adv |= ethtool_adv_to_mii_ctrl1000_t(advertise_legacy);
++	}
++#else
++	if (phydev->supported & (SUPPORTED_1000baseT_Half |
++				 SUPPORTED_1000baseT_Full)) {
++		adv |= ethtool_adv_to_mii_ctrl1000_t(advertise);
++	}
++#endif
++
++	if (adv != oldadv)
++		changed = 1;
++
++	err = mars_page_write(phydev, CTC_PHY_REG_SPACE, MII_CTRL1000, adv);
++	if (err < 0)
++		return err;
++
++	return changed;
++}
++
++int mars1s_config_aneg(struct phy_device *phydev)
++{
++	int err, changed = 0;
++	int ret = 0;
++
++	if (g_port_type == MARS_PORT_TYPE_UTP ||
++	    g_port_type == MARS_PORT_TYPE_COMBO) {
++		if (phydev->autoneg != AUTONEG_ENABLE)
++			ret = mars_setup_forced(phydev);
++		if (ret < 0)
++			return ret;
++
++		err = mars_config_advert(phydev);
++		if (err < 0)	/* error */
++			return err;
++
++		changed |= err;
++
++		if (changed == 0) {
++			/* Advertisement hasn't changed,
++			 * but maybe aneg was never on to
++			 * begin with?  Or maybe phy was isolated?
++			 */
++			int ctl =
++			    mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMCR);
++
++			if (ctl < 0)
++				return ctl;
++
++			if (!(ctl & BMCR_ANENABLE) || (ctl & BMCR_ISOLATE))
++				changed = 1;	/* do restart aneg */
++		}
++
++		/* Only restart aneg if we are advertising something different
++		 * than we were before.
++		 */
++		if (changed > 0)
++			ret = mars_restart_aneg(phydev);
++		if (ret < 0)
++			return ret;
++	}
++
++	if (g_port_type == MARS_PORT_TYPE_FIBER ||
++	    g_port_type == MARS_PORT_TYPE_COMBO) {
++		if (phydev->autoneg != AUTONEG_ENABLE) {
++			ret = mars_setup_forced(phydev);
++			return ret;
++		}
++
++		ret = mars_restart_aneg(phydev);
++		if (ret < 0)
++			return ret;
++	}
++
++	return 0;
++}
++
++static int mars_ack_interrupt(struct phy_device *phydev)
++{
++	int err;
++
++	/* Clear the interrupts by reading the reg */
++	err = mars_page_read(phydev, CTC_PHY_REG_SPACE, CTC_PHY_IEVENT);
++	if (err < 0)
++		return err;
++
++	return 0;
++}
++
++static int mars_config_intr(struct phy_device *phydev)
++{
++	int err;
++
++	if (phydev->interrupts == PHY_INTERRUPT_ENABLED)
++		err =
++		    mars_page_write(phydev, CTC_PHY_REG_SPACE, CTC_PHY_IMASK,
++				    CTC_PHY_IMASK_INIT);
++	else
++		err =
++		    mars_page_write(phydev, CTC_PHY_REG_SPACE, CTC_PHY_IMASK,
++				    CTC_PHY_IMASK_CLEAR);
++	return err;
++}
++
++static int mars_update_link(struct phy_device *phydev)
++{
++	int ret, status;
++
++	if (g_port_type == MARS_PORT_TYPE_UTP ||
++	    g_port_type == MARS_PORT_TYPE_COMBO) {
++		/* Do a fake read */
++		status = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMSR);
++		if (status < 0)
++			return status;
++
++		/* Read link and autonegotiation status */
++		status = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMSR);
++		if (status < 0)
++			return status;
++
++		if ((status & BMSR_LSTATUS) == 0) {
++			phydev->link = 0;
++		} else {
++			phydev->link = 1;
++			ret = mars_select_reg_space(phydev, CTC_PHY_REG_SPACE);
++			if (ret < 0)
++				return ret;
++
++			g_port_status = MARS_PORT_TYPE_UTP;
++			return 0;
++		}
++	}
++
++	if (g_port_type == MARS_PORT_TYPE_FIBER ||
++	    g_port_type == MARS_PORT_TYPE_COMBO) {
++		/* Do a fake read */
++		status = mars_page_read(phydev, CTC_SDS_REG_SPACE, MII_BMSR);
++		if (status < 0)
++			return status;
++
++		/* Read link and autonegotiation status */
++		status = mars_page_read(phydev, CTC_SDS_REG_SPACE, MII_BMSR);
++		if (status < 0)
++			return status;
++
++		if ((status & BMSR_LSTATUS) == 0) {
++			phydev->link = 0;
++		} else {
++			phydev->link = 1;
++			ret = mars_select_reg_space(phydev, CTC_SDS_REG_SPACE);
++			if (ret < 0)
++				return ret;
++
++			g_port_status = MARS_PORT_TYPE_FIBER;
++			return 0;
++		}
++	}
++
++	return 0;
++}
++
++static int mars_read_status(struct phy_device *phydev)
++{
++	int val = 0;
++	int ret = 0;
++	int lpa, page;
++
++	/* Update the link, but return if there was an error */
++	ret = mars_update_link(phydev);
++	if (ret < 0)
++		return ret;
++	if (g_port_status)
++		page = CTC_SDS_REG_SPACE;
++	else
++		page = CTC_PHY_REG_SPACE;
++
++	phydev->speed = SPEED_10;
++	phydev->duplex = DUPLEX_HALF;
++	phydev->pause = 0;
++	phydev->asym_pause = 0;
++
++	val = mars_page_read(phydev, page, CTC_MARS_SSREG);
++	if (val < 0)
++		return val;
++
++	lpa = mars_page_read(phydev, page, MII_LPA);
++	if (lpa < 0)
++		return lpa;
++
++	if (val & 0x8000) {
++		phydev->speed = SPEED_1000;
++		phydev->duplex = DUPLEX_FULL;
++	} else if (val & 0x4000) {
++		phydev->speed = SPEED_100;
++		if (val & 0x2000)
++			phydev->duplex = DUPLEX_FULL;
++	} else if (val & 0x2000) {
++		phydev->duplex = DUPLEX_FULL;
++	}
++
++	if (phydev->duplex == DUPLEX_FULL) {
++		phydev->pause = lpa & LPA_PAUSE_CAP ? 1 : 0;
++		phydev->asym_pause = lpa & LPA_PAUSE_ASYM ? 1 : 0;
++	}
++
++	return 0;
++}
++
++static int mars_set_link_timer_2_6ms(struct phy_device *phydev)
++{
++	int ret = 0;
++
++	ret = mars_page_ext_write(phydev, CTC_SDS_REG_SPACE, 0xa5, 0x5);
++
++	return ret;
++}
++
++static int mars_wol_en_cfg(struct phy_device *phydev,
++			   struct mars_wol_cfg_t wol_cfg)
++{
++	int ret = 0;
++	int val = 0;
++
++	val = mars_ext_read(phydev, CTC_MARS_WOL_CFG_REG);
++	if (val < 0)
++		return val;
++
++	if (wol_cfg.enable) {
++		val |= CTC_MARS_WOL_EN;
++
++		if (wol_cfg.type == MARS_WOL_TYPE_LEVEL) {
++			val &= ~CTC_MARS_WOL_TYPE;
++			val &= ~CTC_MARS_WOL_INTR_SEL;
++		} else if (wol_cfg.type == MARS_WOL_TYPE_PULSE) {
++			val |= CTC_MARS_WOL_TYPE;
++			val |= CTC_MARS_WOL_INTR_SEL;
++
++			if (wol_cfg.width == MARS_WOL_WIDTH_84MS) {
++				val &= ~CTC_MARS_WOL_WIDTH1;
++				val &= ~CTC_MARS_WOL_WIDTH2;
++			} else if (wol_cfg.width == MARS_WOL_WIDTH_168MS) {
++				val |= CTC_MARS_WOL_WIDTH1;
++				val &= ~CTC_MARS_WOL_WIDTH2;
++			} else if (wol_cfg.width == MARS_WOL_WIDTH_336MS) {
++				val &= ~CTC_MARS_WOL_WIDTH1;
++				val |= CTC_MARS_WOL_WIDTH2;
++			} else if (wol_cfg.width == MARS_WOL_WIDTH_672MS) {
++				val |= CTC_MARS_WOL_WIDTH1;
++				val |= CTC_MARS_WOL_WIDTH2;
++			}
++		}
++	} else {
++		val &= ~CTC_MARS_WOL_EN;
++		val &= ~CTC_MARS_WOL_INTR_SEL;
++	}
++
++	ret = mars_ext_write(phydev, CTC_MARS_WOL_CFG_REG, val);
++	if (ret < 0)
++		return ret;
++
++	return 0;
++}
++
++static void mars_get_wol(struct phy_device *phydev, struct ethtool_wolinfo *wol)
++{
++	int val = 0;
++
++	wol->supported = WAKE_MAGIC;
++	wol->wolopts = 0;
++
++	val = mars_ext_read(phydev, CTC_MARS_WOL_CFG_REG);
++	if (val < 0)
++		return;
++
++	if (val & CTC_MARS_WOL_EN)
++		wol->wolopts |= WAKE_MAGIC;
++}
++
++static int mars_set_wol(struct phy_device *phydev, struct ethtool_wolinfo *wol)
++{
++	int ret, val;
++	struct mars_wol_cfg_t wol_cfg;
++
++	memset(&wol_cfg, 0, sizeof(struct mars_wol_cfg_t));
++
++	if (wol->wolopts & WAKE_MAGIC) {
++		/* Enable the WOL interrupt */
++		val =
++		    mars_page_read(phydev, CTC_PHY_REG_SPACE,
++				   CTC_MARS_INTR_REG);
++		val |= CTC_MARS_WOL_INTR;
++		ret =
++		    mars_page_write(phydev, CTC_PHY_REG_SPACE,
++				    CTC_MARS_INTR_REG, val);
++		if (ret < 0)
++			return ret;
++
++		/* Set the WOL config */
++		wol_cfg.enable = CTC_PHY_GLB_ENABLE;
++		wol_cfg.type = MARS_WOL_TYPE_PULSE;
++		wol_cfg.width = MARS_WOL_WIDTH_672MS;
++		ret = mars_wol_en_cfg(phydev, wol_cfg);
++		if (ret < 0)
++			return ret;
++
++		/* Store the device address for the magic packet */
++		ret = mars_ext_write(phydev, CTC_MARS_MAGIC_PACKET_MAC_ADDR2,
++				     ((phydev->attached_dev->dev_addr[0] << 8) |
++				      phydev->attached_dev->dev_addr[1]));
++		if (ret < 0)
++			return ret;
++		ret = mars_ext_write(phydev, CTC_MARS_MAGIC_PACKET_MAC_ADDR1,
++				     ((phydev->attached_dev->dev_addr[2] << 8) |
++				      phydev->attached_dev->dev_addr[3]));
++		if (ret < 0)
++			return ret;
++		ret = mars_ext_write(phydev, CTC_MARS_MAGIC_PACKET_MAC_ADDR0,
++				     ((phydev->attached_dev->dev_addr[4] << 8) |
++				      phydev->attached_dev->dev_addr[5]));
++		if (ret < 0)
++			return ret;
++	} else {
++		wol_cfg.enable = CTC_PHY_GLB_DISABLE;
++		wol_cfg.type = MARS_WOL_TYPE_MAX;
++		wol_cfg.width = MARS_WOL_WIDTH_MAX;
++		ret = mars_wol_en_cfg(phydev, wol_cfg);
++		if (ret < 0)
++			return ret;
++	}
++
++	return 0;
++}
++
++static int mars_get_port_type(struct phy_device *phydev)
++{
++	int val;
++
++	val = mars_ext_read(phydev, CTC_MARS_CHIP_CFG_REG);
++	if (val < 0)
++		return val;
++	val &= 0x7;
++
++	if (val == 0x0 || val == 0x3) {
++		g_port_type = MARS_PORT_TYPE_UTP;
++		g_port_status = MARS_PORT_TYPE_UTP;
++	} else if (val == 0x1 || val == 0x4 || val == 0x5) {
++		g_port_type = MARS_PORT_TYPE_FIBER;
++		g_port_status = MARS_PORT_TYPE_FIBER;
++	} else {
++		g_port_type = MARS_PORT_TYPE_COMBO;
++	}
++
++	return 0;
++}
++
++void mars_loopback_exit(struct phy_device *phydev)
++{
++	int val;
++
++	val = mars_ext_read(phydev, 0xa);
++	val &= ~(CTC_MARS_EXTERNAL_LOOPBACK);
++	mars_ext_write(phydev, 0xa, val);
++
++	val = phy_read(phydev, MII_BMCR);
++	val |= (BMCR_ANENABLE | BMCR_ANRESTART | BMCR_RESET);
++	val &= ~(BMCR_ISOLATE);
++
++	phy_write(phydev, MII_BMCR, val);
++}
++
++int mars_config_init(struct phy_device *phydev)
++{
++	int val;
++	u32 features;
++#ifdef CTC_MARS_WOL_ENABLE
++	struct ethtool_wolinfo wol;
++#endif
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0))
++	__ETHTOOL_DECLARE_LINK_MODE_MASK(features_linkmode);
++#endif
++
++	phy_write(phydev, MII_BMCR, BMCR_RESET);
++
++	mars_loopback_exit(phydev);
++
++	mars_set_link_timer_2_6ms(phydev);
++
++	features = (SUPPORTED_TP | SUPPORTED_MII
++		    | SUPPORTED_AUI | SUPPORTED_FIBRE |
++		    SUPPORTED_BNC | SUPPORTED_Pause | SUPPORTED_Asym_Pause);
++
++	/* Do we support autonegotiation? */
++	val = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_BMSR);
++	if (val < 0)
++		return val;
++
++	if (val & BMSR_ANEGCAPABLE)
++		features |= SUPPORTED_Autoneg;
++
++	if (val & BMSR_100FULL)
++		features |= SUPPORTED_100baseT_Full;
++	if (val & BMSR_100HALF)
++		features |= SUPPORTED_100baseT_Half;
++	if (val & BMSR_10FULL)
++		features |= SUPPORTED_10baseT_Full;
++	if (val & BMSR_10HALF)
++		features |= SUPPORTED_10baseT_Half;
++
++	if (val & BMSR_ESTATEN) {
++		val = mars_page_read(phydev, CTC_PHY_REG_SPACE, MII_ESTATUS);
++		if (val < 0)
++			return val;
++
++		if (val & ESTATUS_1000_TFULL)
++			features |= SUPPORTED_1000baseT_Full;
++		if (val & ESTATUS_1000_THALF)
++			features |= SUPPORTED_1000baseT_Half;
++	}
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0))
++	ethtool_convert_legacy_u32_to_link_mode(features_linkmode, features);
++	linkmode_and(phydev->supported, phydev->supported, features_linkmode);
++	linkmode_and(phydev->advertising, phydev->supported, features_linkmode);
++#else
++	phydev->supported &= features;
++	phydev->advertising &= features;
++#endif
++	mars_get_port_type(phydev);
++
++#ifdef CTC_MARS_WOL_ENABLE
++	wol.wolopts = 0;
++	wol.supported = WAKE_MAGIC;
++	wol.wolopts |= WAKE_MAGIC;
++	mars_set_wol(phydev, &wol);
++#endif
++
++#ifdef CTC_MARS_DSA_REG
++	mars_page_ext_write(phydev, CTC_SDS_REG_SPACE, CTC_MARS_DSA_REG, 0x670);
++#endif
++
++	return 0;
++}
++
++int mars1p_config_init(struct phy_device *phydev)
++{
++	/*RGMII clock 2.5M when link down, bit12:1->0 */
++	mars_page_ext_write(phydev, CTC_PHY_REG_SPACE, 0xc, 0x8051);
++	/*Disable sleep mode, bit15:1->0 */
++	mars_page_ext_write(phydev, CTC_PHY_REG_SPACE, 0x27, 0x2029);
++	/* disable PHY to respond to MDIO access with PHYAD0 */
++	/* MMD7 8001h: bit6: 0, change value: 0x7f --> 0x3f */
++	mars_page_write(phydev, CTC_PHY_REG_SPACE, 0xd, 0x7);
++	mars_page_write(phydev, CTC_PHY_REG_SPACE, 0xe, 0x8001);
++	mars_page_write(phydev, CTC_PHY_REG_SPACE, 0xd, 0x4007);
++	mars_page_write(phydev, CTC_PHY_REG_SPACE, 0xe, 0x3f);
++
++	return mars_config_init(phydev);
++}
++
++static struct phy_driver ctc_drivers[] = {
++	{
++	 .phy_id = CTC_PHY_ID_MARS1S,
++	 .phy_id_mask = CTC_PHY_ID_MASK,
++	 .name = "CTC MARS1S",
++	 .config_init = mars_config_init,
++	 .features = PHY_GBIT_FEATURES,
++	 .config_aneg = mars1s_config_aneg,
++	 .ack_interrupt = &mars_ack_interrupt,
++	 .config_intr = &mars_config_intr,
++	 .read_status = &mars_read_status,
++	 .suspend = genphy_suspend,
++	 .resume = genphy_resume,
++	 .get_wol = &mars_get_wol,
++	 .set_wol = &mars_set_wol,
++	 },
++	{
++	 .phy_id = CTC_PHY_ID_MARS1S_V1,
++	 .phy_id_mask = CTC_PHY_ID_MASK,
++	 .name = "CTC MARS1S_V1",
++	 .config_init = mars_config_init,
++	 .features = PHY_GBIT_FEATURES,
++	 .config_aneg = mars1s_config_aneg,
++	 .ack_interrupt = &mars_ack_interrupt,
++	 .config_intr = &mars_config_intr,
++	 .read_status = &mars_read_status,
++	 .suspend = genphy_suspend,
++	 .resume = genphy_resume,
++	 .get_wol = &mars_get_wol,
++	 .set_wol = &mars_set_wol,
++	 },
++	{
++	 .phy_id = CTC_PHY_ID_MARS1P,
++	 .phy_id_mask = CTC_PHY_ID_MASK,
++	 .name = "CTC MARS1P",
++	 .config_init = mars1p_config_init,
++	 .features = PHY_GBIT_FEATURES,
++	 .config_aneg = mars1s_config_aneg,
++	 .ack_interrupt = &mars_ack_interrupt,
++	 .config_intr = &mars_config_intr,
++	 .read_status = genphy_read_status,
++	 .suspend = genphy_suspend,
++	 .resume = genphy_resume,
++	 },
++	{
++	 .phy_id = CTC_PHY_ID_MARS1P_V1,
++	 .phy_id_mask = CTC_PHY_ID_MASK,
++	 .name = "CTC MARS1P_V1",
++	 .config_init = mars1p_config_init,
++	 .features = PHY_GBIT_FEATURES,
++	 .config_aneg = mars1s_config_aneg,
++	 .ack_interrupt = &mars_ack_interrupt,
++	 .config_intr = &mars_config_intr,
++	 .read_status = genphy_read_status,
++	 .suspend = genphy_suspend,
++	 .resume = genphy_resume,
++	 },
++};
++
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 19, 0))
++module_phy_driver(ctc_drivers);
++#else
++static int __init mars_init(void)
++{
++	return phy_drivers_register(ctc_drivers, ARRAY_SIZE(ctc_drivers));
++}
++
++static void __exit mars_exit(void)
++{
++	phy_drivers_unregister(ctc_drivers, ARRAY_SIZE(ctc_drivers));
++}
++
++module_init(mars_init);
++module_exit(mars_exit);
++#endif
++
++static struct mdio_device_id __maybe_unused mars_tbl[] = {
++	{CTC_PHY_ID_MARS1S, CTC_PHY_ID_MASK},
++	{CTC_PHY_ID_MARS1S_V1, CTC_PHY_ID_MASK},
++	{CTC_PHY_ID_MARS1P, CTC_PHY_ID_MASK},
++	{CTC_PHY_ID_MARS1P_V1, CTC_PHY_ID_MASK},
++	{}
++};
++
++MODULE_DEVICE_TABLE(mdio, mars_tbl);
++
++MODULE_DESCRIPTION("Driver for Centec PHYs");
++MODULE_AUTHOR("liuht <liuht@centecnetworks.com>");
++MODULE_LICENSE("GPL v2");
+\ No newline at end of file
+diff --git a/drivers/ptp/Makefile b/drivers/ptp/Makefile
+index 9ce5058ac..7be3ea594 100644
+--- a/drivers/ptp/Makefile
++++ b/drivers/ptp/Makefile
+@@ -5,6 +5,8 @@
+ 
+ ptp-y					:= ptp_clock.o ptp_chardev.o ptp_sysfs.o
+ obj-$(CONFIG_PTP_1588_CLOCK)		+= ptp.o
++ptp_idtcm-objs						+= ptp_clockmatrix.o
++obj-$(CONFIG_PTP_1588_CLOCK_IDTCM)	+= ptp_idtcm.o
+ obj-$(CONFIG_PTP_1588_CLOCK_DTE)	+= ptp_dte.o
+ obj-$(CONFIG_PTP_1588_CLOCK_INES)	+= ptp_ines.o
+ obj-$(CONFIG_PTP_1588_CLOCK_PCH)	+= ptp_pch.o
+@@ -13,6 +15,5 @@ obj-$(CONFIG_PTP_1588_CLOCK_XILINX)	+= ptp_xilinx.o
+ obj-$(CONFIG_PTP_1588_CLOCK_QORIQ)	+= ptp-qoriq.o
+ ptp-qoriq-y				+= ptp_qoriq.o
+ ptp-qoriq-$(CONFIG_DEBUG_FS)		+= ptp_qoriq_debugfs.o
+-obj-$(CONFIG_PTP_1588_CLOCK_IDTCM)	+= ptp_clockmatrix.o
+ obj-$(CONFIG_PTP_1588_CLOCK_IDT82P33)	+= ptp_idt82p33.o
+ obj-$(CONFIG_PTP_1588_CLOCK_VMW)	+= ptp_vmw.o
+diff --git a/drivers/ptp/ptp_clockmatrix.c b/drivers/ptp/ptp_clockmatrix.c
+index 663255774..02bdcc141 100644
+--- a/drivers/ptp/ptp_clockmatrix.c
++++ b/drivers/ptp/ptp_clockmatrix.c
+@@ -6,7 +6,7 @@
+  * Copyright (C) 2019 Integrated Device Technology, Inc., a Renesas Company.
+  */
+ #include <linux/firmware.h>
+-#include <linux/i2c.h>
++#include <linux/platform_device.h>
+ #include <linux/module.h>
+ #include <linux/ptp_clock_kernel.h>
+ #include <linux/delay.h>
+@@ -14,6 +14,11 @@
+ #include <linux/kernel.h>
+ #include <linux/timekeeping.h>
+ #include <linux/string.h>
++#include <linux/of.h>
++#include <linux/mfd/rsmu.h>
++#include <linux/mfd/idt8a340_reg.h>
++#include <asm/unaligned.h>
++#include <linux/gpio.h>
+ 
+ #include "ptp_private.h"
+ #include "ptp_clockmatrix.h"
+@@ -32,15 +37,67 @@ static char *firmware;
+ module_param(firmware, charp, 0);
+ 
+ #define SETTIME_CORRECTION (0)
++#define EXTTS_PERIOD_MS (95)
+ 
+-static long set_write_phase_ready(struct ptp_clock_info *ptp)
++static inline int idtcm_read(struct idtcm *idtcm,
++			     u16 module,
++			     u16 regaddr,
++			     u8 *buf,
++			     u16 count)
+ {
+-	struct idtcm_channel *channel =
+-		container_of(ptp, struct idtcm_channel, caps);
++	return rsmu_read(idtcm->mfd, module + regaddr, buf, count);
++}
+ 
+-	channel->write_phase_ready = 1;
++static inline int idtcm_write(struct idtcm *idtcm,
++			      u16 module,
++			      u16 regaddr,
++			      u8 *buf,
++			      u16 count)
++{
++	return rsmu_write(idtcm->mfd, module + regaddr, buf, count);
++}
+ 
+-	return 0;
++static int contains_full_configuration(struct idtcm *idtcm,
++				       const struct firmware *fw)
++{
++	struct idtcm_fwrc *rec = (struct idtcm_fwrc *)fw->data;
++	u16 scratch = IDTCM_FW_REG(idtcm->fw_ver, V520, SCRATCH);
++	s32 full_count;
++	s32 count = 0;
++	u16 regaddr;
++	u8 loaddr;
++	s32 len;
++
++	/* 4 bytes skipped every 0x80 */
++	full_count = (scratch - GPIO_USER_CONTROL) -
++		     ((scratch >> 7) - (GPIO_USER_CONTROL >> 7)) * 4;
++
++	/* If the firmware contains 'full configuration' SM_RESET can be used
++	 * to ensure proper configuration.
++	 *
++	 * Full configuration is defined as the number of programmable
++	 * bytes within the configuration range minus page offset addr range.
++	 */
++	for (len = fw->size; len > 0; len -= sizeof(*rec)) {
++		regaddr = rec->hiaddr << 8;
++		regaddr |= rec->loaddr;
++
++		loaddr = rec->loaddr;
++
++		rec++;
++
++		/* Top (status registers) and bottom are read-only */
++		if (regaddr < GPIO_USER_CONTROL || regaddr >= scratch)
++			continue;
++
++		/* Page size 128, last 4 bytes of page skipped */
++		if ((loaddr > 0x7b && loaddr <= 0x7f) || loaddr > 0xfb)
++			continue;
++
++		count++;
++	}
++
++	return (count >= full_count);
+ }
+ 
+ static int char_array_to_timespec(u8 *buf,
+@@ -125,185 +182,220 @@ static int idtcm_strverscmp(const char *version1, const char *version2)
+ 	return 0;
+ }
+ 
+-static int idtcm_xfer_read(struct idtcm *idtcm,
+-			   u8 regaddr,
+-			   u8 *buf,
+-			   u16 count)
+-{
+-	struct i2c_client *client = idtcm->client;
+-	struct i2c_msg msg[2];
+-	int cnt;
+-	char *fmt = "i2c_transfer failed at %d in %s, at addr: %04X!\n";
+-
+-	msg[0].addr = client->addr;
+-	msg[0].flags = 0;
+-	msg[0].len = 1;
+-	msg[0].buf = &regaddr;
+-
+-	msg[1].addr = client->addr;
+-	msg[1].flags = I2C_M_RD;
+-	msg[1].len = count;
+-	msg[1].buf = buf;
+-
+-	cnt = i2c_transfer(client->adapter, msg, 2);
+-
+-	if (cnt < 0) {
+-		dev_err(&client->dev,
+-			fmt,
+-			__LINE__,
+-			__func__,
+-			regaddr);
+-		return cnt;
+-	} else if (cnt != 2) {
+-		dev_err(&client->dev,
+-			"i2c_transfer sent only %d of %d messages\n", cnt, 2);
+-		return -EIO;
+-	}
++static enum fw_version idtcm_fw_version(const char *version)
++{
++	enum fw_version ver = V_DEFAULT;
+ 
+-	return 0;
++	if (idtcm_strverscmp(version, "4.8.7") >= 0)
++		ver = V487;
++
++	if (idtcm_strverscmp(version, "5.2.0") >= 0)
++		ver = V520;
++
++	return ver;
+ }
+ 
+-static int idtcm_xfer_write(struct idtcm *idtcm,
+-			    u8 regaddr,
+-			    u8 *buf,
+-			    u16 count)
++static int clear_boot_status(struct idtcm *idtcm)
+ {
+-	struct i2c_client *client = idtcm->client;
+-	/* we add 1 byte for device register */
+-	u8 msg[IDTCM_MAX_WRITE_COUNT + 1];
+-	int cnt;
+-	char *fmt = "i2c_master_send failed at %d in %s, at addr: %04X!\n";
++	u8 buf[4] = {0};
+ 
+-	if (count > IDTCM_MAX_WRITE_COUNT)
+-		return -EINVAL;
++	return idtcm_write(idtcm, GENERAL_STATUS, BOOT_STATUS, buf, sizeof(buf));
++}
+ 
+-	msg[0] = regaddr;
+-	memcpy(&msg[1], buf, count);
++static int read_boot_status(struct idtcm *idtcm, u32 *status)
++{
++	int err;
++	u8 buf[4] = {0};
+ 
+-	cnt = i2c_master_send(client, msg, count + 1);
++	err = idtcm_read(idtcm, GENERAL_STATUS, BOOT_STATUS, buf, sizeof(buf));
+ 
+-	if (cnt < 0) {
+-		dev_err(&client->dev,
+-			fmt,
+-			__LINE__,
+-			__func__,
+-			regaddr);
+-		return cnt;
+-	}
++	*status = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | buf[0];
+ 
+-	return 0;
++	return err;
+ }
+ 
+-static int idtcm_page_offset(struct idtcm *idtcm, u8 val)
++static int wait_for_boot_status_ready(struct idtcm *idtcm)
+ {
+-	u8 buf[4];
++	u32 status = 0;
++	u8 i = 30;	/* 30 * 100ms = 3s */
+ 	int err;
+ 
+-	if (idtcm->page_offset == val)
+-		return 0;
++	do {
++		err = read_boot_status(idtcm, &status);
++		if (err)
++			return err;
+ 
+-	buf[0] = 0x0;
+-	buf[1] = val;
+-	buf[2] = 0x10;
+-	buf[3] = 0x20;
++		if (status == 0xA0)
++			return 0;
+ 
+-	err = idtcm_xfer_write(idtcm, PAGE_ADDR, buf, sizeof(buf));
++		msleep(100);
++		i--;
+ 
+-	if (err) {
+-		idtcm->page_offset = 0xff;
+-		dev_err(&idtcm->client->dev, "failed to set page offset\n");
+-	} else {
+-		idtcm->page_offset = val;
+-	}
++	} while (i);
+ 
+-	return err;
++	dev_warn(idtcm->dev, "%s timed out", __func__);
++
++	return -EBUSY;
+ }
+ 
+-static int _idtcm_rdwr(struct idtcm *idtcm,
+-		       u16 regaddr,
+-		       u8 *buf,
+-		       u16 count,
+-		       bool write)
++static int _idtcm_set_scsr_read_trig(struct idtcm_channel *channel,
++				     enum scsr_read_trig_sel trig, u8 ref)
+ {
+-	u8 hi;
+-	u8 lo;
++	struct idtcm *idtcm = channel->idtcm;
++	u16 tod_read_cmd = IDTCM_FW_REG(idtcm->fw_ver, V520, TOD_READ_PRIMARY_CMD);
++	u8 val;
+ 	int err;
+ 
+-	hi = (regaddr >> 8) & 0xff;
+-	lo = regaddr & 0xff;
++	if (trig == SCSR_TOD_READ_TRIG_SEL_REFCLK) {
++		err = idtcm_read(idtcm, channel->tod_read_primary,
++				 TOD_READ_PRIMARY_SEL_CFG_0, &val, sizeof(val));
++		if (err)
++			return err;
++
++		val &= ~(WR_REF_INDEX_MASK << WR_REF_INDEX_SHIFT);
++		val |= (ref << WR_REF_INDEX_SHIFT);
+ 
+-	err = idtcm_page_offset(idtcm, hi);
++		err = idtcm_write(idtcm, channel->tod_read_primary,
++				  TOD_READ_PRIMARY_SEL_CFG_0, &val, sizeof(val));
++		if (err)
++			return err;
++	}
+ 
++	err = idtcm_read(idtcm, channel->tod_read_primary,
++			 tod_read_cmd, &val, sizeof(val));
+ 	if (err)
+ 		return err;
+ 
+-	if (write)
+-		return idtcm_xfer_write(idtcm, lo, buf, count);
++	val &= ~(TOD_READ_TRIGGER_MASK << TOD_READ_TRIGGER_SHIFT);
++	val |= (trig << TOD_READ_TRIGGER_SHIFT);
++	val &= ~TOD_READ_TRIGGER_MODE; /* single shot */
++
++	err = idtcm_write(idtcm, channel->tod_read_primary,
++			  tod_read_cmd, &val, sizeof(val));
++	return err;
++}
++
++static int idtcm_enable_extts(struct idtcm_channel *channel, u8 todn, u8 ref,
++			      bool enable)
++{
++	struct idtcm *idtcm = channel->idtcm;
++	u8 old_mask = idtcm->extts_mask;
++	u8 mask = 1 << todn;
++	int err = 0;
++
++	if (todn >= MAX_TOD)
++		return -EINVAL;
++
++	if (enable) {
++		if (ref > 0xF) /* E_REF_CLK15 */
++			return -EINVAL;
++		if (idtcm->extts_mask & mask)
++			return 0;
++		err = _idtcm_set_scsr_read_trig(&idtcm->channel[todn],
++						SCSR_TOD_READ_TRIG_SEL_REFCLK,
++						ref);
++		if (err == 0) {
++			idtcm->extts_mask |= mask;
++			idtcm->event_channel[todn] = channel;
++			idtcm->channel[todn].refn = ref;
++		}
++	} else
++		idtcm->extts_mask &= ~mask;
++
++	if (old_mask == 0 && idtcm->extts_mask)
++		schedule_delayed_work(&idtcm->extts_work,
++				      msecs_to_jiffies(EXTTS_PERIOD_MS));
++
++	return err;
++}
++
++static int read_sys_apll_status(struct idtcm *idtcm, u8 *status)
++{
++	return idtcm_read(idtcm, STATUS, DPLL_SYS_APLL_STATUS, status,
++			  sizeof(u8));
++}
+ 
+-	return idtcm_xfer_read(idtcm, lo, buf, count);
++static int read_sys_dpll_status(struct idtcm *idtcm, u8 *status)
++{
++	return idtcm_read(idtcm, STATUS, DPLL_SYS_STATUS, status, sizeof(u8));
+ }
+ 
+-static int idtcm_read(struct idtcm *idtcm,
+-		      u16 module,
+-		      u16 regaddr,
+-		      u8 *buf,
+-		      u16 count)
++static int wait_for_sys_apll_dpll_lock(struct idtcm *idtcm)
+ {
+-	return _idtcm_rdwr(idtcm, module + regaddr, buf, count, false);
++	unsigned long timeout = jiffies + msecs_to_jiffies(LOCK_TIMEOUT_MS);
++	u8 apll = 0;
++	u8 dpll = 0;
++	int err;
++
++	do {
++		err = read_sys_apll_status(idtcm, &apll);
++		if (err)
++			return err;
++
++		err = read_sys_dpll_status(idtcm, &dpll);
++		if (err)
++			return err;
++
++		apll &= SYS_APLL_LOSS_LOCK_LIVE_MASK;
++		dpll &= DPLL_SYS_STATE_MASK;
++
++		if (apll == SYS_APLL_LOSS_LOCK_LIVE_LOCKED &&
++		    dpll == DPLL_STATE_LOCKED) {
++			return 0;
++		} else if (dpll == DPLL_STATE_FREERUN ||
++			   dpll == DPLL_STATE_HOLDOVER ||
++			   dpll == DPLL_STATE_OPEN_LOOP) {
++			dev_warn(idtcm->dev,
++				"No wait state: DPLL_SYS_STATE %d", dpll);
++			return -EPERM;
++		}
++
++		msleep(LOCK_POLL_INTERVAL_MS);
++	} while (time_is_after_jiffies(timeout));
++
++	dev_warn(idtcm->dev,
++		 "%d ms lock timeout: SYS APLL Loss Lock %d  SYS DPLL state %d",
++		 LOCK_TIMEOUT_MS, apll, dpll);
++
++	return -ETIME;
+ }
+ 
+-static int idtcm_write(struct idtcm *idtcm,
+-		       u16 module,
+-		       u16 regaddr,
+-		       u8 *buf,
+-		       u16 count)
++static void wait_for_chip_ready(struct idtcm *idtcm)
+ {
+-	return _idtcm_rdwr(idtcm, module + regaddr, buf, count, true);
++	if (wait_for_boot_status_ready(idtcm))
++		dev_warn(idtcm->dev, "BOOT_STATUS != 0xA0");
++
++	if (wait_for_sys_apll_dpll_lock(idtcm))
++		dev_warn(idtcm->dev,
++			 "Continuing while SYS APLL/DPLL is not locked");
+ }
+ 
+ static int _idtcm_gettime(struct idtcm_channel *channel,
+-			  struct timespec64 *ts)
++			  struct timespec64 *ts, u8 timeout)
+ {
+ 	struct idtcm *idtcm = channel->idtcm;
++	u16 tod_read_cmd = IDTCM_FW_REG(idtcm->fw_ver, V520, TOD_READ_PRIMARY_CMD);
+ 	u8 buf[TOD_BYTE_COUNT];
+-	u8 timeout = 10;
+ 	u8 trigger;
+ 	int err;
+ 
+-	err = idtcm_read(idtcm, channel->tod_read_primary,
+-			 TOD_READ_PRIMARY_CMD, &trigger, sizeof(trigger));
+-	if (err)
+-		return err;
+-
+-	trigger &= ~(TOD_READ_TRIGGER_MASK << TOD_READ_TRIGGER_SHIFT);
+-	trigger |= (1 << TOD_READ_TRIGGER_SHIFT);
+-	trigger &= ~TOD_READ_TRIGGER_MODE; /* single shot */
+-
+-	err = idtcm_write(idtcm, channel->tod_read_primary,
+-			  TOD_READ_PRIMARY_CMD, &trigger, sizeof(trigger));
+-	if (err)
+-		return err;
+-
+ 	/* wait trigger to be 0 */
+-	while (trigger & TOD_READ_TRIGGER_MASK) {
++	do {
++		if (timeout-- == 0)
++			return -EIO;
+ 
+ 		if (idtcm->calculate_overhead_flag)
+ 			idtcm->start_time = ktime_get_raw();
+ 
+ 		err = idtcm_read(idtcm, channel->tod_read_primary,
+-				 TOD_READ_PRIMARY_CMD, &trigger,
++				 tod_read_cmd, &trigger,
+ 				 sizeof(trigger));
+-
+ 		if (err)
+ 			return err;
+-
+-		if (--timeout == 0)
+-			return -EIO;
+-	}
++	} while (trigger & TOD_READ_TRIGGER_MASK);
+ 
+ 	err = idtcm_read(idtcm, channel->tod_read_primary,
+ 			 TOD_READ_PRIMARY, buf, sizeof(buf));
+-
+ 	if (err)
+ 		return err;
+ 
+@@ -312,6 +404,79 @@ static int _idtcm_gettime(struct idtcm_channel *channel,
+ 	return err;
+ }
+ 
++static int idtcm_extts_check_channel(struct idtcm* idtcm, u8 todn)
++{
++	struct idtcm_channel *ptp_channel, *extts_channel;
++	struct ptp_clock_event event;
++	struct timespec64 ts;
++	u32 dco_delay = 0;
++	int err;
++
++	extts_channel = &idtcm->channel[todn];
++	ptp_channel = idtcm->event_channel[todn];
++	if (extts_channel == ptp_channel)
++		dco_delay = ptp_channel->dco_delay;
++
++	err = _idtcm_gettime(extts_channel, &ts, 1);
++	if (err == 0) {
++		event.type = PTP_CLOCK_EXTTS;
++		event.index = todn;
++		event.timestamp = timespec64_to_ns(&ts) - dco_delay;
++		ptp_clock_event(ptp_channel->ptp_clock, &event);
++	}
++	return err;
++}
++
++static u8 idtcm_enable_extts_mask(struct idtcm_channel *channel,
++				    u8 extts_mask, bool enable)
++{
++	struct idtcm *idtcm = channel->idtcm;
++	int i, err;
++
++	for (i = 0; i < MAX_TOD; i++) {
++		u8 mask = 1 << i;
++		u8 refn = idtcm->channel[i].refn;
++
++		if (extts_mask & mask) {
++			/* check extts before disabling it */
++			if (enable == false) {
++				err = idtcm_extts_check_channel(idtcm, i);
++				/* trigger happened so we won't re-enable it */
++				if (err == 0)
++					extts_mask &= ~mask;
++			}
++			(void)idtcm_enable_extts(channel, i, refn, enable);
++		}
++	}
++
++	return extts_mask;
++}
++
++static int _idtcm_gettime_immediate(struct idtcm_channel *channel,
++				    struct timespec64 *ts)
++{
++	struct idtcm *idtcm = channel->idtcm;
++	u8 extts_mask = 0;
++	int err;
++
++	/* Disable extts */
++	if (idtcm->extts_mask) {
++		extts_mask = idtcm_enable_extts_mask(channel, idtcm->extts_mask,
++						     false);
++	}
++
++	err = _idtcm_set_scsr_read_trig(channel,
++					SCSR_TOD_READ_TRIG_SEL_IMMEDIATE, 0);
++	if (err == 0)
++		err = _idtcm_gettime(channel, ts, 10);
++
++	/* Re-enable extts */
++	if (extts_mask)
++		idtcm_enable_extts_mask(channel, extts_mask, true);
++
++	return err;
++}
++
+ static int _sync_pll_output(struct idtcm *idtcm,
+ 			    u8 pll,
+ 			    u8 sync_src,
+@@ -324,7 +489,7 @@ static int _sync_pll_output(struct idtcm *idtcm,
+ 	u16 sync_ctrl1;
+ 	u8 temp;
+ 
+-	if ((qn == 0) && (qn_plus_1 == 0))
++	if (qn == 0 && qn_plus_1 == 0)
+ 		return 0;
+ 
+ 	switch (pll) {
+@@ -389,7 +554,7 @@ static int _sync_pll_output(struct idtcm *idtcm,
+ 		return err;
+ 
+ 	/* PLL5 can have OUT8 as second additional output. */
+-	if ((pll == 5) && (qn_plus_1 != 0)) {
++	if (pll == 5 && qn_plus_1 != 0) {
+ 		err = idtcm_read(idtcm, 0, HW_Q8_CTRL_SPARE,
+ 				 &temp, sizeof(temp));
+ 		if (err)
+@@ -411,7 +576,7 @@ static int _sync_pll_output(struct idtcm *idtcm,
+ 	}
+ 
+ 	/* PLL6 can have OUT11 as second additional output. */
+-	if ((pll == 6) && (qn_plus_1 != 0)) {
++	if (pll == 6 && qn_plus_1 != 0) {
+ 		err = idtcm_read(idtcm, 0, HW_Q11_CTRL_SPARE,
+ 				 &temp, sizeof(temp));
+ 		if (err)
+@@ -439,49 +604,18 @@ static int _sync_pll_output(struct idtcm *idtcm,
+ 	return err;
+ }
+ 
+-static int sync_source_dpll_tod_pps(u16 tod_addr, u8 *sync_src)
+-{
+-	int err = 0;
+-
+-	switch (tod_addr) {
+-	case TOD_0:
+-		*sync_src = SYNC_SOURCE_DPLL0_TOD_PPS;
+-		break;
+-	case TOD_1:
+-		*sync_src = SYNC_SOURCE_DPLL1_TOD_PPS;
+-		break;
+-	case TOD_2:
+-		*sync_src = SYNC_SOURCE_DPLL2_TOD_PPS;
+-		break;
+-	case TOD_3:
+-		*sync_src = SYNC_SOURCE_DPLL3_TOD_PPS;
+-		break;
+-	default:
+-		err = -EINVAL;
+-	}
+-
+-	return err;
+-}
+-
+ static int idtcm_sync_pps_output(struct idtcm_channel *channel)
+ {
+ 	struct idtcm *idtcm = channel->idtcm;
+-
+ 	u8 pll;
+-	u8 sync_src;
+ 	u8 qn;
+ 	u8 qn_plus_1;
+ 	int err = 0;
+ 	u8 out8_mux = 0;
+ 	u8 out11_mux = 0;
+ 	u8 temp;
+-
+ 	u16 output_mask = channel->output_mask;
+ 
+-	err = sync_source_dpll_tod_pps(channel->tod_n, &sync_src);
+-	if (err)
+-		return err;
+-
+ 	err = idtcm_read(idtcm, 0, HW_Q8_CTRL_SPARE,
+ 			 &temp, sizeof(temp));
+ 	if (err)
+@@ -536,9 +670,9 @@ static int idtcm_sync_pps_output(struct idtcm_channel *channel)
+ 			}
+ 		}
+ 
+-		if ((qn != 0) || (qn_plus_1 != 0))
+-			err = _sync_pll_output(idtcm, pll, sync_src, qn,
+-					       qn_plus_1);
++		if (qn != 0 || qn_plus_1 != 0)
++			err = _sync_pll_output(idtcm, pll, channel->sync_src,
++					       qn, qn_plus_1);
+ 
+ 		if (err)
+ 			return err;
+@@ -552,7 +686,6 @@ static int _idtcm_set_dpll_hw_tod(struct idtcm_channel *channel,
+ 			       enum hw_tod_write_trig_sel wr_trig)
+ {
+ 	struct idtcm *idtcm = channel->idtcm;
+-
+ 	u8 buf[TOD_BYTE_COUNT];
+ 	u8 cmd;
+ 	int err;
+@@ -562,7 +695,6 @@ static int _idtcm_set_dpll_hw_tod(struct idtcm_channel *channel,
+ 	/* Configure HW TOD write trigger. */
+ 	err = idtcm_read(idtcm, channel->hw_dpll_n, HW_DPLL_TOD_CTRL_1,
+ 			 &cmd, sizeof(cmd));
+-
+ 	if (err)
+ 		return err;
+ 
+@@ -571,20 +703,16 @@ static int _idtcm_set_dpll_hw_tod(struct idtcm_channel *channel,
+ 
+ 	err = idtcm_write(idtcm, channel->hw_dpll_n, HW_DPLL_TOD_CTRL_1,
+ 			  &cmd, sizeof(cmd));
+-
+ 	if (err)
+ 		return err;
+ 
+ 	if (wr_trig  != HW_TOD_WR_TRIG_SEL_MSB) {
+-
+ 		err = timespec_to_char_array(&local_ts, buf, sizeof(buf));
+-
+ 		if (err)
+ 			return err;
+ 
+ 		err = idtcm_write(idtcm, channel->hw_dpll_n,
+ 				  HW_DPLL_TOD_OVR__0, buf, sizeof(buf));
+-
+ 		if (err)
+ 			return err;
+ 	}
+@@ -596,11 +724,11 @@ static int _idtcm_set_dpll_hw_tod(struct idtcm_channel *channel,
+ 			  &cmd, sizeof(cmd));
+ 
+ 	if (wr_trig == HW_TOD_WR_TRIG_SEL_MSB) {
+-
+ 		if (idtcm->calculate_overhead_flag) {
+ 			/* Assumption: I2C @ 400KHz */
+-			total_overhead_ns =  ktime_to_ns(ktime_get_raw()
+-							 - idtcm->start_time)
++			ktime_t diff = ktime_sub(ktime_get_raw(),
++						 idtcm->start_time);
++			total_overhead_ns =  ktime_to_ns(diff)
+ 					     + idtcm->tod_write_overhead_ns
+ 					     + SETTIME_CORRECTION;
+ 
+@@ -610,7 +738,6 @@ static int _idtcm_set_dpll_hw_tod(struct idtcm_channel *channel,
+ 		}
+ 
+ 		err = timespec_to_char_array(&local_ts, buf, sizeof(buf));
+-
+ 		if (err)
+ 			return err;
+ 
+@@ -634,7 +761,6 @@ static int _idtcm_set_dpll_scsr_tod(struct idtcm_channel *channel,
+ 	timespec64_add_ns(&local_ts, SETTIME_CORRECTION);
+ 
+ 	err = timespec_to_char_array(&local_ts, buf, sizeof(buf));
+-
+ 	if (err)
+ 		return err;
+ 
+@@ -670,12 +796,12 @@ static int _idtcm_set_dpll_scsr_tod(struct idtcm_channel *channel,
+ 		if (err)
+ 			return err;
+ 
+-		if (cmd == 0)
++		if ((cmd & TOD_WRITE_SELECTION_MASK) == 0)
+ 			break;
+ 
+ 		if (++count > 20) {
+-			dev_err(&idtcm->client->dev,
+-				"Timed out waiting for the write counter\n");
++			dev_err(idtcm->dev,
++				"Timed out waiting for the write counter");
+ 			return -EIO;
+ 		}
+ 	}
+@@ -683,49 +809,73 @@ static int _idtcm_set_dpll_scsr_tod(struct idtcm_channel *channel,
+ 	return 0;
+ }
+ 
+-static int _idtcm_settime(struct idtcm_channel *channel,
+-			  struct timespec64 const *ts,
+-			  enum hw_tod_write_trig_sel wr_trig)
++static int get_output_base_addr(enum fw_version ver, u8 outn)
+ {
+-	struct idtcm *idtcm = channel->idtcm;
+-	int err;
+-	int i;
+-	u8 trig_sel;
+-
+-	err = _idtcm_set_dpll_hw_tod(channel, ts, wr_trig);
+-
+-	if (err)
+-		return err;
+-
+-	/* Wait for the operation to complete. */
+-	for (i = 0; i < 10000; i++) {
+-		err = idtcm_read(idtcm, channel->hw_dpll_n,
+-				 HW_DPLL_TOD_CTRL_1, &trig_sel,
+-				 sizeof(trig_sel));
++	int base;
+ 
+-		if (err)
+-			return err;
++	switch (outn) {
++	case 0:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_0);
++		break;
++	case 1:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_1);
++		break;
++	case 2:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_2);
++		break;
++	case 3:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_3);
++		break;
++	case 4:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_4);
++		break;
++	case 5:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_5);
++		break;
++	case 6:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_6);
++		break;
++	case 7:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_7);
++		break;
++	case 8:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_8);
++		break;
++	case 9:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_9);
++		break;
++	case 10:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_10);
++		break;
++	case 11:
++		base = IDTCM_FW_REG(ver, V520, OUTPUT_11);
++		break;
++	default:
++		base = -EINVAL;
++	}
+ 
+-		if (trig_sel == 0x4a)
+-			break;
++	return base;
++}
+ 
+-		err = 1;
+-	}
++static int _idtcm_settime_deprecated(struct idtcm_channel *channel,
++				     struct timespec64 const *ts)
++{
++	struct idtcm *idtcm = channel->idtcm;
++	int err;
+ 
++	err = _idtcm_set_dpll_hw_tod(channel, ts, HW_TOD_WR_TRIG_SEL_MSB);
+ 	if (err) {
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
++		dev_err(idtcm->dev,
++			"%s: Set HW ToD failed", __func__);
+ 		return err;
+ 	}
+ 
+ 	return idtcm_sync_pps_output(channel);
+ }
+ 
+-static int _idtcm_settime_v487(struct idtcm_channel *channel,
+-			       struct timespec64 const *ts,
+-			       enum scsr_tod_write_type_sel wr_type)
++static int _idtcm_settime(struct idtcm_channel *channel,
++			  struct timespec64 const *ts,
++			  enum scsr_tod_write_type_sel wr_type)
+ {
+ 	return _idtcm_set_dpll_scsr_tod(channel, ts,
+ 					SCSR_TOD_WR_TRIG_SEL_IMMEDIATE,
+@@ -738,7 +888,6 @@ static int idtcm_set_phase_pull_in_offset(struct idtcm_channel *channel,
+ 	int err;
+ 	int i;
+ 	struct idtcm *idtcm = channel->idtcm;
+-
+ 	u8 buf[4];
+ 
+ 	for (i = 0; i < 4; i++) {
+@@ -758,7 +907,6 @@ static int idtcm_set_phase_pull_in_slope_limit(struct idtcm_channel *channel,
+ 	int err;
+ 	u8 i;
+ 	struct idtcm *idtcm = channel->idtcm;
+-
+ 	u8 buf[3];
+ 
+ 	if (max_ffo_ppb & 0xff000000)
+@@ -779,12 +927,10 @@ static int idtcm_start_phase_pull_in(struct idtcm_channel *channel)
+ {
+ 	int err;
+ 	struct idtcm *idtcm = channel->idtcm;
+-
+ 	u8 buf;
+ 
+ 	err = idtcm_read(idtcm, channel->dpll_phase_pull_in, PULL_IN_CTRL,
+ 			 &buf, sizeof(buf));
+-
+ 	if (err)
+ 		return err;
+ 
+@@ -806,12 +952,10 @@ static int idtcm_do_phase_pull_in(struct idtcm_channel *channel,
+ 	int err;
+ 
+ 	err = idtcm_set_phase_pull_in_offset(channel, -offset_ns);
+-
+ 	if (err)
+ 		return err;
+ 
+ 	err = idtcm_set_phase_pull_in_slope_limit(channel, max_ffo_ppb);
+-
+ 	if (err)
+ 		return err;
+ 
+@@ -827,9 +971,9 @@ static int set_tod_write_overhead(struct idtcm_channel *channel)
+ 	s64 lowest_ns = 0;
+ 	int err;
+ 	u8 i;
+-
+ 	ktime_t start;
+ 	ktime_t stop;
++	ktime_t diff;
+ 
+ 	char buf[TOD_BYTE_COUNT] = {0};
+ 
+@@ -838,18 +982,18 @@ static int set_tod_write_overhead(struct idtcm_channel *channel)
+ 		    buf, sizeof(buf));
+ 
+ 	for (i = 0; i < TOD_WRITE_OVERHEAD_COUNT_MAX; i++) {
+-
+ 		start = ktime_get_raw();
+ 
+ 		err = idtcm_write(idtcm, channel->hw_dpll_n,
+ 				  HW_DPLL_TOD_OVR__0, buf, sizeof(buf));
+-
+ 		if (err)
+ 			return err;
+ 
+ 		stop = ktime_get_raw();
+ 
+-		current_ns = ktime_to_ns(stop - start);
++		diff = ktime_sub(stop, start);
++
++		current_ns = ktime_to_ns(diff);
+ 
+ 		if (i == 0) {
+ 			lowest_ns = current_ns;
+@@ -864,25 +1008,23 @@ static int set_tod_write_overhead(struct idtcm_channel *channel)
+ 	return err;
+ }
+ 
+-static int _idtcm_adjtime(struct idtcm_channel *channel, s64 delta)
++static int _idtcm_adjtime_deprecated(struct idtcm_channel *channel, s64 delta)
+ {
+ 	int err;
+ 	struct idtcm *idtcm = channel->idtcm;
+ 	struct timespec64 ts;
+ 	s64 now;
+ 
+-	if (abs(delta) < PHASE_PULL_IN_THRESHOLD_NS) {
++	if (abs(delta) < PHASE_PULL_IN_THRESHOLD_NS_DEPRECATED) {
+ 		err = idtcm_do_phase_pull_in(channel, delta, 0);
+ 	} else {
+ 		idtcm->calculate_overhead_flag = 1;
+ 
+ 		err = set_tod_write_overhead(channel);
+-
+ 		if (err)
+ 			return err;
+ 
+-		err = _idtcm_gettime(channel, &ts);
+-
++		err = _idtcm_gettime_immediate(channel, &ts);
+ 		if (err)
+ 			return err;
+ 
+@@ -891,7 +1033,7 @@ static int _idtcm_adjtime(struct idtcm_channel *channel, s64 delta)
+ 
+ 		ts = ns_to_timespec64(now);
+ 
+-		err = _idtcm_settime(channel, &ts, HW_TOD_WR_TRIG_SEL_MSB);
++		err = _idtcm_settime_deprecated(channel, &ts);
+ 	}
+ 
+ 	return err;
+@@ -899,13 +1041,33 @@ static int _idtcm_adjtime(struct idtcm_channel *channel, s64 delta)
+ 
+ static int idtcm_state_machine_reset(struct idtcm *idtcm)
+ {
+-	int err;
+ 	u8 byte = SM_RESET_CMD;
++	u32 status = 0;
++	int err;
++	u8 i;
++
++	clear_boot_status(idtcm);
++
++	err = idtcm_write(idtcm, RESET_CTRL,
++			  IDTCM_FW_REG(idtcm->fw_ver, V520, SM_RESET),
++			  &byte, sizeof(byte));
+ 
+-	err = idtcm_write(idtcm, RESET_CTRL, SM_RESET, &byte, sizeof(byte));
++	if (!err) {
++		for (i = 0; i < 30; i++) {
++			msleep_interruptible(100);
++			read_boot_status(idtcm, &status);
+ 
+-	if (!err)
+-		msleep_interruptible(POST_SM_RESET_DELAY_MS);
++			if (status == 0xA0) {
++				dev_dbg(idtcm->dev,
++					"SM_RESET completed in %d ms", i * 100);
++				break;
++			}
++		}
++
++		if (!status)
++			dev_err(idtcm->dev,
++				"Timed out waiting for CM_RESET to complete");
++	}
+ 
+ 	return err;
+ }
+@@ -1000,12 +1162,12 @@ static int set_pll_output_mask(struct idtcm *idtcm, u16 addr, u8 val)
+ static int set_tod_ptp_pll(struct idtcm *idtcm, u8 index, u8 pll)
+ {
+ 	if (index >= MAX_TOD) {
+-		dev_err(&idtcm->client->dev, "ToD%d not supported\n", index);
++		dev_err(idtcm->dev, "ToD%d not supported", index);
+ 		return -EINVAL;
+ 	}
+ 
+ 	if (pll >= MAX_PLL) {
+-		dev_err(&idtcm->client->dev, "Pll%d not supported\n", pll);
++		dev_err(idtcm->dev, "Pll%d not supported", pll);
+ 		return -EINVAL;
+ 	}
+ 
+@@ -1023,8 +1185,7 @@ static int check_and_set_masks(struct idtcm *idtcm,
+ 	switch (regaddr) {
+ 	case TOD_MASK_ADDR:
+ 		if ((val & 0xf0) || !(val & 0x0f)) {
+-			dev_err(&idtcm->client->dev,
+-				"Invalid TOD mask 0x%hhx\n", val);
++			dev_err(idtcm->dev, "Invalid TOD mask 0x%02x", val);
+ 			err = -EINVAL;
+ 		} else {
+ 			idtcm->tod_mask = val;
+@@ -1055,14 +1216,14 @@ static void display_pll_and_masks(struct idtcm *idtcm)
+ 	u8 i;
+ 	u8 mask;
+ 
+-	dev_dbg(&idtcm->client->dev, "tod_mask = 0x%02x\n", idtcm->tod_mask);
++	dev_dbg(idtcm->dev, "tod_mask = 0x%02x", idtcm->tod_mask);
+ 
+ 	for (i = 0; i < MAX_TOD; i++) {
+ 		mask = 1 << i;
+ 
+ 		if (mask & idtcm->tod_mask)
+-			dev_dbg(&idtcm->client->dev,
+-				"TOD%d pll = %d    output_mask = 0x%04x\n",
++			dev_dbg(idtcm->dev,
++				"TOD%d pll = %d    output_mask = 0x%04x",
+ 				i, idtcm->channel[i].pll,
+ 				idtcm->channel[i].output_mask);
+ 	}
+@@ -1071,6 +1232,7 @@ static void display_pll_and_masks(struct idtcm *idtcm)
+ static int idtcm_load_firmware(struct idtcm *idtcm,
+ 			       struct device *dev)
+ {
++	u16 scratch = IDTCM_FW_REG(idtcm->fw_ver, V520, SCRATCH);
+ 	char fname[128] = FW_FILENAME;
+ 	const struct firmware *fw;
+ 	struct idtcm_fwrc *rec;
+@@ -1083,30 +1245,26 @@ static int idtcm_load_firmware(struct idtcm *idtcm,
+ 	if (firmware) /* module parameter */
+ 		snprintf(fname, sizeof(fname), "%s", firmware);
+ 
+-	dev_dbg(&idtcm->client->dev, "requesting firmware '%s'\n", fname);
++	dev_dbg(idtcm->dev, "requesting firmware '%s'", fname);
+ 
+ 	err = request_firmware(&fw, fname, dev);
+-
+ 	if (err) {
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
++		dev_err(idtcm->dev,
++			"Failed at line %d in %s!", __LINE__, __func__);
+ 		return err;
+ 	}
+ 
+-	dev_dbg(&idtcm->client->dev, "firmware size %zu bytes\n", fw->size);
++	dev_dbg(idtcm->dev, "firmware size %zu bytes", fw->size);
+ 
+ 	rec = (struct idtcm_fwrc *) fw->data;
+ 
+-	if (fw->size > 0)
++	if (contains_full_configuration(idtcm, fw))
+ 		idtcm_state_machine_reset(idtcm);
+ 
+ 	for (len = fw->size; len > 0; len -= sizeof(*rec)) {
+-
+ 		if (rec->reserved) {
+-			dev_err(&idtcm->client->dev,
+-				"bad firmware, reserved field non-zero\n");
++			dev_err(idtcm->dev,
++				"bad firmware, reserved field non-zero");
+ 			err = -EINVAL;
+ 		} else {
+ 			regaddr = rec->hiaddr << 8;
+@@ -1124,13 +1282,11 @@ static int idtcm_load_firmware(struct idtcm *idtcm,
+ 			err = 0;
+ 
+ 			/* Top (status registers) and bottom are read-only */
+-			if ((regaddr < GPIO_USER_CONTROL)
+-			    || (regaddr >= SCRATCH))
++			if (regaddr < GPIO_USER_CONTROL || regaddr >= scratch)
+ 				continue;
+ 
+ 			/* Page size 128, last 4 bytes of page skipped */
+-			if (((loaddr > 0x7b) && (loaddr <= 0x7f))
+-			     || loaddr > 0xfb)
++			if ((loaddr > 0x7b && loaddr <= 0x7f) || loaddr > 0xfb)
+ 				continue;
+ 
+ 			err = idtcm_write(idtcm, regaddr, 0, &val, sizeof(val));
+@@ -1151,12 +1307,19 @@ static int idtcm_output_enable(struct idtcm_channel *channel,
+ 			       bool enable, unsigned int outn)
+ {
+ 	struct idtcm *idtcm = channel->idtcm;
++	int base;
+ 	int err;
+ 	u8 val;
+ 
+-	err = idtcm_read(idtcm, OUTPUT_MODULE_FROM_INDEX(outn),
+-			 OUT_CTRL_1, &val, sizeof(val));
++	base = get_output_base_addr(idtcm->fw_ver, outn);
++
++	if (!(base > 0)) {
++		dev_err(idtcm->dev,
++			"%s - Unsupported out%d", __func__, outn);
++		return base;
++	}
+ 
++	err = idtcm_read(idtcm, (u16)base, OUT_CTRL_1, &val, sizeof(val));
+ 	if (err)
+ 		return err;
+ 
+@@ -1165,8 +1328,7 @@ static int idtcm_output_enable(struct idtcm_channel *channel,
+ 	else
+ 		val &= ~SQUELCH_DISABLE;
+ 
+-	return idtcm_write(idtcm, OUTPUT_MODULE_FROM_INDEX(outn),
+-			   OUT_CTRL_1, &val, sizeof(val));
++	return idtcm_write(idtcm, (u16)base, OUT_CTRL_1, &val, sizeof(val));
+ }
+ 
+ static int idtcm_output_mask_enable(struct idtcm_channel *channel,
+@@ -1180,11 +1342,8 @@ static int idtcm_output_mask_enable(struct idtcm_channel *channel,
+ 	outn = 0;
+ 
+ 	while (mask) {
+-
+ 		if (mask & 0x1) {
+-
+ 			err = idtcm_output_enable(channel, enable, outn);
+-
+ 			if (err)
+ 				return err;
+ 		}
+@@ -1197,49 +1356,86 @@ static int idtcm_output_mask_enable(struct idtcm_channel *channel,
+ }
+ 
+ static int idtcm_perout_enable(struct idtcm_channel *channel,
+-			       bool enable,
+-			       struct ptp_perout_request *perout)
++			       struct ptp_perout_request *perout,
++			       bool enable)
+ {
++	struct idtcm *idtcm = channel->idtcm;
+ 	unsigned int flags = perout->flags;
++	struct timespec64 ts = {0, 0};
++	int err;
+ 
+ 	if (flags == PEROUT_ENABLE_OUTPUT_MASK)
+-		return idtcm_output_mask_enable(channel, enable);
++		err = idtcm_output_mask_enable(channel, enable);
++	else
++		err = idtcm_output_enable(channel, enable, perout->index);
++
++	if (err) {
++		dev_err(idtcm->dev, "Unable to set output enable");
++		return err;
++	}
+ 
+-	/* Enable/disable individual output instead */
+-	return idtcm_output_enable(channel, enable, perout->index);
++	/* Align output to internal 1 PPS */
++	return _idtcm_settime(channel, &ts, SCSR_TOD_WR_TYPE_SEL_DELTA_PLUS);
+ }
+ 
+-static int idtcm_set_pll_mode(struct idtcm_channel *channel,
+-			      enum pll_mode pll_mode)
++static int idtcm_get_pll_mode(struct idtcm_channel *channel,
++			      enum pll_mode *pll_mode)
+ {
+ 	struct idtcm *idtcm = channel->idtcm;
+ 	int err;
+ 	u8 dpll_mode;
+ 
+-	err = idtcm_read(idtcm, channel->dpll_n, DPLL_MODE,
++	err = idtcm_read(idtcm, channel->dpll_n,
++			 IDTCM_FW_REG(idtcm->fw_ver, V520, DPLL_MODE),
+ 			 &dpll_mode, sizeof(dpll_mode));
+ 	if (err)
+ 		return err;
+ 
+-	dpll_mode &= ~(PLL_MODE_MASK << PLL_MODE_SHIFT);
++	*pll_mode = (dpll_mode >> PLL_MODE_SHIFT) & PLL_MODE_MASK;
+ 
+-	dpll_mode |= (pll_mode << PLL_MODE_SHIFT);
++	return 0;
++}
+ 
+-	channel->pll_mode = pll_mode;
++static int idtcm_set_pll_mode(struct idtcm_channel *channel,
++			      enum pll_mode pll_mode)
++{
++	struct idtcm *idtcm = channel->idtcm;
++	int err;
++	u8 dpll_mode;
++	u8 old_pll_mode;
+ 
+-	err = idtcm_write(idtcm, channel->dpll_n, DPLL_MODE,
+-			  &dpll_mode, sizeof(dpll_mode));
++	err = idtcm_read(idtcm, channel->dpll_n,
++			 IDTCM_FW_REG(idtcm->fw_ver, V520, DPLL_MODE),
++			 &dpll_mode, sizeof(dpll_mode));
+ 	if (err)
+ 		return err;
+ 
+-	return 0;
+-}
++	old_pll_mode = (dpll_mode & (PLL_MODE_MASK << PLL_MODE_SHIFT)) >> PLL_MODE_SHIFT;
+ 
+-/* PTP Hardware Clock interface */
++	if(old_pll_mode != pll_mode) {
++		printk(KERN_WARNING "The current pll mode does not match.\n"
++			"old_pll_mode:%d, pll_mode:%d\n", old_pll_mode, pll_mode);
++		dpll_mode &= ~(PLL_MODE_MASK << PLL_MODE_SHIFT);
+ 
+-/**
+- * @brief Maximum absolute value for write phase offset in picoseconds
+- *
++		dpll_mode |= (pll_mode << PLL_MODE_SHIFT);
++
++		err = idtcm_write(idtcm, channel->dpll_n,
++				IDTCM_FW_REG(idtcm->fw_ver, V520, DPLL_MODE),
++				&dpll_mode, sizeof(dpll_mode));
++		if (err)
++			return err;
++
++		channel->pll_mode = pll_mode;
++	}
++
++	return 0;
++}
++
++/* PTP Hardware Clock interface */
++
++/**
++ * @brief Maximum absolute value for write phase offset in picoseconds
++ *
+  * Destination signed register is 32-bit register in resolution of 50ps
+  *
+  * 0x7fffffff * 50 =  2147483647 * 50 = 107374182350
+@@ -1247,28 +1443,15 @@ static int idtcm_set_pll_mode(struct idtcm_channel *channel,
+ static int _idtcm_adjphase(struct idtcm_channel *channel, s32 delta_ns)
+ {
+ 	struct idtcm *idtcm = channel->idtcm;
+-
+ 	int err;
+ 	u8 i;
+ 	u8 buf[4] = {0};
+ 	s32 phase_50ps;
+ 	s64 offset_ps;
+ 
+-	if (channel->pll_mode != PLL_MODE_WRITE_PHASE) {
+-
+-		err = idtcm_set_pll_mode(channel, PLL_MODE_WRITE_PHASE);
+-
+-		if (err)
+-			return err;
+-
+-		channel->write_phase_ready = 0;
+-
+-		ptp_schedule_worker(channel->ptp_clock,
+-				    msecs_to_jiffies(WR_PHASE_SETUP_MS));
+-	}
+-
+-	if (!channel->write_phase_ready)
+-		delta_ns = 0;
++	err = idtcm_set_pll_mode(channel, PLL_MODE_WRITE_PHASE);
++	if (err)
++		return err;
+ 
+ 	offset_ps = (s64)delta_ns * 1000;
+ 
+@@ -1282,7 +1465,7 @@ static int _idtcm_adjphase(struct idtcm_channel *channel, s32 delta_ns)
+ 	else if (offset_ps < -MAX_ABS_WRITE_PHASE_PICOSECONDS)
+ 		offset_ps = -MAX_ABS_WRITE_PHASE_PICOSECONDS;
+ 
+-	phase_50ps = DIV_ROUND_CLOSEST(div64_s64(offset_ps, 50), 1);
++	phase_50ps = div_s64(offset_ps, 50);
+ 
+ 	for (i = 0; i < 4; i++) {
+ 		buf[i] = phase_50ps & 0xff;
+@@ -1299,16 +1482,13 @@ static int _idtcm_adjfine(struct idtcm_channel *channel, long scaled_ppm)
+ {
+ 	struct idtcm *idtcm = channel->idtcm;
+ 	u8 i;
+-	bool neg_adj = 0;
+ 	int err;
+ 	u8 buf[6] = {0};
+ 	s64 fcw;
+ 
+-	if (channel->pll_mode  != PLL_MODE_WRITE_FREQUENCY) {
+-		err = idtcm_set_pll_mode(channel, PLL_MODE_WRITE_FREQUENCY);
+-		if (err)
+-			return err;
+-	}
++	err = idtcm_set_pll_mode(channel, PLL_MODE_WRITE_FREQUENCY);
++	if (err)
++		return err;
+ 
+ 	/*
+ 	 * Frequency Control Word unit is: 1.11 * 10^-10 ppm
+@@ -1323,18 +1503,11 @@ static int _idtcm_adjfine(struct idtcm_channel *channel, long scaled_ppm)
+ 	 * FCW = -------------
+ 	 *         111 * 2^4
+ 	 */
+-	if (scaled_ppm < 0) {
+-		neg_adj = 1;
+-		scaled_ppm = -scaled_ppm;
+-	}
+ 
+ 	/* 2 ^ -53 = 1.1102230246251565404236316680908e-16 */
+ 	fcw = scaled_ppm * 244140625ULL;
+ 
+-	fcw = div_u64(fcw, 1776);
+-
+-	if (neg_adj)
+-		fcw = -fcw;
++	fcw = div_s64(fcw, 1776);
+ 
+ 	for (i = 0; i < 6; i++) {
+ 		buf[i] = fcw & 0xff;
+@@ -1349,180 +1522,136 @@ static int _idtcm_adjfine(struct idtcm_channel *channel, long scaled_ppm)
+ 
+ static int idtcm_gettime(struct ptp_clock_info *ptp, struct timespec64 *ts)
+ {
+-	struct idtcm_channel *channel =
+-		container_of(ptp, struct idtcm_channel, caps);
++	struct idtcm_channel *channel = container_of(ptp, struct idtcm_channel, caps);
+ 	struct idtcm *idtcm = channel->idtcm;
+ 	int err;
+ 
+-	mutex_lock(&idtcm->reg_lock);
+-
+-	err = _idtcm_gettime(channel, ts);
++	mutex_lock(idtcm->lock);
++	err = _idtcm_gettime_immediate(channel, ts);
++	mutex_unlock(idtcm->lock);
+ 
+ 	if (err)
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
+-
+-	mutex_unlock(&idtcm->reg_lock);
++		dev_err(idtcm->dev, "Failed at line %d in %s!",
++			__LINE__, __func__);
+ 
+ 	return err;
+ }
+ 
+-static int idtcm_settime(struct ptp_clock_info *ptp,
+-			 const struct timespec64 *ts)
++static int idtcm_settime_deprecated(struct ptp_clock_info *ptp,
++				    const struct timespec64 *ts)
+ {
+-	struct idtcm_channel *channel =
+-		container_of(ptp, struct idtcm_channel, caps);
++	struct idtcm_channel *channel = container_of(ptp, struct idtcm_channel, caps);
+ 	struct idtcm *idtcm = channel->idtcm;
+ 	int err;
+ 
+-	mutex_lock(&idtcm->reg_lock);
+-
+-	err = _idtcm_settime(channel, ts, HW_TOD_WR_TRIG_SEL_MSB);
++	mutex_lock(idtcm->lock);
++	err = _idtcm_settime_deprecated(channel, ts);
++	mutex_unlock(idtcm->lock);
+ 
+ 	if (err)
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
+-
+-	mutex_unlock(&idtcm->reg_lock);
++		dev_err(idtcm->dev,
++			"Failed at line %d in %s!", __LINE__, __func__);
+ 
+ 	return err;
+ }
+ 
+-static int idtcm_settime_v487(struct ptp_clock_info *ptp,
++static int idtcm_settime(struct ptp_clock_info *ptp,
+ 			 const struct timespec64 *ts)
+ {
+-	struct idtcm_channel *channel =
+-		container_of(ptp, struct idtcm_channel, caps);
++	struct idtcm_channel *channel = container_of(ptp, struct idtcm_channel, caps);
+ 	struct idtcm *idtcm = channel->idtcm;
+ 	int err;
+ 
+-	mutex_lock(&idtcm->reg_lock);
+-
+-	err = _idtcm_settime_v487(channel, ts, SCSR_TOD_WR_TYPE_SEL_ABSOLUTE);
++	mutex_lock(idtcm->lock);
++	err = _idtcm_settime(channel, ts, SCSR_TOD_WR_TYPE_SEL_ABSOLUTE);
++	mutex_unlock(idtcm->lock);
+ 
+ 	if (err)
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
+-
+-	mutex_unlock(&idtcm->reg_lock);
++		dev_err(idtcm->dev,
++			"Failed at line %d in %s!", __LINE__, __func__);
+ 
+ 	return err;
+ }
+ 
+-static int idtcm_adjtime(struct ptp_clock_info *ptp, s64 delta)
++static int idtcm_adjtime_deprecated(struct ptp_clock_info *ptp, s64 delta)
+ {
+-	struct idtcm_channel *channel =
+-		container_of(ptp, struct idtcm_channel, caps);
++	struct idtcm_channel *channel = container_of(ptp, struct idtcm_channel, caps);
+ 	struct idtcm *idtcm = channel->idtcm;
+ 	int err;
+ 
+-	mutex_lock(&idtcm->reg_lock);
+-
+-	err = _idtcm_adjtime(channel, delta);
++	mutex_lock(idtcm->lock);
++	err = _idtcm_adjtime_deprecated(channel, delta);
++	mutex_unlock(idtcm->lock);
+ 
+ 	if (err)
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
+-
+-	mutex_unlock(&idtcm->reg_lock);
++		dev_err(idtcm->dev,
++			"Failed at line %d in %s!", __LINE__, __func__);
+ 
+ 	return err;
+ }
+ 
+-static int idtcm_adjtime_v487(struct ptp_clock_info *ptp, s64 delta)
++static int idtcm_adjtime(struct ptp_clock_info *ptp, s64 delta)
+ {
+-	struct idtcm_channel *channel =
+-		container_of(ptp, struct idtcm_channel, caps);
++	struct idtcm_channel *channel = container_of(ptp, struct idtcm_channel, caps);
+ 	struct idtcm *idtcm = channel->idtcm;
+ 	struct timespec64 ts;
+ 	enum scsr_tod_write_type_sel type;
+ 	int err;
+ 
+-	if (abs(delta) < PHASE_PULL_IN_THRESHOLD_NS_V487) {
+-		err = idtcm_do_phase_pull_in(channel, delta, 0);
+-		if (err)
+-			dev_err(&idtcm->client->dev,
+-				"Failed at line %d in func %s!\n",
+-				__LINE__,
+-				__func__);
+-		return err;
+-	}
++	mutex_lock(idtcm->lock);
+ 
+-	if (delta >= 0) {
+-		ts = ns_to_timespec64(delta);
+-		type = SCSR_TOD_WR_TYPE_SEL_DELTA_PLUS;
++	if (abs(delta) < PHASE_PULL_IN_THRESHOLD_NS) {
++		err = idtcm_do_phase_pull_in(channel, delta, 0);
+ 	} else {
+-		ts = ns_to_timespec64(-delta);
+-		type = SCSR_TOD_WR_TYPE_SEL_DELTA_MINUS;
++		if (delta >= 0) {
++			ts = ns_to_timespec64(delta);
++			type = SCSR_TOD_WR_TYPE_SEL_DELTA_PLUS;
++		} else {
++			ts = ns_to_timespec64(-delta);
++			type = SCSR_TOD_WR_TYPE_SEL_DELTA_MINUS;
++		}
++		err = _idtcm_settime(channel, &ts, type);
+ 	}
+ 
+-	mutex_lock(&idtcm->reg_lock);
+-
+-	err = _idtcm_settime_v487(channel, &ts, type);
++	mutex_unlock(idtcm->lock);
+ 
+ 	if (err)
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
+-
+-	mutex_unlock(&idtcm->reg_lock);
++		dev_err(idtcm->dev,
++			"Failed at line %d in %s!", __LINE__, __func__);
+ 
+ 	return err;
+ }
+ 
+ static int idtcm_adjphase(struct ptp_clock_info *ptp, s32 delta)
+ {
+-	struct idtcm_channel *channel =
+-		container_of(ptp, struct idtcm_channel, caps);
+-
++	struct idtcm_channel *channel = container_of(ptp, struct idtcm_channel, caps);
+ 	struct idtcm *idtcm = channel->idtcm;
+-
+ 	int err;
+ 
+-	mutex_lock(&idtcm->reg_lock);
+-
++	mutex_lock(idtcm->lock);
+ 	err = _idtcm_adjphase(channel, delta);
++	mutex_unlock(idtcm->lock);
+ 
+ 	if (err)
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
+-
+-	mutex_unlock(&idtcm->reg_lock);
++		dev_err(idtcm->dev,
++			"Failed at line %d in %s!", __LINE__, __func__);
+ 
+ 	return err;
+ }
+ 
+ static int idtcm_adjfine(struct ptp_clock_info *ptp,  long scaled_ppm)
+ {
+-	struct idtcm_channel *channel =
+-		container_of(ptp, struct idtcm_channel, caps);
+-
++	struct idtcm_channel *channel = container_of(ptp, struct idtcm_channel, caps);
+ 	struct idtcm *idtcm = channel->idtcm;
+-
+ 	int err;
+ 
+-	mutex_lock(&idtcm->reg_lock);
+-
++	mutex_lock(idtcm->lock);
+ 	err = _idtcm_adjfine(channel, scaled_ppm);
++	mutex_unlock(idtcm->lock);
+ 
+ 	if (err)
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
+-
+-	mutex_unlock(&idtcm->reg_lock);
++		dev_err(idtcm->dev,
++			"Failed at line %d in %s!", __LINE__, __func__);
+ 
+ 	return err;
+ }
+@@ -1530,262 +1659,36 @@ static int idtcm_adjfine(struct ptp_clock_info *ptp,  long scaled_ppm)
+ static int idtcm_enable(struct ptp_clock_info *ptp,
+ 			struct ptp_clock_request *rq, int on)
+ {
+-	int err;
++	struct idtcm_channel *channel = container_of(ptp, struct idtcm_channel, caps);
++	struct idtcm *idtcm = channel->idtcm;
++	int err = -EOPNOTSUPP;
+ 
+-	struct idtcm_channel *channel =
+-		container_of(ptp, struct idtcm_channel, caps);
++	mutex_lock(idtcm->lock);
+ 
+ 	switch (rq->type) {
+ 	case PTP_CLK_REQ_PEROUT:
+-		if (!on) {
+-			err = idtcm_perout_enable(channel, false, &rq->perout);
+-			if (err)
+-				dev_err(&channel->idtcm->client->dev,
+-					"Failed at line %d in func %s!\n",
+-					__LINE__,
+-					__func__);
+-			return err;
+-		}
+-
++		if (!on)
++			err = idtcm_perout_enable(channel, &rq->perout, false);
+ 		/* Only accept a 1-PPS aligned to the second. */
+-		if (rq->perout.start.nsec || rq->perout.period.sec != 1 ||
+-		    rq->perout.period.nsec)
+-			return -ERANGE;
+-
+-		err = idtcm_perout_enable(channel, true, &rq->perout);
+-		if (err)
+-			dev_err(&channel->idtcm->client->dev,
+-				"Failed at line %d in func %s!\n",
+-				__LINE__,
+-				__func__);
+-		return err;
+-	default:
+-		break;
+-	}
+-
+-	return -EOPNOTSUPP;
+-}
+-
+-static int _enable_pll_tod_sync(struct idtcm *idtcm,
+-				u8 pll,
+-				u8 sync_src,
+-				u8 qn,
+-				u8 qn_plus_1)
+-{
+-	int err;
+-	u8 val;
+-	u16 dpll;
+-	u16 out0 = 0, out1 = 0;
+-
+-	if ((qn == 0) && (qn_plus_1 == 0))
+-		return 0;
+-
+-	switch (pll) {
+-	case 0:
+-		dpll = DPLL_0;
+-		if (qn)
+-			out0 = OUTPUT_0;
+-		if (qn_plus_1)
+-			out1 = OUTPUT_1;
+-		break;
+-	case 1:
+-		dpll = DPLL_1;
+-		if (qn)
+-			out0 = OUTPUT_2;
+-		if (qn_plus_1)
+-			out1 = OUTPUT_3;
+-		break;
+-	case 2:
+-		dpll = DPLL_2;
+-		if (qn)
+-			out0 = OUTPUT_4;
+-		if (qn_plus_1)
+-			out1 = OUTPUT_5;
+-		break;
+-	case 3:
+-		dpll = DPLL_3;
+-		if (qn)
+-			out0 = OUTPUT_6;
+-		if (qn_plus_1)
+-			out1 = OUTPUT_7;
+-		break;
+-	case 4:
+-		dpll = DPLL_4;
+-		if (qn)
+-			out0 = OUTPUT_8;
+-		break;
+-	case 5:
+-		dpll = DPLL_5;
+-		if (qn)
+-			out0 = OUTPUT_9;
+-		if (qn_plus_1)
+-			out1 = OUTPUT_8;
+-		break;
+-	case 6:
+-		dpll = DPLL_6;
+-		if (qn)
+-			out0 = OUTPUT_10;
+-		if (qn_plus_1)
+-			out1 = OUTPUT_11;
++		else if (rq->perout.start.nsec || rq->perout.period.sec != 1 ||
++			 rq->perout.period.nsec)
++			err = -ERANGE;
++		else
++			err = idtcm_perout_enable(channel, &rq->perout, true);
+ 		break;
+-	case 7:
+-		dpll = DPLL_7;
+-		if (qn)
+-			out0 = OUTPUT_11;
++	case PTP_CLK_REQ_EXTTS:
++		err = idtcm_enable_extts(channel, rq->extts.index,
++					 rq->extts.rsv[0], on);
+ 		break;
+ 	default:
+-		return -EINVAL;
+-	}
+-
+-	/*
+-	 * Enable OUTPUT OUT_SYNC.
+-	 */
+-	if (out0) {
+-		err = idtcm_read(idtcm, out0, OUT_CTRL_1, &val, sizeof(val));
+-
+-		if (err)
+-			return err;
+-
+-		val &= ~OUT_SYNC_DISABLE;
+-
+-		err = idtcm_write(idtcm, out0, OUT_CTRL_1, &val, sizeof(val));
+-
+-		if (err)
+-			return err;
+-	}
+-
+-	if (out1) {
+-		err = idtcm_read(idtcm, out1, OUT_CTRL_1, &val, sizeof(val));
+-
+-		if (err)
+-			return err;
+-
+-		val &= ~OUT_SYNC_DISABLE;
+-
+-		err = idtcm_write(idtcm, out1, OUT_CTRL_1, &val, sizeof(val));
+-
+-		if (err)
+-			return err;
+-	}
+-
+-	/* enable dpll sync tod pps, must be set before dpll_mode */
+-	err = idtcm_read(idtcm, dpll, DPLL_TOD_SYNC_CFG, &val, sizeof(val));
+-	if (err)
+-		return err;
+-
+-	val &= ~(TOD_SYNC_SOURCE_MASK << TOD_SYNC_SOURCE_SHIFT);
+-	val |= (sync_src << TOD_SYNC_SOURCE_SHIFT);
+-	val |= TOD_SYNC_EN;
+-
+-	return idtcm_write(idtcm, dpll, DPLL_TOD_SYNC_CFG, &val, sizeof(val));
+-}
+-
+-static int idtcm_enable_tod_sync(struct idtcm_channel *channel)
+-{
+-	struct idtcm *idtcm = channel->idtcm;
+-
+-	u8 pll;
+-	u8 sync_src;
+-	u8 qn;
+-	u8 qn_plus_1;
+-	u8 cfg;
+-	int err = 0;
+-	u16 output_mask = channel->output_mask;
+-	u8 out8_mux = 0;
+-	u8 out11_mux = 0;
+-	u8 temp;
+-
+-	/*
+-	 * set tod_out_sync_enable to 0.
+-	 */
+-	err = idtcm_read(idtcm, channel->tod_n, TOD_CFG, &cfg, sizeof(cfg));
+-	if (err)
+-		return err;
+-
+-	cfg &= ~TOD_OUT_SYNC_ENABLE;
+-
+-	err = idtcm_write(idtcm, channel->tod_n, TOD_CFG, &cfg, sizeof(cfg));
+-	if (err)
+-		return err;
+-
+-	switch (channel->tod_n) {
+-	case TOD_0:
+-		sync_src = 0;
+-		break;
+-	case TOD_1:
+-		sync_src = 1;
+ 		break;
+-	case TOD_2:
+-		sync_src = 2;
+-		break;
+-	case TOD_3:
+-		sync_src = 3;
+-		break;
+-	default:
+-		return -EINVAL;
+ 	}
+ 
+-	err = idtcm_read(idtcm, 0, HW_Q8_CTRL_SPARE,
+-			 &temp, sizeof(temp));
+-	if (err)
+-		return err;
+-
+-	if ((temp & Q9_TO_Q8_FANOUT_AND_CLOCK_SYNC_ENABLE_MASK) ==
+-	    Q9_TO_Q8_FANOUT_AND_CLOCK_SYNC_ENABLE_MASK)
+-		out8_mux = 1;
++	mutex_unlock(idtcm->lock);
+ 
+-	err = idtcm_read(idtcm, 0, HW_Q11_CTRL_SPARE,
+-			 &temp, sizeof(temp));
+ 	if (err)
+-		return err;
+-
+-	if ((temp & Q10_TO_Q11_FANOUT_AND_CLOCK_SYNC_ENABLE_MASK) ==
+-	    Q10_TO_Q11_FANOUT_AND_CLOCK_SYNC_ENABLE_MASK)
+-		out11_mux = 1;
+-
+-	for (pll = 0; pll < 8; pll++) {
+-		qn = 0;
+-		qn_plus_1 = 0;
+-
+-		if (pll < 4) {
+-			/* First 4 pll has 2 outputs */
+-			qn = output_mask & 0x1;
+-			output_mask = output_mask >> 1;
+-			qn_plus_1 = output_mask & 0x1;
+-			output_mask = output_mask >> 1;
+-		} else if (pll == 4) {
+-			if (out8_mux == 0) {
+-				qn = output_mask & 0x1;
+-				output_mask = output_mask >> 1;
+-			}
+-		} else if (pll == 5) {
+-			if (out8_mux) {
+-				qn_plus_1 = output_mask & 0x1;
+-				output_mask = output_mask >> 1;
+-			}
+-			qn = output_mask & 0x1;
+-			output_mask = output_mask >> 1;
+-		} else if (pll == 6) {
+-			qn = output_mask & 0x1;
+-			output_mask = output_mask >> 1;
+-			if (out11_mux) {
+-				qn_plus_1 = output_mask & 0x1;
+-				output_mask = output_mask >> 1;
+-			}
+-		} else if (pll == 7) {
+-			if (out11_mux == 0) {
+-				qn = output_mask & 0x1;
+-				output_mask = output_mask >> 1;
+-			}
+-		}
+-
+-		if ((qn != 0) || (qn_plus_1 != 0))
+-			err = _enable_pll_tod_sync(idtcm, pll, sync_src, qn,
+-					       qn_plus_1);
+-
+-		if (err)
+-			return err;
+-	}
++		dev_err(channel->idtcm->dev,
++			"Failed in %s with err %d!\n", __func__, err);
+ 
+ 	return err;
+ }
+@@ -1793,27 +1696,39 @@ static int idtcm_enable_tod_sync(struct idtcm_channel *channel)
+ static int idtcm_enable_tod(struct idtcm_channel *channel)
+ {
+ 	struct idtcm *idtcm = channel->idtcm;
++	u16 tod_cfg = IDTCM_FW_REG(idtcm->fw_ver, V520, TOD_CFG);
+ 	struct timespec64 ts = {0, 0};
+ 	u8 cfg;
+ 	int err;
+ 
++	/* STEELAI-366 - Temporary workaround for ts2phc compatibility */
++	if (0) {
++		err = idtcm_output_mask_enable(channel, false);
++		if (err)
++			return err;
++	}
++
+ 	/*
+ 	 * Start the TOD clock ticking.
+ 	 */
+-	err = idtcm_read(idtcm, channel->tod_n, TOD_CFG, &cfg, sizeof(cfg));
++	err = idtcm_read(idtcm, channel->tod_n, tod_cfg, &cfg, sizeof(cfg));
+ 	if (err)
+ 		return err;
+ 
+ 	cfg |= TOD_ENABLE;
+ 
+-	err = idtcm_write(idtcm, channel->tod_n, TOD_CFG, &cfg, sizeof(cfg));
++	err = idtcm_write(idtcm, channel->tod_n, tod_cfg, &cfg, sizeof(cfg));
+ 	if (err)
+ 		return err;
+ 
+-	return _idtcm_settime(channel, &ts, HW_TOD_WR_TRIG_SEL_MSB);
++	if (idtcm->fw_ver < V487)
++		return _idtcm_settime_deprecated(channel, &ts);
++	else
++		return _idtcm_settime(channel, &ts,
++				      SCSR_TOD_WR_TYPE_SEL_ABSOLUTE);
+ }
+ 
+-static void idtcm_display_version_info(struct idtcm *idtcm)
++static void idtcm_set_version_info(struct idtcm *idtcm)
+ {
+ 	u8 major;
+ 	u8 minor;
+@@ -1821,7 +1736,6 @@ static void idtcm_display_version_info(struct idtcm *idtcm)
+ 	u16 product_id;
+ 	u8 hw_rev_id;
+ 	u8 config_select;
+-	char *fmt = "%d.%d.%d, Id: 0x%04x  HW Rev: %d  OTP Config Select: %d\n";
+ 
+ 	idtcm_read_major_release(idtcm, &major);
+ 	idtcm_read_minor_release(idtcm, &minor);
+@@ -1835,38 +1749,43 @@ static void idtcm_display_version_info(struct idtcm *idtcm)
+ 	snprintf(idtcm->version, sizeof(idtcm->version), "%u.%u.%u",
+ 		 major, minor, hotfix);
+ 
+-	dev_info(&idtcm->client->dev, fmt, major, minor, hotfix,
++	idtcm->fw_ver = idtcm_fw_version(idtcm->version);
++
++	dev_info(idtcm->dev,
++		 "%d.%d.%d, Id: 0x%04x  HW Rev: %d  OTP Config Select: %d",
++		 major, minor, hotfix,
+ 		 product_id, hw_rev_id, config_select);
+ }
+ 
+-static const struct ptp_clock_info idtcm_caps_v487 = {
++static const struct ptp_clock_info idtcm_caps = {
+ 	.owner		= THIS_MODULE,
+ 	.max_adj	= 244000,
+ 	.n_per_out	= 12,
++	.n_ext_ts	= MAX_TOD,
+ 	.adjphase	= &idtcm_adjphase,
+ 	.adjfine	= &idtcm_adjfine,
+-	.adjtime	= &idtcm_adjtime_v487,
++	.adjtime	= &idtcm_adjtime,
+ 	.gettime64	= &idtcm_gettime,
+-	.settime64	= &idtcm_settime_v487,
++	.settime64	= &idtcm_settime,
+ 	.enable		= &idtcm_enable,
+-	.do_aux_work	= &set_write_phase_ready,
+ };
+ 
+-static const struct ptp_clock_info idtcm_caps = {
++static const struct ptp_clock_info idtcm_caps_deprecated = {
+ 	.owner		= THIS_MODULE,
+ 	.max_adj	= 244000,
+ 	.n_per_out	= 12,
++	.n_ext_ts	= MAX_TOD,
+ 	.adjphase	= &idtcm_adjphase,
+ 	.adjfine	= &idtcm_adjfine,
+-	.adjtime	= &idtcm_adjtime,
++	.adjtime	= &idtcm_adjtime_deprecated,
+ 	.gettime64	= &idtcm_gettime,
+-	.settime64	= &idtcm_settime,
++	.settime64	= &idtcm_settime_deprecated,
+ 	.enable		= &idtcm_enable,
+-	.do_aux_work	= &set_write_phase_ready,
+ };
+ 
+ static int configure_channel_pll(struct idtcm_channel *channel)
+ {
++	struct idtcm *idtcm = channel->idtcm;
+ 	int err = 0;
+ 
+ 	switch (channel->pll) {
+@@ -1888,7 +1807,7 @@ static int configure_channel_pll(struct idtcm_channel *channel)
+ 		break;
+ 	case 2:
+ 		channel->dpll_freq = DPLL_FREQ_2;
+-		channel->dpll_n = DPLL_2;
++		channel->dpll_n = IDTCM_FW_REG(idtcm->fw_ver, V520, DPLL_2);
+ 		channel->hw_dpll_n = HW_DPLL_2;
+ 		channel->dpll_phase = DPLL_PHASE_2;
+ 		channel->dpll_ctrl_n = DPLL_CTRL_2;
+@@ -1904,7 +1823,7 @@ static int configure_channel_pll(struct idtcm_channel *channel)
+ 		break;
+ 	case 4:
+ 		channel->dpll_freq = DPLL_FREQ_4;
+-		channel->dpll_n = DPLL_4;
++		channel->dpll_n = IDTCM_FW_REG(idtcm->fw_ver, V520, DPLL_4);
+ 		channel->hw_dpll_n = HW_DPLL_4;
+ 		channel->dpll_phase = DPLL_PHASE_4;
+ 		channel->dpll_ctrl_n = DPLL_CTRL_4;
+@@ -1920,7 +1839,7 @@ static int configure_channel_pll(struct idtcm_channel *channel)
+ 		break;
+ 	case 6:
+ 		channel->dpll_freq = DPLL_FREQ_6;
+-		channel->dpll_n = DPLL_6;
++		channel->dpll_n = IDTCM_FW_REG(idtcm->fw_ver, V520, DPLL_6);
+ 		channel->hw_dpll_n = HW_DPLL_6;
+ 		channel->dpll_phase = DPLL_PHASE_6;
+ 		channel->dpll_ctrl_n = DPLL_CTRL_6;
+@@ -1941,86 +1860,127 @@ static int configure_channel_pll(struct idtcm_channel *channel)
+ 	return err;
+ }
+ 
+-static int idtcm_enable_channel(struct idtcm *idtcm, u32 index)
++/*
++ * Compensate for the PTP DCO input-to-output delay.
++ * This delay is 18 FOD cycles.
++ */
++static u32 idtcm_get_dco_delay(struct idtcm_channel *channel)
+ {
+-	struct idtcm_channel *channel;
++	struct idtcm *idtcm = channel->idtcm;
++	u8 mbuf[8] = {0};
++	u8 nbuf[2] = {0};
++	u32 fodFreq;
+ 	int err;
++	u64 m;
++	u16 n;
+ 
+-	if (!(index < MAX_TOD))
+-		return -EINVAL;
+-
+-	channel = &idtcm->channel[index];
++	err = idtcm_read(idtcm, channel->dpll_ctrl_n,
++			 DPLL_CTRL_DPLL_FOD_FREQ, mbuf, 6);
++	if (err)
++		return 0;
+ 
+-	/* Set pll addresses */
+-	err = configure_channel_pll(channel);
++	err = idtcm_read(idtcm, channel->dpll_ctrl_n,
++			 DPLL_CTRL_DPLL_FOD_FREQ + 6, nbuf, 2);
+ 	if (err)
+-		return err;
++		return 0;
++
++	m = get_unaligned_le64(mbuf);
++	n = get_unaligned_le16(nbuf);
++
++	if (n == 0)
++		n = 1;
++
++	fodFreq = m / n;
++
++	if (fodFreq >= 500000000)
++		return 18 * (u64)NSEC_PER_SEC / fodFreq;
++
++	return 0;
++}
++
++static int configure_channel_tod(struct idtcm_channel *channel, u32 index)
++{
++	enum fw_version fw_ver = channel->idtcm->fw_ver;
+ 
+ 	/* Set tod addresses */
+ 	switch (index) {
+ 	case 0:
+-		channel->tod_read_primary = TOD_READ_PRIMARY_0;
+-		channel->tod_write = TOD_WRITE_0;
+-		channel->tod_n = TOD_0;
++		channel->tod_read_primary = IDTCM_FW_REG(fw_ver, V520, TOD_READ_PRIMARY_0);
++		channel->tod_write = IDTCM_FW_REG(fw_ver, V520, TOD_WRITE_0);
++		channel->tod_n = IDTCM_FW_REG(fw_ver, V520, TOD_0);
++		channel->sync_src = SYNC_SOURCE_DPLL0_TOD_PPS;
+ 		break;
+ 	case 1:
+-		channel->tod_read_primary = TOD_READ_PRIMARY_1;
+-		channel->tod_write = TOD_WRITE_1;
+-		channel->tod_n = TOD_1;
++		channel->tod_read_primary = IDTCM_FW_REG(fw_ver, V520, TOD_READ_PRIMARY_1);
++		channel->tod_write = IDTCM_FW_REG(fw_ver, V520, TOD_WRITE_1);
++		channel->tod_n = IDTCM_FW_REG(fw_ver, V520, TOD_1);
++		channel->sync_src = SYNC_SOURCE_DPLL1_TOD_PPS;
+ 		break;
+ 	case 2:
+-		channel->tod_read_primary = TOD_READ_PRIMARY_2;
+-		channel->tod_write = TOD_WRITE_2;
+-		channel->tod_n = TOD_2;
++		channel->tod_read_primary = IDTCM_FW_REG(fw_ver, V520, TOD_READ_PRIMARY_2);
++		channel->tod_write = IDTCM_FW_REG(fw_ver, V520, TOD_WRITE_2);
++		channel->tod_n = IDTCM_FW_REG(fw_ver, V520, TOD_2);
++		channel->sync_src = SYNC_SOURCE_DPLL2_TOD_PPS;
+ 		break;
+ 	case 3:
+-		channel->tod_read_primary = TOD_READ_PRIMARY_3;
+-		channel->tod_write = TOD_WRITE_3;
+-		channel->tod_n = TOD_3;
++		channel->tod_read_primary = IDTCM_FW_REG(fw_ver, V520, TOD_READ_PRIMARY_3);
++		channel->tod_write = IDTCM_FW_REG(fw_ver, V520, TOD_WRITE_3);
++		channel->tod_n = IDTCM_FW_REG(fw_ver, V520, TOD_3);
++		channel->sync_src = SYNC_SOURCE_DPLL3_TOD_PPS;
+ 		break;
+ 	default:
+ 		return -EINVAL;
+ 	}
+ 
++	return 0;
++}
++
++static int idtcm_enable_channel(struct idtcm *idtcm, u32 index)
++{
++	struct idtcm_channel *channel;
++	int err;
++
++	if (!(index < MAX_TOD))
++		return -EINVAL;
++
++	channel = &idtcm->channel[index];
+ 	channel->idtcm = idtcm;
+ 
+-	if (idtcm_strverscmp(idtcm->version, "4.8.7") >= 0)
+-		channel->caps = idtcm_caps_v487;
++	/* Set pll addresses */
++	err = configure_channel_pll(channel);
++	if (err)
++		return err;
++
++	/* Set tod addresses */
++	err = configure_channel_tod(channel, index);
++	if (err)
++		return err;
++
++	if (idtcm->fw_ver < V487)
++		channel->caps = idtcm_caps_deprecated;
+ 	else
+ 		channel->caps = idtcm_caps;
+ 
+ 	snprintf(channel->caps.name, sizeof(channel->caps.name),
+ 		 "IDT CM TOD%u", index);
+ 
+-	if (idtcm_strverscmp(idtcm->version, "4.8.7") >= 0) {
+-		err = idtcm_enable_tod_sync(channel);
+-		if (err) {
+-			dev_err(&idtcm->client->dev,
+-				"Failed at line %d in func %s!\n",
+-				__LINE__,
+-				__func__);
+-			return err;
+-		}
+-	}
+-
+-	err = idtcm_set_pll_mode(channel, PLL_MODE_WRITE_FREQUENCY);
++	/* Sync pll mode with hardware */
++	err = idtcm_get_pll_mode(channel, &channel->pll_mode);
+ 	if (err) {
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
++		dev_err(idtcm->dev,
++			"Error: %s - Unable to read pll mode", __func__);
+ 		return err;
+ 	}
+ 
+ 	err = idtcm_enable_tod(channel);
+ 	if (err) {
+-		dev_err(&idtcm->client->dev,
+-			"Failed at line %d in func %s!\n",
+-			__LINE__,
+-			__func__);
++		dev_err(idtcm->dev,
++			"Failed at line %d in %s!", __LINE__, __func__);
+ 		return err;
+ 	}
+ 
++	channel->dco_delay = idtcm_get_dco_delay(channel);
++
+ 	channel->ptp_clock = ptp_clock_register(&channel->caps, NULL);
+ 
+ 	if (IS_ERR(channel->ptp_clock)) {
+@@ -2032,21 +1992,65 @@ static int idtcm_enable_channel(struct idtcm *idtcm, u32 index)
+ 	if (!channel->ptp_clock)
+ 		return -ENOTSUPP;
+ 
+-	channel->write_phase_ready = 0;
+-
+-	dev_info(&idtcm->client->dev, "PLL%d registered as ptp%d\n",
++	dev_info(idtcm->dev, "PLL%d registered as ptp%d",
+ 		 index, channel->ptp_clock->index);
+ 
+ 	return 0;
+ }
+ 
++static int idtcm_enable_extts_channel(struct idtcm *idtcm, u32 index)
++{
++	struct idtcm_channel *channel;
++	int err;
++
++	if (!(index < MAX_TOD))
++		return -EINVAL;
++
++	channel = &idtcm->channel[index];
++	channel->idtcm = idtcm;
++
++	/* Set tod addresses */
++	err = configure_channel_tod(channel, index);
++	if (err)
++		return err;
++
++	channel->idtcm = idtcm;
++
++	return 0;
++}
++
++static void idtcm_extts_check(struct work_struct *work)
++{
++	struct idtcm *idtcm = container_of(work, struct idtcm, extts_work.work);
++	int err, i;
++
++	if (idtcm->extts_mask == 0)
++		return;
++
++	mutex_lock(idtcm->lock);
++	for (i = 0; i < MAX_TOD; i++) {
++		u8 mask = 1 << i;
++
++		if (idtcm->extts_mask & mask) {
++			err = idtcm_extts_check_channel(idtcm, i);
++			/* trigger clears itself, so clear the mask */
++			if (err == 0)
++				idtcm->extts_mask &= ~mask;
++		}
++	}
++
++	if (idtcm->extts_mask)
++		schedule_delayed_work(&idtcm->extts_work,
++				      msecs_to_jiffies(EXTTS_PERIOD_MS));
++	mutex_unlock(idtcm->lock);
++}
++
+ static void ptp_clock_unregister_all(struct idtcm *idtcm)
+ {
+ 	u8 i;
+ 	struct idtcm_channel *channel;
+ 
+ 	for (i = 0; i < MAX_TOD; i++) {
+-
+ 		channel = &idtcm->channel[i];
+ 
+ 		if (channel->ptp_clock)
+@@ -2057,6 +2061,7 @@ static void ptp_clock_unregister_all(struct idtcm *idtcm)
+ static void set_default_masks(struct idtcm *idtcm)
+ {
+ 	idtcm->tod_mask = DEFAULT_TOD_MASK;
++	idtcm->extts_mask = 0;
+ 
+ 	idtcm->channel[0].pll = DEFAULT_TOD0_PTP_PLL;
+ 	idtcm->channel[1].pll = DEFAULT_TOD1_PTP_PLL;
+@@ -2069,162 +2074,109 @@ static void set_default_masks(struct idtcm *idtcm)
+ 	idtcm->channel[3].output_mask = DEFAULT_OUTPUT_MASK_PLL3;
+ }
+ 
+-static int idtcm_probe(struct i2c_client *client,
+-		       const struct i2c_device_id *id)
++static int idtcm_probe(struct platform_device *pdev)
+ {
++	struct rsmu_pdata *pdata = dev_get_platdata(&pdev->dev);
+ 	struct idtcm *idtcm;
+ 	int err;
+ 	u8 i;
+-	char *fmt = "Failed at %d in line %s with channel output %d!\n";
++	struct gpio_desc *reset;
+ 
+-	/* Unused for now */
+-	(void)id;
++	reset = gpiod_get(pdev->dev.parent, "reset", 0);
++
++	if (IS_ERR(reset)){
++		printk("idtcm_probe get reset pin failed!\n");	
++		return PTR_ERR(reset);
++	}
+ 
+-	idtcm = devm_kzalloc(&client->dev, sizeof(struct idtcm), GFP_KERNEL);
++	gpiod_direction_output(reset, 1);
++	usleep_range(10000, 15000);
++	gpiod_set_value(reset, 0);
++	gpiod_put(reset);
++	msleep(3000);
++	idtcm = devm_kzalloc(&pdev->dev, sizeof(struct idtcm), GFP_KERNEL);
+ 
+ 	if (!idtcm)
+ 		return -ENOMEM;
+ 
+-	idtcm->client = client;
+-	idtcm->page_offset = 0xff;
++	idtcm->dev = &pdev->dev;
++	idtcm->mfd = pdev->dev.parent;
++	idtcm->lock = pdata->lock;
+ 	idtcm->calculate_overhead_flag = 0;
+ 
++	INIT_DELAYED_WORK(&idtcm->extts_work, idtcm_extts_check);
++
+ 	set_default_masks(idtcm);
+ 
+-	mutex_init(&idtcm->reg_lock);
+-	mutex_lock(&idtcm->reg_lock);
++	mutex_lock(idtcm->lock);
+ 
+-	idtcm_display_version_info(idtcm);
++	idtcm_set_version_info(idtcm);
+ 
+-	err = idtcm_load_firmware(idtcm, &client->dev);
++	err = idtcm_load_firmware(idtcm, &pdev->dev);
+ 
+ 	if (err)
+-		dev_warn(&idtcm->client->dev,
++		dev_warn(idtcm->dev,
+ 			 "loading firmware failed with %d\n", err);
+ 
++	wait_for_chip_ready(idtcm);
++
+ 	if (idtcm->tod_mask) {
+ 		for (i = 0; i < MAX_TOD; i++) {
+-			if (idtcm->tod_mask & (1 << i)) {
++			if (idtcm->tod_mask & (1 << i))
+ 				err = idtcm_enable_channel(idtcm, i);
+-				if (err) {
+-					dev_err(&idtcm->client->dev,
+-						fmt,
+-						__LINE__,
+-						__func__,
+-						i);
+-					break;
+-				}
++			else
++				err = idtcm_enable_extts_channel(idtcm, i);
++			if (err) {
++				dev_err(idtcm->dev,
++					"idtcm_enable_channel %d failed!", i);
++				break;
+ 			}
+ 		}
+ 	} else {
+-		dev_err(&idtcm->client->dev,
++		dev_err(idtcm->dev,
+ 			"no PLLs flagged as PHCs, nothing to do\n");
+ 		err = -ENODEV;
+ 	}
+ 
+-	mutex_unlock(&idtcm->reg_lock);
++	mutex_unlock(idtcm->lock);
+ 
+ 	if (err) {
+ 		ptp_clock_unregister_all(idtcm);
+ 		return err;
+ 	}
+ 
+-	i2c_set_clientdata(client, idtcm);
++	platform_set_drvdata(pdev, idtcm);
+ 
+ 	return 0;
+ }
+ 
+-static int idtcm_remove(struct i2c_client *client)
++static int idtcm_remove(struct platform_device *pdev)
+ {
+-	struct idtcm *idtcm = i2c_get_clientdata(client);
++	struct idtcm *idtcm = platform_get_drvdata(pdev);
+ 
+ 	ptp_clock_unregister_all(idtcm);
+ 
+-	mutex_destroy(&idtcm->reg_lock);
++	cancel_delayed_work_sync(&idtcm->extts_work);
+ 
+ 	return 0;
+ }
+ 
+-#ifdef CONFIG_OF
+-static const struct of_device_id idtcm_dt_id[] = {
+-	{ .compatible = "idt,8a34000" },
+-	{ .compatible = "idt,8a34001" },
+-	{ .compatible = "idt,8a34002" },
+-	{ .compatible = "idt,8a34003" },
+-	{ .compatible = "idt,8a34004" },
+-	{ .compatible = "idt,8a34005" },
+-	{ .compatible = "idt,8a34006" },
+-	{ .compatible = "idt,8a34007" },
+-	{ .compatible = "idt,8a34008" },
+-	{ .compatible = "idt,8a34009" },
+-	{ .compatible = "idt,8a34010" },
+-	{ .compatible = "idt,8a34011" },
+-	{ .compatible = "idt,8a34012" },
+-	{ .compatible = "idt,8a34013" },
+-	{ .compatible = "idt,8a34014" },
+-	{ .compatible = "idt,8a34015" },
+-	{ .compatible = "idt,8a34016" },
+-	{ .compatible = "idt,8a34017" },
+-	{ .compatible = "idt,8a34018" },
+-	{ .compatible = "idt,8a34019" },
+-	{ .compatible = "idt,8a34040" },
+-	{ .compatible = "idt,8a34041" },
+-	{ .compatible = "idt,8a34042" },
+-	{ .compatible = "idt,8a34043" },
+-	{ .compatible = "idt,8a34044" },
+-	{ .compatible = "idt,8a34045" },
+-	{ .compatible = "idt,8a34046" },
+-	{ .compatible = "idt,8a34047" },
+-	{ .compatible = "idt,8a34048" },
+-	{ .compatible = "idt,8a34049" },
+-	{},
+-};
+-MODULE_DEVICE_TABLE(of, idtcm_dt_id);
+-#endif
+-
+-static const struct i2c_device_id idtcm_i2c_id[] = {
+-	{ "8a34000" },
+-	{ "8a34001" },
+-	{ "8a34002" },
+-	{ "8a34003" },
+-	{ "8a34004" },
+-	{ "8a34005" },
+-	{ "8a34006" },
+-	{ "8a34007" },
+-	{ "8a34008" },
+-	{ "8a34009" },
+-	{ "8a34010" },
+-	{ "8a34011" },
+-	{ "8a34012" },
+-	{ "8a34013" },
+-	{ "8a34014" },
+-	{ "8a34015" },
+-	{ "8a34016" },
+-	{ "8a34017" },
+-	{ "8a34018" },
+-	{ "8a34019" },
+-	{ "8a34040" },
+-	{ "8a34041" },
+-	{ "8a34042" },
+-	{ "8a34043" },
+-	{ "8a34044" },
+-	{ "8a34045" },
+-	{ "8a34046" },
+-	{ "8a34047" },
+-	{ "8a34048" },
+-	{ "8a34049" },
++static const struct platform_device_id idtcm_id_table[] = {
++	{ "idtcm-ptp0", },
++	{ "idtcm-ptp1", },
++	{ "idtcm-ptp2", },
++	{ "idtcm-ptp3", },
+ 	{},
+ };
+-MODULE_DEVICE_TABLE(i2c, idtcm_i2c_id);
++MODULE_DEVICE_TABLE(platform, idtcm_id_table);
+ 
+-static struct i2c_driver idtcm_driver = {
++static struct platform_driver idtcm_driver = {
+ 	.driver = {
+-		.of_match_table	= of_match_ptr(idtcm_dt_id),
+-		.name		= "idtcm",
++		.name = "idtcm-phc",
+ 	},
+-	.probe		= idtcm_probe,
+-	.remove		= idtcm_remove,
+-	.id_table	= idtcm_i2c_id,
++	.probe = idtcm_probe,
++	.remove	= idtcm_remove,
++	.id_table = idtcm_id_table,
+ };
+ 
+-module_i2c_driver(idtcm_driver);
++module_platform_driver(idtcm_driver);
+diff --git a/drivers/ptp/ptp_clockmatrix.h b/drivers/ptp/ptp_clockmatrix.h
+index 82840d723..1b48e078b 100644
+--- a/drivers/ptp/ptp_clockmatrix.h
++++ b/drivers/ptp/ptp_clockmatrix.h
+@@ -9,8 +9,8 @@
+ #define PTP_IDTCLOCKMATRIX_H
+ 
+ #include <linux/ktime.h>
+-
+-#include "idt8a340_reg.h"
++#include <linux/workqueue.h>
++#include <linux/mfd/idt8a340_reg.h>
+ 
+ #define FW_FILENAME	"idtcm.bin"
+ #define MAX_TOD		(4)
+@@ -44,62 +44,27 @@
+ #define DEFAULT_TOD2_PTP_PLL		(2)
+ #define DEFAULT_TOD3_PTP_PLL		(3)
+ 
+-#define POST_SM_RESET_DELAY_MS		(3000)
+-#define PHASE_PULL_IN_THRESHOLD_NS	(150000)
+-#define PHASE_PULL_IN_THRESHOLD_NS_V487	(15000)
+-#define TOD_WRITE_OVERHEAD_COUNT_MAX	(2)
+-#define TOD_BYTE_COUNT			(11)
+-#define WR_PHASE_SETUP_MS		(5000)
+-
+-#define OUTPUT_MODULE_FROM_INDEX(index)	(OUTPUT_0 + (index) * 0x10)
+-
+-#define PEROUT_ENABLE_OUTPUT_MASK		(0xdeadbeef)
+-
+-#define IDTCM_MAX_WRITE_COUNT			(512)
+-
+-/* Values of DPLL_N.DPLL_MODE.PLL_MODE */
+-enum pll_mode {
+-	PLL_MODE_MIN = 0,
+-	PLL_MODE_NORMAL = PLL_MODE_MIN,
+-	PLL_MODE_WRITE_PHASE = 1,
+-	PLL_MODE_WRITE_FREQUENCY = 2,
+-	PLL_MODE_GPIO_INC_DEC = 3,
+-	PLL_MODE_SYNTHESIS = 4,
+-	PLL_MODE_PHASE_MEASUREMENT = 5,
+-	PLL_MODE_DISABLED = 6,
+-	PLL_MODE_MAX = PLL_MODE_DISABLED,
+-};
++#define PHASE_PULL_IN_THRESHOLD_NS_DEPRECATED	(150000)
++#define PHASE_PULL_IN_THRESHOLD_NS		(15000)
++#define TOD_WRITE_OVERHEAD_COUNT_MAX		(2)
++#define TOD_BYTE_COUNT				(11)
+ 
+-enum hw_tod_write_trig_sel {
+-	HW_TOD_WR_TRIG_SEL_MIN = 0,
+-	HW_TOD_WR_TRIG_SEL_MSB = HW_TOD_WR_TRIG_SEL_MIN,
+-	HW_TOD_WR_TRIG_SEL_RESERVED = 1,
+-	HW_TOD_WR_TRIG_SEL_TOD_PPS = 2,
+-	HW_TOD_WR_TRIG_SEL_IRIGB_PPS = 3,
+-	HW_TOD_WR_TRIG_SEL_PWM_PPS = 4,
+-	HW_TOD_WR_TRIG_SEL_GPIO = 5,
+-	HW_TOD_WR_TRIG_SEL_FOD_SYNC = 6,
+-	WR_TRIG_SEL_MAX = HW_TOD_WR_TRIG_SEL_FOD_SYNC,
+-};
++#define LOCK_TIMEOUT_MS			(2000)
++#define LOCK_POLL_INTERVAL_MS		(10)
+ 
+-/* 4.8.7 only */
+-enum scsr_tod_write_trig_sel {
+-	SCSR_TOD_WR_TRIG_SEL_DISABLE = 0,
+-	SCSR_TOD_WR_TRIG_SEL_IMMEDIATE = 1,
+-	SCSR_TOD_WR_TRIG_SEL_REFCLK = 2,
+-	SCSR_TOD_WR_TRIG_SEL_PWMPPS = 3,
+-	SCSR_TOD_WR_TRIG_SEL_TODPPS = 4,
+-	SCSR_TOD_WR_TRIG_SEL_SYNCFOD = 5,
+-	SCSR_TOD_WR_TRIG_SEL_GPIO = 6,
+-	SCSR_TOD_WR_TRIG_SEL_MAX = SCSR_TOD_WR_TRIG_SEL_GPIO,
+-};
++#define PEROUT_ENABLE_OUTPUT_MASK	(0xdeadbeef)
++
++#define IDTCM_MAX_WRITE_COUNT		(512)
+ 
+-/* 4.8.7 only */
+-enum scsr_tod_write_type_sel {
+-	SCSR_TOD_WR_TYPE_SEL_ABSOLUTE = 0,
+-	SCSR_TOD_WR_TYPE_SEL_DELTA_PLUS = 1,
+-	SCSR_TOD_WR_TYPE_SEL_DELTA_MINUS = 2,
+-	SCSR_TOD_WR_TYPE_SEL_MAX = SCSR_TOD_WR_TYPE_SEL_DELTA_MINUS,
++/*
++ * Return register address based on passed in firmware version
++ */
++#define IDTCM_FW_REG(FW, VER, REG)	(((FW) < (VER)) ? (REG) : (REG##_##VER))
++
++enum fw_version {
++	V_DEFAULT = 0,
++	V487 = 1,
++	V520 = 2,
+ };
+ 
+ struct idtcm;
+@@ -117,26 +82,33 @@ struct idtcm_channel {
+ 	u16			tod_write;
+ 	u16			tod_n;
+ 	u16			hw_dpll_n;
++	u8			sync_src;
++	u32			dco_delay;
+ 	enum pll_mode		pll_mode;
++	/* last input trigger for extts */
++	u8			refn;
+ 	u8			pll;
+ 	u16			output_mask;
+-	int			write_phase_ready;
+ };
+ 
+ struct idtcm {
+ 	struct idtcm_channel	channel[MAX_TOD];
+-	struct i2c_client	*client;
+-	u8			page_offset;
++	struct device		*dev;
+ 	u8			tod_mask;
+ 	char			version[16];
+-
++	enum fw_version		fw_ver;
++	/* Polls for external time stamps */
++	u8			extts_mask;
++	struct delayed_work	extts_work;
++	/* Remember the ptp channel to report extts */
++	struct idtcm_channel	*event_channel[MAX_TOD];
++	/* Mutex to protect operations from being interrupted */
++	struct mutex		*lock;
++	struct device		*mfd;
+ 	/* Overhead calculation for adjtime */
+ 	u8			calculate_overhead_flag;
+ 	s64			tod_write_overhead_ns;
+ 	ktime_t			start_time;
+-
+-	/* Protects I2C read/modify/write registers from concurrent access */
+-	struct mutex		reg_lock;
+ };
+ 
+ struct idtcm_fwrc {
+diff --git a/drivers/spi/spi-cadence.c b/drivers/spi/spi-cadence.c
+index 20b1ea76e..e1f6056a1 100644
+--- a/drivers/spi/spi-cadence.c
++++ b/drivers/spi/spi-cadence.c
+@@ -457,7 +457,7 @@ static int cdns_unprepare_transfer_hardware(struct spi_master *master)
+ {
+ 	struct cdns_spi *xspi = spi_master_get_devdata(master);
+ 
+-	cdns_spi_write(xspi, CDNS_SPI_ER, CDNS_SPI_ER_DISABLE);
++	// cdns_spi_write(xspi, CDNS_SPI_ER, CDNS_SPI_ER_DISABLE);
+ 
+ 	return 0;
+ }
+diff --git a/drivers/spi/spi-zynqmp-gqspi.c b/drivers/spi/spi-zynqmp-gqspi.c
+index f50247728..cdfddb0ce 100644
+--- a/drivers/spi/spi-zynqmp-gqspi.c
++++ b/drivers/spi/spi-zynqmp-gqspi.c
+@@ -1057,7 +1057,9 @@ static int __maybe_unused zynqmp_runtime_suspend(struct device *dev)
+  */
+ static int __maybe_unused zynqmp_runtime_resume(struct device *dev)
+ {
+-	struct zynqmp_qspi *xqspi = (struct zynqmp_qspi *)dev_get_drvdata(dev);
++	struct spi_controller *ctlr = dev_get_drvdata(dev);
++	struct zynqmp_qspi *xqspi = spi_controller_get_devdata(ctlr);
++
+ 	int ret;
+ 
+ 	ret = clk_enable(xqspi->pclk);
+diff --git a/drivers/uio/uio_pdrv_genirq.c b/drivers/uio/uio_pdrv_genirq.c
+index 63258b6ac..ab262832b 100644
+--- a/drivers/uio/uio_pdrv_genirq.c
++++ b/drivers/uio/uio_pdrv_genirq.c
+@@ -276,7 +276,7 @@ static const struct dev_pm_ops uio_pdrv_genirq_dev_pm_ops = {
+ 
+ #ifdef CONFIG_OF
+ static struct of_device_id uio_of_genirq_match[] = {
+-	{ /* This is filled with module_parm */ },
++	{ .compatible = "generic-uio", },
+ 	{ /* Sentinel */ },
+ };
+ MODULE_DEVICE_TABLE(of, uio_of_genirq_match);
+-- 
+2.27.0
+

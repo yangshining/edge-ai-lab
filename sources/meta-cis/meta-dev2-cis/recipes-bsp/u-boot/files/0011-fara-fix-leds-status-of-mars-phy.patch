@@ -1,0 +1,51 @@
+diff --git a/drivers/net/phy/mars.c b/drivers/net/phy/mars.c
+index 364e2e494b..9cddde9c30 100644
+--- a/drivers/net/phy/mars.c
++++ b/drivers/net/phy/mars.c
+@@ -36,6 +36,12 @@
+ #define SLEEP_MODE		BIT(15)
+ #define EXT_REG_BIT4	BIT(4)
+ 
++#define CONFIG_SW_MARS_LEDS 1
++
++#define CTC_PHY_LED_STATUS_BRIGHT 0xd800
++#define CTC_PHY_LED_STATUS_BRIGHT_FLASH 0xde00
++#define CTC_PHY_LED_STATUS_OFF_FLASH 0xe600
++
+ #if 1
+ static int mars_ext_read(struct phy_device *phydev, u32 regnum)
+ {
+@@ -111,11 +117,20 @@ static int mars_select_reg_space(struct phy_device *phydev, int space)
+ 	return ret;
+ }
+ 
+-static void led_setup(struct phy_device *phydev)
++/*
++ *LED0: 0xa00c
++ *LED1: 0xa00d
++ *LED2: 0xa00e
++ */
++static void mars_led_setup(struct phy_device *phydev)
+ {
+-	mars_ext_write(phydev, 0xa00d, 0xde00);
+-	mars_ext_write(phydev, 0xa00e, 0xd800);
+-
++#ifdef CONFIG_SW_MARS_LEDS
++	mars_ext_write(phydev, 0xa00d, CTC_PHY_LED_STATUS_BRIGHT);
++	mars_ext_write(phydev, 0xa00e, CTC_PHY_LED_STATUS_BRIGHT_FLASH);
++#else
++	mars_ext_write(phydev, 0xa00d, CTC_PHY_LED_STATUS_BRIGHT_FLASH);
++	mars_ext_write(phydev, 0xa00e, CTC_PHY_LED_STATUS_BRIGHT);
++#endif
+ 	return;
+ }
+ 
+@@ -156,7 +171,7 @@ int mars_config(struct phy_device *phydev)
+ 			| SUPPORTED_AUI | SUPPORTED_FIBRE |
+ 			SUPPORTED_BNC);
+ 
+-	led_setup(phydev);
++	mars_led_setup(phydev);
+ 	/* Do we support autonegotiation? */
+ 	val = phy_read(phydev, MDIO_DEVAD_NONE, MII_BMSR);
+ 

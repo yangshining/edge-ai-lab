@@ -1,0 +1,26 @@
+--- a/lib/sw_apps/zynqmp_pmufw/src/pm_mmio_access.c	2021-07-05 15:58:09.307053142 +0800
++++ b/lib/sw_apps/zynqmp_pmufw/src/pm_mmio_access.c	2021-07-05 15:36:30.000000000 +0800
+@@ -23,6 +23,8 @@
+ #define MMIO_ACCESS_RW(m)	((m) | ((m) << WRITE_PERM_SHIFT))
+ #define MMIO_ACCESS_WO(m)	((m) << WRITE_PERM_SHIFT)
+ 
++#define RESET_CONT_BASE      ((u32)0xFF5E0000U)
++
+ enum mmio_access_type {
+ 	MMIO_ACCESS_TYPE_READ,
+ 	MMIO_ACCESS_TYPE_WRITE,
+@@ -49,6 +51,14 @@ static const PmAccessRegion pmAccessTabl
+ 		.access = MMIO_ACCESS_RW(IPI_PMU_0_IER_APU_MASK |
+ 					 IPI_PMU_0_IER_RPU_0_MASK |
+ 					 IPI_PMU_0_IER_RPU_1_MASK),
++	},
++
++	{
++		.startAddr = RESET_CONT_BASE,
++		.endAddr = RESET_CONT_BASE + 0x34CU,
++		.access = MMIO_ACCESS_RW(IPI_PMU_0_IER_APU_MASK |
++					 IPI_PMU_0_IER_RPU_0_MASK |
++					 IPI_PMU_0_IER_RPU_1_MASK),
+ 	},
+ 
+ 	{

@@ -1,0 +1,28 @@
+#!/bin/sh
+
+arg_num=0
+if test "$#" -lt 5; then
+    arg_num=$(expr 5 - $#)
+fi
+
+if test "$#" -ge 1; then
+    message="@ $1"
+    shift
+else
+    message="@ -"
+    arg_num=$(expr $arg_num - 1)
+fi
+
+while [ "$1" != "" ]; do
+    message="$message @ $1"
+    shift
+done
+
+cu=$(date +"%Y-%m-%d %H:%M:%S")
+message="$message @ $cu"
+
+for i in `seq $arg_num`; do
+    message="$message @ -"
+done
+
+logger -t rlog -p local6.error "$message"

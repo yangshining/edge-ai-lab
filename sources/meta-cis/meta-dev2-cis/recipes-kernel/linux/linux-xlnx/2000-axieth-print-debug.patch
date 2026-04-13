@@ -1,0 +1,389 @@
+diff --git a/drivers/net/ethernet/xilinx/xilinx_axienet_main.c b/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
+index 3c31fd8caf41..e351ad1b1e3e 100644
+--- a/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
++++ b/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
+@@ -930,6 +930,8 @@ void axienet_start_xmit_done(struct net_device *ndev,
+ #endif
+ 	unsigned int status = 0;
+ 
++	netdev_info(ndev, "[XMIT_DONE] Enter: tx_bd_ci=%d\n", q->tx_bd_ci);
++
+ #ifdef CONFIG_AXIENET_HAS_MCDMA
+ 	cur_p = &q->txq_bd_v[q->tx_bd_ci];
+ 	status = cur_p->sband_stats;
+@@ -937,6 +939,9 @@ void axienet_start_xmit_done(struct net_device *ndev,
+ 	cur_p = &q->tx_bd_v[q->tx_bd_ci];
+ 	status = cur_p->status;
+ #endif
++
++	netdev_info(ndev, "[XMIT_DONE] First BD status=0x%x\n", status);
++
+ 	while (status & XAXIDMA_BD_STS_COMPLETE_MASK) {
+ #ifdef CONFIG_XILINX_AXI_EMAC_HWTSTAMP
+ 		if (cur_p->ptp_tx_skb)
+@@ -984,6 +989,9 @@ void axienet_start_xmit_done(struct net_device *ndev,
+ 	q->tx_packets += packets;
+ 	q->tx_bytes += size;
+ 
++	netdev_info(ndev, "[XMIT_DONE] Processed: packets=%d, bytes=%d\n", 
++		    packets, size);
++
+ 	/* Matches barrier in axienet_start_xmit */
+ 	smp_mb();
+ 
+@@ -993,6 +1001,8 @@ void axienet_start_xmit_done(struct net_device *ndev,
+ 	 * instead of waking all ndev queues.
+ 	 */
+ 	netif_tx_wake_all_queues(ndev);
++	
++	netdev_info(ndev, "[XMIT_DONE] Exit: tx_bd_ci=%d\n", q->tx_bd_ci);
+ }
+ 
+ /**
+@@ -1471,6 +1481,9 @@ static int axienet_recv(struct net_device *ndev, int budget,
+ #endif
+ 	unsigned int numbdfree = 0;
+ 
++	netdev_info(ndev, "[RECV] Enter: budget=%d, rx_bd_ci=%d\n", 
++		    budget, q->rx_bd_ci);
++
+ 	/* Get relevat BD status value */
+ 	rmb();
+ #ifdef CONFIG_AXIENET_HAS_MCDMA
+@@ -1479,6 +1492,8 @@ static int axienet_recv(struct net_device *ndev, int budget,
+ 	cur_p = &q->rx_bd_v[q->rx_bd_ci];
+ #endif
+ 
++	netdev_info(ndev, "[RECV] First BD status=0x%x\n", cur_p->status);
++
+ 	while ((numbdfree < budget) &&
+ 	       (cur_p->status & XAXIDMA_BD_STS_COMPLETE_MASK)) {
+ 		new_skb = netdev_alloc_skb(ndev, lp->max_frm_size);
+@@ -1608,8 +1623,12 @@ static int axienet_recv(struct net_device *ndev, int budget,
+ 	q->rx_packets += packets;
+ 	q->rx_bytes += size;
+ 
++	netdev_info(ndev, "[RECV] Processed: packets=%d, bytes=%d, numbdfree=%d\n", 
++		    packets, size, numbdfree);
++
+ 	if (tail_p) {
+ #ifdef CONFIG_AXIENET_HAS_MCDMA
++		netdev_info(ndev, "[RECV] Updating tail_p=0x%llx\n", (u64)tail_p);
+ 		axienet_dma_bdout(q, XMCDMA_CHAN_TAILDESC_OFFSET(q->chan_id) +
+ 				  q->rx_offset, tail_p);
+ #else
+@@ -1617,6 +1636,7 @@ static int axienet_recv(struct net_device *ndev, int budget,
+ #endif
+ 	}
+ 
++	netdev_info(ndev, "[RECV] Exit: numbdfree=%d\n", numbdfree);
+ 	return numbdfree;
+ }
+ 
+@@ -1640,16 +1660,23 @@ int xaxienet_rx_poll(struct napi_struct *napi, int quota)
+ 
+ 	struct axienet_dma_q *q = lp->dq[map];
+ 
++	netdev_info(ndev, "[NAPI] Enter: map=%d, quota=%d, chan_id=%d\n", 
++		    map, quota, q->chan_id);
++
+ #ifdef CONFIG_AXIENET_HAS_MCDMA
+ 	spin_lock(&q->rx_lock);
+ 	status = axienet_dma_in32(q, XMCDMA_CHAN_SR_OFFSET(q->chan_id) +
+ 				  q->rx_offset);
++	netdev_info(ndev, "[NAPI] Initial status=0x%x\n", status);
++	
+ 	while ((status & (XMCDMA_IRQ_IOC_MASK | XMCDMA_IRQ_DELAY_MASK)) &&
+ 	       (work_done < quota)) {
++		netdev_info(ndev, "[NAPI] Processing status=0x%x, work_done=%d\n", 
++			    status, work_done);
+ 		axienet_dma_out32(q, XMCDMA_CHAN_SR_OFFSET(q->chan_id) +
+ 				  q->rx_offset, status);
+ 		if (status & XMCDMA_IRQ_ERR_MASK) {
+-			dev_err(lp->dev, "Rx error 0x%x\n\r", status);
++			dev_err(lp->dev, "[NAPI] Rx error 0x%x\n\r", status);
+ 			break;
+ 		}
+ 		work_done += axienet_recv(lp->ndev, quota - work_done, q);
+@@ -1675,6 +1702,8 @@ int xaxienet_rx_poll(struct napi_struct *napi, int quota)
+ #endif
+ 
+ 	if (work_done < quota) {
++		netdev_info(ndev, "[NAPI] Completing NAPI, work_done=%d < quota=%d\n", 
++			    work_done, quota);
+ 		napi_complete(napi);
+ #ifdef CONFIG_AXIENET_HAS_MCDMA
+ 		/* Enable the interrupts again */
+@@ -1683,14 +1712,19 @@ int xaxienet_rx_poll(struct napi_struct *napi, int quota)
+ 		cr |= (XMCDMA_IRQ_IOC_MASK | XMCDMA_IRQ_DELAY_MASK);
+ 		axienet_dma_out32(q, XMCDMA_CHAN_CR_OFFSET(q->chan_id) +
+ 				  XMCDMA_RX_OFFSET, cr);
++		netdev_info(ndev, "[NAPI] Re-enabled RX interrupts, CR=0x%x\n", cr);
+ #else
+ 		/* Enable the interrupts again */
+ 		cr = axienet_dma_in32(q, XAXIDMA_RX_CR_OFFSET);
+ 		cr |= (XAXIDMA_IRQ_IOC_MASK | XAXIDMA_IRQ_DELAY_MASK);
+ 		axienet_dma_out32(q, XAXIDMA_RX_CR_OFFSET, cr);
+ #endif
++	} else {
++		netdev_info(ndev, "[NAPI] More work pending, work_done=%d >= quota=%d\n", 
++			    work_done, quota);
+ 	}
+ 
++	netdev_info(ndev, "[NAPI] Exit: work_done=%d\n", work_done);
+ 	return work_done;
+ }
+ 
+@@ -1860,10 +1894,16 @@ static int axienet_open(struct net_device *ndev)
+ 		struct axienet_dma_q *q = lp->dq[i];
+ #ifdef CONFIG_AXIENET_HAS_MCDMA
+ 		/* Enable interrupts for Axi MCDMA Tx */
++		netdev_info(ndev, "[OPEN] Requesting TX IRQ %d for queue %d, chan_id %d\n",
++			    q->tx_irq, i, q->chan_id);
+ 		ret = request_irq(q->tx_irq, axienet_mcdma_tx_irq,
+ 				  IRQF_SHARED, ndev->name, ndev);
+-		if (ret)
++		if (ret) {
++			netdev_err(ndev, "[OPEN] Failed to request TX IRQ %d: %d\n",
++				   q->tx_irq, ret);
+ 			goto err_tx_irq;
++		}
++		netdev_info(ndev, "[OPEN] TX IRQ %d registered successfully\n", q->tx_irq);
+ #else
+ 		/* Enable interrupts for Axi DMA Tx */
+ 		ret = request_irq(q->tx_irq, axienet_tx_irq,
+@@ -1877,10 +1917,16 @@ static int axienet_open(struct net_device *ndev)
+ 		struct axienet_dma_q *q = lp->dq[i];
+ #ifdef CONFIG_AXIENET_HAS_MCDMA
+ 		/* Enable interrupts for Axi MCDMA Rx */
++		netdev_info(ndev, "[OPEN] Requesting RX IRQ %d for queue %d, chan_id %d\n",
++			    q->rx_irq, i, q->chan_id);
+ 		ret = request_irq(q->rx_irq, axienet_mcdma_rx_irq,
+ 				  IRQF_SHARED, ndev->name, ndev);
+-		if (ret)
++		if (ret) {
++			netdev_err(ndev, "[OPEN] Failed to request RX IRQ %d: %d\n",
++				   q->rx_irq, ret);
+ 			goto err_rx_irq;
++		}
++		netdev_info(ndev, "[OPEN] RX IRQ %d registered successfully\n", q->rx_irq);
+ #else
+ 		/* Enable interrupts for Axi DMA Rx */
+ 		ret = request_irq(q->rx_irq, axienet_rx_irq,
+diff --git a/drivers/net/ethernet/xilinx/xilinx_axienet_mcdma.c b/drivers/net/ethernet/xilinx/xilinx_axienet_mcdma.c
+index 14babfe7b514..464ccee5bf94 100644
+--- a/drivers/net/ethernet/xilinx/xilinx_axienet_mcdma.c
++++ b/drivers/net/ethernet/xilinx/xilinx_axienet_mcdma.c
+@@ -173,6 +173,9 @@ int __maybe_unused axienet_mcdma_tx_q_init(struct net_device *ndev,
+ 	int i;
+ 	struct axienet_local *lp = netdev_priv(ndev);
+ 
++	netdev_info(ndev, "[TX_INIT] Enter: chan_id=%d, tx_bd_num=%d\n", 
++		    q->chan_id, lp->tx_bd_num);
++
+ 	q->tx_bd_ci = 0;
+ 	q->tx_bd_tail = 0;
+ 
+@@ -220,6 +223,9 @@ int __maybe_unused axienet_mcdma_tx_q_init(struct net_device *ndev,
+ 	 * Tx channel is now ready to run. But only after we write to the
+ 	 * tail pointer register that the Tx channel will start transmitting.
+ 	 */
++	netdev_info(ndev, "[TX_INIT] Starting TX DMA, tx_bd_p=0x%llx\n", 
++		    (u64)q->tx_bd_p);
++	
+ 	axienet_dma_bdout(q, XMCDMA_CHAN_CURDESC_OFFSET(q->chan_id),
+ 			  q->tx_bd_p);
+ 	cr = axienet_dma_in32(q, XMCDMA_CR_OFFSET);
+@@ -232,6 +238,9 @@ int __maybe_unused axienet_mcdma_tx_q_init(struct net_device *ndev,
+ 	chan_en |= (1 << (q->chan_id - 1));
+ 	axienet_dma_out32(q, XMCDMA_CHEN_OFFSET, chan_en);
+ 
++	netdev_info(ndev, "[TX_INIT] TX DMA started successfully, chan_en=0x%x\n", 
++		    chan_en);
++
+ 	return 0;
+ out:
+ 	for_each_tx_dma_queue(lp, i) {
+@@ -259,6 +268,9 @@ int __maybe_unused axienet_mcdma_rx_q_init(struct net_device *ndev,
+ 	struct axienet_local *lp = netdev_priv(ndev);
+ 	dma_addr_t mapping;
+ 
++	netdev_info(ndev, "[RX_INIT] Enter: chan_id=%d, rx_bd_num=%d\n", 
++		    q->chan_id, lp->rx_bd_num);
++
+ 	q->rx_bd_ci = 0;
+ 	q->rx_offset = XMCDMA_CHAN_RX_OFFSET;
+ 
+@@ -317,6 +329,9 @@ int __maybe_unused axienet_mcdma_rx_q_init(struct net_device *ndev,
+ 	/* Populate the tail pointer and bring the Rx Axi DMA engine out of
+ 	 * halted state. This will make the Rx side ready for reception.
+ 	 */
++	netdev_info(ndev, "[RX_INIT] Starting RX DMA, rx_bd_p=0x%llx\n", 
++		    (u64)q->rx_bd_p);
++	
+ 	axienet_dma_bdout(q, XMCDMA_CHAN_CURDESC_OFFSET(q->chan_id) +
+ 			    q->rx_offset, q->rx_bd_p);
+ 	cr = axienet_dma_in32(q, XMCDMA_CR_OFFSET +  q->rx_offset);
+@@ -333,6 +348,9 @@ int __maybe_unused axienet_mcdma_rx_q_init(struct net_device *ndev,
+ 	chan_en |= (1 << (q->chan_id - 1));
+ 	axienet_dma_out32(q, XMCDMA_CHEN_OFFSET + q->rx_offset, chan_en);
+ 
++	netdev_info(ndev, "[RX_INIT] RX DMA started successfully, chan_en=0x%x\n", 
++		    chan_en);
++
+ 	return 0;
+ 
+ out:
+@@ -373,13 +391,20 @@ static inline int map_dma_q_txirq(int irq, struct axienet_local *lp)
+ 	struct axienet_dma_q *q = lp->dq[0];
+ 
+ 	chan_sermask = axienet_dma_in32(q, XMCDMA_TXINT_SER_OFFSET);
++	
++	netdev_info(lp->ndev, "[MAP_TX_IRQ] irq=%d, chan_sermask=0x%x\n", 
++		    irq, chan_sermask);
+ 
+ 	for (i = 1, chan_id = 1; i != 0 && i <= chan_sermask;
+ 	     i <<= 1, chan_id++) {
+-		if (chan_sermask & i)
++		if (chan_sermask & i) {
++			netdev_info(lp->ndev, "[MAP_TX_IRQ] Mapped to chan_id=%d\n", 
++				    chan_id);
+ 			return chan_id;
++		}
+ 	}
+ 
++	netdev_info(lp->ndev, "[MAP_TX_IRQ] No channel found, return -ENODEV\n");
+ 	return -ENODEV;
+ }
+ 
+@@ -392,23 +417,33 @@ irqreturn_t __maybe_unused axienet_mcdma_tx_irq(int irq, void *_ndev)
+ 	int i, j = map_dma_q_txirq(irq, lp);
+ 	struct axienet_dma_q *q;
+ 
+-	if (j < 0)
++	dev_info(&ndev->dev, "[TX IRQ] Enter: irq=%d, j=%d\n", irq, j);
++
++	if (j < 0) {
++		dev_info(&ndev->dev, "[TX IRQ] Invalid channel mapping, return IRQ_NONE\n");
+ 		return IRQ_NONE;
++	}
+ 
+ 	i = get_mcdma_tx_q(lp, j);
+ 	q = lp->dq[i];
+ 
+ 	status = axienet_dma_in32(q, XMCDMA_CHAN_SR_OFFSET(q->chan_id));
++	dev_info(&ndev->dev, "[TX IRQ] chan_id=%d, i=%d, status=0x%x\n", 
++		 q->chan_id, i, status);
++
+ 	if (status & (XMCDMA_IRQ_IOC_MASK | XMCDMA_IRQ_DELAY_MASK)) {
++		dev_info(&ndev->dev, "[TX IRQ] IOC/DELAY interrupt, calling xmit_done\n");
+ 		axienet_dma_out32(q, XMCDMA_CHAN_SR_OFFSET(q->chan_id), status);
+ 		axienet_start_xmit_done(lp->ndev, q);
+ 		goto out;
+ 	}
+-	if (!(status & XMCDMA_IRQ_ALL_MASK))
++	if (!(status & XMCDMA_IRQ_ALL_MASK)) {
++		dev_info(&ndev->dev, "[TX IRQ] No valid IRQ status, return IRQ_NONE\n");
+ 		return IRQ_NONE;
++	}
+ 	if (status & XMCDMA_IRQ_ERR_MASK) {
+-		dev_err(&ndev->dev, "DMA Tx error 0x%x\n", status);
+-		dev_err(&ndev->dev, "Current BD is at: %pa\n",
++		dev_err(&ndev->dev, "[TX IRQ] DMA Tx error 0x%x\n", status);
++		dev_err(&ndev->dev, "[TX IRQ] Current BD is at: %pa\n",
+ 			&q->txq_bd_v[q->tx_bd_ci].phys);
+ 
+ 		cr = axienet_dma_in32(q, XMCDMA_CHAN_CR_OFFSET(q->chan_id));
+@@ -425,11 +460,13 @@ irqreturn_t __maybe_unused axienet_mcdma_tx_irq(int irq, void *_ndev)
+ 		axienet_dma_out32(q, XMCDMA_CHAN_CR_OFFSET(q->chan_id) +
+ 				  q->rx_offset, cr);
+ 
++		dev_info(&ndev->dev, "[TX IRQ] Scheduling error tasklet\n");
+ 		tasklet_schedule(&lp->dma_err_tasklet[i]);
+ 		axienet_dma_out32(q, XMCDMA_CHAN_SR_OFFSET(q->chan_id) +
+ 				  q->rx_offset, status);
+ 	}
+ out:
++	dev_info(&ndev->dev, "[TX IRQ] Exit: IRQ_HANDLED\n");
+ 	return IRQ_HANDLED;
+ }
+ 
+@@ -441,13 +478,20 @@ static inline int map_dma_q_rxirq(int irq, struct axienet_local *lp)
+ 
+ 	chan_sermask = axienet_dma_in32(q, XMCDMA_RXINT_SER_OFFSET +
+ 					q->rx_offset);
++	
++	netdev_info(lp->ndev, "[MAP_RX_IRQ] irq=%d, chan_sermask=0x%x\n", 
++		    irq, chan_sermask);
+ 
+ 	for (i = 1, chan_id = 1; i != 0 && i <= chan_sermask;
+ 		i <<= 1, chan_id++) {
+-		if (chan_sermask & i)
++		if (chan_sermask & i) {
++			netdev_info(lp->ndev, "[MAP_RX_IRQ] Mapped to chan_id=%d\n", 
++				    chan_id);
+ 			return chan_id;
++		}
+ 	}
+ 
++	netdev_info(lp->ndev, "[MAP_RX_IRQ] No channel found, return -ENODEV\n");
+ 	return -ENODEV;
+ }
+ 
+@@ -460,15 +504,23 @@ irqreturn_t __maybe_unused axienet_mcdma_rx_irq(int irq, void *_ndev)
+ 	int i, j = map_dma_q_rxirq(irq, lp);
+ 	struct axienet_dma_q *q;
+ 
+-	if (j < 0)
++	dev_info(&ndev->dev, "[RX IRQ] Enter: irq=%d, j=%d\n", irq, j);
++
++	if (j < 0) {
++		dev_info(&ndev->dev, "[RX IRQ] Invalid channel mapping, return IRQ_NONE\n");
+ 		return IRQ_NONE;
++	}
+ 
+ 	i = get_mcdma_rx_q(lp, j);
+ 	q = lp->dq[i];
+ 
+ 	status = axienet_dma_in32(q, XMCDMA_CHAN_SR_OFFSET(q->chan_id) +
+ 				  q->rx_offset);
++	dev_info(&ndev->dev, "[RX IRQ] chan_id=%d, i=%d, status=0x%x\n", 
++		 q->chan_id, i, status);
++
+ 	if (status & (XMCDMA_IRQ_IOC_MASK | XMCDMA_IRQ_DELAY_MASK)) {
++		dev_info(&ndev->dev, "[RX IRQ] IOC/DELAY interrupt, scheduling NAPI\n");
+ 		cr = axienet_dma_in32(q, XMCDMA_CHAN_CR_OFFSET(q->chan_id) +
+ 				      q->rx_offset);
+ 		cr &= ~(XMCDMA_IRQ_IOC_MASK | XMCDMA_IRQ_DELAY_MASK);
+@@ -477,12 +529,14 @@ irqreturn_t __maybe_unused axienet_mcdma_rx_irq(int irq, void *_ndev)
+ 		napi_schedule(&lp->napi[i]);
+ 	}
+ 
+-	if (!(status & XMCDMA_IRQ_ALL_MASK))
++	if (!(status & XMCDMA_IRQ_ALL_MASK)) {
++		dev_info(&ndev->dev, "[RX IRQ] No valid IRQ status, return IRQ_NONE\n");
+ 		return IRQ_NONE;
++	}
+ 
+ 	if (status & XMCDMA_IRQ_ERR_MASK) {
+-		dev_err(&ndev->dev, "DMA Rx error 0x%x\n", status);
+-		dev_err(&ndev->dev, "Current BD is at: %pa\n",
++		dev_err(&ndev->dev, "[RX IRQ] DMA Rx error 0x%x\n", status);
++		dev_err(&ndev->dev, "[RX IRQ] Current BD is at: %pa\n",
+ 			&q->rxq_bd_v[q->rx_bd_ci].phys);
+ 
+ 		cr = axienet_dma_in32(q, XMCDMA_CHAN_CR_OFFSET(q->chan_id));
+@@ -499,11 +553,13 @@ irqreturn_t __maybe_unused axienet_mcdma_rx_irq(int irq, void *_ndev)
+ 		axienet_dma_out32(q, XMCDMA_CHAN_CR_OFFSET(q->chan_id) +
+ 				  q->rx_offset, cr);
+ 
++		dev_info(&ndev->dev, "[RX IRQ] Scheduling error tasklet\n");
+ 		tasklet_schedule(&lp->dma_err_tasklet[i]);
+ 		axienet_dma_out32(q, XMCDMA_CHAN_SR_OFFSET(q->chan_id) +
+ 				  q->rx_offset, status);
+ 	}
+ 
++	dev_info(&ndev->dev, "[RX IRQ] Exit: IRQ_HANDLED\n");
+ 	return IRQ_HANDLED;
+ }
+ 

@@ -1,0 +1,33 @@
+diff --git a/drivers/net/phy/switch-link.c b/drivers/net/phy/switch-link.c
+index 00201364057..eb68c472742 100644
+--- a/drivers/net/phy/switch-link.c
++++ b/drivers/net/phy/switch-link.c
+@@ -212,6 +212,13 @@ static void ctc21101_phy_setup(struct phy_device *phydev, u8 addr)
+ 	mv88e6185_phy_write(phydev, addr, MII_BMCR, ctl);
+ }
+ 
++static void yt8521_phy_setup(struct phy_device *phydev, u8 addr)
++{
++	mars_ext_write(phydev, addr, 0xa003, 0xfd);
++	mv88e6185_phy_write(phydev, addr, MII_BMCR, 0x8140);
++	printf("Switch phy yt8521 init successful!\n");
++}
++
+ static void mii_phy_setup(struct phy_device *phydev, u8 addr)
+ {
+ 	u16 ctl;
+@@ -364,6 +371,14 @@ int switchphy_probe(struct phy_device *phydev)
+ 			mv88e6185_phy_port_setup(phydev, i);
+ 	}
+ 
++#if 1
++	gpio_request(36, "PHY_SWITCH_GPIO"); gpio_direction_output(36, 1);
++	mdelay(20);
++	yt8521_phy_setup(phydev, 2);
++	gpio_direction_output(36, 0);
++	mdelay(20);
++#endif
++
+ 	return 0;
+ }
+ 

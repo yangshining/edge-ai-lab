@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
+/*
+ * Copyright 2022 xi.he@zillnk.com
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "xlnx,zynqmp";
+};
+
+&axi_intc_ku5p {
+	status = "okay";
+};
+
+&gpio_keys {
+	status = "okay";
+
+    pl_irq1{
+        label = "PAP";
+        linux,code = <2>;
+        interrupt-parent = <&axi_intc_0>;
+        interrupts = <1 0>;
+        debounce-interval = <0>;
+    };
+
+    pl_irq4{
+        label = "AFE";
+        linux,code = <5>;
+        interrupt-parent = <&axi_intc_0>;
+        interrupts = <4 0>;
+        debounce-interval = <0>;
+    };
+
+    pl_irq5{
+        label = "RTS";
+        linux,code = <6>;
+        interrupt-parent = <&axi_intc_0>;
+        interrupts = <5 0>;
+        debounce-interval = <0>;
+    };
+
+    pl_irq6{
+        label = "ORAN_IF";
+        linux,code = <7>;
+        interrupt-parent = <&axi_intc_ku5p>;
+        interrupts = <6 1>;
+        debounce-interval = <0>;
+    };
+
+    pl_irq7{
+        label = "AFE_OV";
+        linux,code = <8>;
+        interrupt-parent = <&axi_intc_0>;
+        interrupts = <7 0>;
+        debounce-interval = <0>;
+    };
+
+    pl_irq10{
+        label = "RADIO_CTRL_ZU67";
+        linux,code = <11>;
+        interrupt-parent = <&axi_intc_0>;
+        interrupts = <10 0>;
+        debounce-interval = <0>;
+    };
+
+
+    pl_irq19{
+        label = "PRACH_IP_EVENT";
+        linux,code = <20>;
+        interrupt-parent = <&axi_intc_0>;
+        interrupts = <19 0>;
+        debounce-interval = <0>;
+    };
+    
+    pl_irq20{
+        label = "PRACH_CFG_UPDATE";
+        linux,code = <21>;
+        interrupt-parent = <&axi_intc_0>;
+        interrupts = <20 0>;
+        debounce-interval = <0>;
+    };
+
+    pl_irq21{
+        label = "PRACH";
+        linux,code = <22>;
+        interrupt-parent = <&axi_intc_0>;
+        interrupts = <21 0>;
+        debounce-interval = <0>;
+    };
+
+    pl_irq22{
+        label = "PRACH_OVERFLOW";
+        linux,code = <23>;
+        interrupt-parent = <&axi_intc_0>;
+        interrupts = <22 0>;
+        debounce-interval = <0>;
+    };
+
+    pl_irq25{
+        label = "UART";
+        linux,code = <26>;
+        interrupt-parent = <&axi_intc_0>;
+        interrupts = <25 0>;
+        debounce-interval = <0>;
+    };
+
+};

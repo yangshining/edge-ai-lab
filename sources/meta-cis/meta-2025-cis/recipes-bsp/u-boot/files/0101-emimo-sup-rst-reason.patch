@@ -1,0 +1,76 @@
+diff --git a/board/xilinx/versal/board.c b/board/xilinx/versal/board.c
+index e39e29165c..ad0dc80704 100644
+--- a/board/xilinx/versal/board.c
++++ b/board/xilinx/versal/board.c
+@@ -182,15 +182,17 @@ int board_late_init(void)
+ 	const char *mode = NULL;
+ 	char *new_targets;
+ 	char *env_targets;
+-
++	//printf("-----------Enter %s: flags[0x%x], default[0x%x] -----------\n", __func__, gd->flags, GD_FLG_ENV_DEFAULT);
++#if 0
+ 	if (!(gd->flags & GD_FLG_ENV_DEFAULT)) {
+-		debug("Saved variables - Skipping\n");
++		printf("Saved variables - Skipping\n");
+ 		return 0;
+ 	}
+-
++#endif
++	//printf("-----------Enter %s:  ENV_VARS_UBOOT_RUNTIME_CONFIG-----------\n", __func__);
+ 	if (!CONFIG_IS_ENABLED(ENV_VARS_UBOOT_RUNTIME_CONFIG))
+ 		return 0;
+-
++	//printf("-----------Enter %s:  versal_get_bootmode-----------\n", __func__);
+ 	bootmode = versal_get_bootmode();
+ 
+ 	puts("Bootmode: ");
+diff --git a/env/common.c b/env/common.c
+index 0ecdb248a0..90710da8c0 100644
+--- a/env/common.c
++++ b/env/common.c
+@@ -255,6 +255,7 @@ char *env_get_default(const char *name)
+ 
+ void env_set_default(const char *s, int flags)
+ {
++	//printf("-----------Enter %s: flags[0x%x], str[%s] -----------\n", __func__, gd->flags, s?s:"null");
+ 	if (s) {
+ 		if ((flags & H_INTERACTIVE) == 0) {
+ 			printf("*** Warning - %s, "
+@@ -428,6 +429,7 @@ int env_export(env_t *env_out)
+ 
+ void env_relocate(void)
+ {
++	//printf("-----------Enter %s: flags[0x%x] -----------\n", __func__, gd->flags);
+ #if defined(CONFIG_NEEDS_MANUAL_RELOC)
+ 	env_reloc();
+ 	env_fix_drivers();
+diff --git a/env/env.c b/env/env.c
+index 69848fb060..bc936e4d63 100644
+--- a/env/env.c
++++ b/env/env.c
+@@ -194,7 +194,7 @@ int env_load(void)
+ 	struct env_driver *drv;
+ 	int best_prio = -1;
+ 	int prio;
+-
++	//printf("-----------Enter %s: flags[0x%x] -----------\n", __func__, gd->flags);
+ 	for (prio = 0; (drv = env_driver_lookup(ENVOP_LOAD, prio)); prio++) {
+ 		int ret;
+ 
+@@ -239,14 +239,14 @@ int env_load(void)
+ 		best_prio = 0;
+ 
+ 	gd->env_load_prio = best_prio;
+-
++	//printf("-----------Leave %s: flags[0x%x] -----------\n", __func__, gd->flags);
+ 	return -ENODEV;
+ }
+ 
+ int env_reload(void)
+ {
+ 	struct env_driver *drv;
+-
++	//printf("-----------Enter %s: flags[0x%x] -----------\n", __func__, gd->flags);
+ 	drv = env_driver_lookup(ENVOP_LOAD, gd->env_load_prio);
+ 	if (drv) {
+ 		int ret;

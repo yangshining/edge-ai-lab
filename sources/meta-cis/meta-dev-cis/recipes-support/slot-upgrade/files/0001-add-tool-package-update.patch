@@ -1,0 +1,189 @@
+From fa3cc5c9debbc4b24ecbbf8a8a1ddfd45e526606 Mon Sep 17 00:00:00 2001
+From: Fan Wu <fan.wu@zillnk.com>
+Date: Fri, 25 Apr 2025 10:52:58 +0800
+Subject: [PATCH] add tool-package update
+
+Change-Id: I26b6ae004e89dffe1c7516b133ab578d7368142e
+---
+ slot-upgrade.c | 99 ++++++++++++++++++++++++++++++++++----------------
+ 1 file changed, 67 insertions(+), 32 deletions(-)
+
+diff --git a/slot-upgrade.c b/slot-upgrade.c
+index 20c1d22..e8c6f04 100644
+--- a/slot-upgrade.c
++++ b/slot-upgrade.c
+@@ -36,6 +36,7 @@ enum ubus_msg_status {
+ };
+ */
+ #define upgrade_object "upgrade"
++#define upgrade_swap_method "swap"
+ #define upgrade_get_method "slot"
+ #define EVENT_NAME "upgrade"
+ 
+@@ -162,18 +163,22 @@ __attribute__((unused)) static void ubus_upgrade_event(struct ubus_context *ctx,
+ 	}
+ }
+ 
++__attribute__((unused)) static void ubus_swap_event(struct ubus_context *ctx, struct ubus_event_handler *ev,
++	const char *type, struct blob_attr *msg) {
++
++	return;
++}
++
+ __attribute__((unused)) static void upgrade_ubus_register_events() {
+ 	static struct ubus_event_handler listener;
+- 
+ 	/* 注册特定event的listener。多个event可以使用同一个listener */
+ 	memset(&listener, 0, sizeof(listener));
+ 	listener.cb = ubus_upgrade_event;
+ 
+ 	if (ubus_register_event_handler(ctx, &listener, EVENT_NAME)) {
+-		printf("register event failed.\n");
++		printf("register event [%s] failed.\n", EVENT_NAME);
+ 		return;
+ 	}
+-
+ }
+ 
+ __attribute__((unused)) static void show_ubus_call_json(struct blob_buf *buf){
+@@ -287,9 +292,24 @@ __attribute__((unused)) static int slot_upgrade(char *json)
+ 	return ubus_ret;
+ }
+ 
++__attribute__((unused)) static int slot_swap(char *json)
++{
++	int ubus_ret = -1;
++	//printf("Enter slot_swap!");
++	ubus_ret = ubus_call(upgrade_object, upgrade_swap_method, json);
++	//printf("Enter slot_swap!2");
++	if(ubus_ret){
++		MSG_ERROR("ubus call %s %s error:%d.\n", upgrade_object, upgrade_swap_method, ubus_ret);
++	}else{ 
++		MSG_DEBUG("ubus call %s %s success.\n",  upgrade_object, upgrade_swap_method);
++	}
++	return ubus_ret;
++}
++
++
+ static inline void usage(void)
+ {
+-    fprintf(stderr, "Usage: %s [-f filename] [-n [slot num]] \r\n", program);
++    fprintf(stderr, "Usage: %s [-f [filename]] [-n [slot num]] [-t [toolfilename]] [-s swap]\r\n", program);
+     exit(0);
+ }
+ 
+@@ -315,21 +335,26 @@ int main(int argc, char **argv) {
+ 	char *pwd;
+     int c;
+ 	int slotNum = 0;
+-	char packName[64] = {0};
+-	char upgrade[128] = {0};
++	char packName[192] = {0};
++	char toolPackName[192] = {0};
++	char upgrade[512] = {0};
+ 	char buf[128] = {0};
+-	char PATH[256] = {0};
+ 	const char *ubus_socket = NULL;
++	int swapFlag = 0;
+ 
+ 	signal(SIGINT,SIG_IGN);
+ 	signal(SIGHUP,SIG_IGN);
+     p = strrchr(argv[0], '/');
+     program = (p && p[1]) ? p + 1 : argv[0];
+ 
+-    while ((c = getopt(argc, argv, "f:n:")) != -1) {
++	pwd = getcwd(buf, sizeof(buf));
++    while ((c = getopt(argc, argv, "f:n:t:s")) != -1) {
+         switch (c) {
++		case 't':
++			snprintf(toolPackName, sizeof(toolPackName), "%s/%s", pwd, optarg);
++			break;
+         case 'f':
+-            strncpy(packName, optarg, 64);
++			snprintf(packName, sizeof(packName), "%s/%s", pwd, optarg);
+             break;
+         case 'n':
+             slotNum = atoi(optarg);
+@@ -337,38 +362,44 @@ int main(int argc, char **argv) {
+                 usage();
+             }
+             break;
++		case 's':
++			swapFlag = 1;
++			break;
+         default:
+             usage();
+         break;
+     	}
+ 	}
+ 
+-	pwd = getcwd(buf, sizeof(buf));
+-	sprintf(upgrade,"{\"path\":\"%s/%s\",\"num\":%d}", pwd, packName, slotNum);
+-	sprintf(PATH,"%s/%s", pwd, packName);
+-	if(!access(EMMC_DEV,F_OK)) {
+-		if (access(EMMC_PACK_INST,F_OK)) {
+-			MSG_RELEASE("\033[1;33mWARNING: MMC not ready.\n"
+-				"it's the first time device started, you can do slot-upgrade\n"
+-				"anywhere except in the path /media/sd-mmcblk0p3 now, but after\n"
+-				"this time, you can only do upgrade in /media/sd-mmcblk0p3!\n\033[0m");
+-			if (strstr(PATH,"sd-mmcblk0p3")) {
+-				MSG_RELEASE("\033[1;31mERROR: MMC not ready, can't do slot-upgrade in /media/sd-mmcblk0p3,\n"
+-					"do it somewhere else and remove %s immediately!\n\033[0m",
+-					PATH);
++	if (!swapFlag) {
++		snprintf(upgrade, sizeof(upgrade), "{\"path\":\"%s\",\"tool-path\":\"%s\",\"num\":%d}", packName, toolPackName, slotNum);
++		if(!access(EMMC_DEV,F_OK)) {
++			if (access(EMMC_PACK_INST,F_OK)) {
++				MSG_RELEASE("\033[1;33mWARNING: MMC not ready.\n"
++					"it's the first time device started, you can do slot-upgrade\n"
++					"anywhere except in the path /media/sd-mmcblk0p3 now, but after\n"
++					"this time, you can only do upgrade in /media/sd-mmcblk0p3!\n\033[0m");
++				if (strstr(packName,"sd-mmcblk0p3")) {
++					MSG_RELEASE("\033[1;31mERROR: MMC not ready, can't do slot-upgrade in /media/sd-mmcblk0p3,\n"
++						"do it somewhere else and remove %s immediately!\n\033[0m",
++						packName);
++					return 0;
++				}
++			} else if (!strstr(packName, "sd-mmcblk0p3")) {
++				MSG_RELEASE("upgrade failed with illegal path.                                                                   \n"
++					"NOTE: The upgrade file or release binary should be \n"
++					"put in /media/sd-mmcblk0p3 or its sub-directories. \n"
++					"To put the large file into other locations would \n"
++					"cause the system not stable or crash. \n"
++					"Please remove %s immediately!\n"
++					, packName);
+ 				return 0;
+ 			}
+-		} else if (!strstr(PATH, "sd-mmcblk0p3")) {
+-			MSG_RELEASE("upgrade failed with illegal path.                                                                   \n"
+-				"NOTE: The upgrade file or release binary should be \n"
+-				"put in /media/sd-mmcblk0p3 or its sub-directories. \n"
+-				"To put the large file into other locations would \n"
+-				"cause the system not stable or crash. \n"
+-				"Please remove %s immediately!\n"
+-				, PATH);
+-			return 0;
+ 		}
++	} else {
++		snprintf(upgrade, sizeof(upgrade), "{\"slot\":%d}", slotNum);
+ 	}
++	//printf("upgrade:%s\n", upgrade);
+ 	uloop_init();
+ 	ctx = ubus_connect(ubus_socket);
+ 	if (!ctx) {
+@@ -377,7 +408,11 @@ int main(int argc, char **argv) {
+ 	}
+ 	ubus_add_uloop(ctx);
+ 	upgrade_ubus_register_events();
+-   	slot_upgrade(upgrade);
++	if (swapFlag) {
++		slot_swap(upgrade);
++	} else {
++		slot_upgrade(upgrade);
++	}
+ 	uloop_timeout_set(&count_timer, 2000);
+ 	uloop_run();
+     return 0;
+-- 
+2.25.1
+

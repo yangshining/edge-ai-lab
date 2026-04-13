@@ -1,0 +1,36 @@
+Naming-rules
+	Platform: 00xx-{platform-name}-{patch-name}.patch
+	Variant:  01xx-{platform-name}-{variant-name}-{patch-name}.patch
+	Debug:    1xxx-debug-{patch-name}.patch
+
+Platform:
+|--	FARA patches based on petalinux 2023.2 u-boot-xlnx basement:
+|	|	|0001-fara-adapt-bootenv-for-zillnk-2023.2.patch
+|	|	|0002-fara-add-zboot-cmd.2023.2.patch
+|	|	|0003-fara-add-centec-phy-driver-suport-2023.2.patch
+|	|	|0004-fara-support-3types-GigaDevice-norflash-in-uboot-2023.2.patch
+|	|	|0005-fara-sf_erase_add_control_watchdog.patch
+|	|	|0006-fara-zboot-modify-info.patch
+|	|	|0007-fara-u-boot-xlnx-add-clu-reset.patch
+|	|	|0008-fara-add-loads-rsa-bitstream-support-for-zboot.patch
+|	|	|0009-fara-add-mars-loopback-assert-support.patch
+|	|	|0010-fara-add-motorcomm-phy-YT8531S-support.patch
+|	|	|0011-fara-fix-leds-status-of-mars-phy.patch
+|	|	|0012-fara-remove-auto-update-zboot.patch
+|	|	|0013-fara-support-multi-fpga-bit-loading.patch
+|	|	|0014-fara-add_zu67_version_selection_support_for_zboot.patch
+|	|	|0015-fara-sup-zboot-info-file.patch
+|	|	|0016-fara-device-detection.patch
+|	|	|0017-fara-add-zboot-env.patch
+|	|	|0018-fara-zboot-zu67-se-does-not-use-encrypted-bit-files.patch
+|	|
+|	|--	Variant:
+|	|	|	0100-modify-boot-env-mem-layout.patch
+|
+|
+|--	ZULU patches based on petalinux 2023.2 u-boot-xlnx basement:
+|	|	0001-zulu-support-zboot-cmd-2023.1.patch
+|	|	0002-zulu-support-ipconfig-cmd-2023.1.patch
+|	|	0003-zulu-support-driver-for-mv88e6185-2023.1.patch
+
+

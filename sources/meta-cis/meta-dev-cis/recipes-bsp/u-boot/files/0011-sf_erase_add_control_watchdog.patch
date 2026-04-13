@@ -1,0 +1,99 @@
+diff --git a/cmd/sf.c b/cmd/sf.c
+index c0d6a8f8..0531ce78 100644
+--- a/cmd/sf.c
++++ b/cmd/sf.c
+@@ -21,6 +21,8 @@
+ 
+ #include <asm/io.h>
+ #include <dm/device-internal.h>
++#include <wdt.h>
++#include <watchdog.h>
+ 
+ #include "legacy-mtd-utils.h"
+ 
+@@ -569,10 +571,19 @@ static int do_spi_flash(struct cmd_tbl *cmdtp, int flag, int argc,
+ 	}
+ 
+ 	if (strcmp(cmd, "read") == 0 || strcmp(cmd, "write") == 0 ||
+-	    strcmp(cmd, "update") == 0)
++	    strcmp(cmd, "update") == 0) {
++#if CONFIG_IS_ENABLED(WDT)
++		stopr_watchdog();
++#endif
+ 		ret = do_spi_flash_read_write(argc, argv);
++	}
+ 	else if (strcmp(cmd, "erase") == 0)
++	{
++#if CONFIG_IS_ENABLED(WDT)
++		stopr_watchdog();
++#endif
+ 		ret = do_spi_flash_erase(argc, argv);
++	}
+ 	else if (strcmp(cmd, "protect") == 0)
+ 		ret = do_spi_protect(argc, argv);
+ #ifdef CONFIG_CMD_SF_TEST
+@@ -581,7 +592,10 @@ static int do_spi_flash(struct cmd_tbl *cmdtp, int flag, int argc,
+ #endif
+ 	else
+ 		ret = -1;
+-
++#if CONFIG_IS_ENABLED(WDT)
++		initr_watchdog();
++		init_func_watchdog_reset();
++#endif
+ done:
+ 	if (ret != -1)
+ 		return ret;
+diff --git a/drivers/watchdog/wdt-uclass.c b/drivers/watchdog/wdt-uclass.c
+index e632f077..cbdb434c 100644
+--- a/drivers/watchdog/wdt-uclass.c
++++ b/drivers/watchdog/wdt-uclass.c
+@@ -57,6 +57,37 @@ int initr_watchdog(void)
+ 	return 0;
+ }
+ 
++int stopr_watchdog(void)
++{
++	int ret;
++
++	/*
++	 * Stop watchdog: This will call the probe function of the
++	 * watchdog driver, stopping the use of the device
++	 */
++	if (uclass_get_device_by_seq(UCLASS_WDT, 0,
++				     (struct udevice **)&gd->watchdog_dev)) {
++		debug("WDT:   Not found by seq!\n");
++		if (uclass_get_device(UCLASS_WDT, 0,
++				      (struct udevice **)&gd->watchdog_dev)) {
++			printf("WDT:   Not found!\n");
++			return 0;
++		}
++	}
++
++	ret = wdt_stop(gd->watchdog_dev);
++	if (ret == -ENOSYS) {
++		printf("Stopping watchdog timer not supported.\n");
++		return 1;
++	} else if (ret) {
++		printf("Stopping watchdog timer failed (%d)\n", ret);
++		return 1;
++	}
++	printf("WDT:   stopped\n");
++
++	return 0;
++}
++
+ int wdt_start(struct udevice *dev, u64 timeout_ms, ulong flags)
+ {
+ 	const struct wdt_ops *ops = device_get_ops(dev);
+diff --git a/include/wdt.h b/include/wdt.h
+index bc242c2e..0b780e0c 100644
+--- a/include/wdt.h
++++ b/include/wdt.h
+@@ -106,5 +106,6 @@ struct wdt_ops {
+ };
+ 
+ int initr_watchdog(void);
++int stopr_watchdog(void);
+ 
+ #endif  /* _WDT_H_ */

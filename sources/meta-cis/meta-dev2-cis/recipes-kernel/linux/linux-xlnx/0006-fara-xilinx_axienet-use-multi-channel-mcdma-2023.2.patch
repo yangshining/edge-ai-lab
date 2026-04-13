@@ -1,0 +1,50 @@
+From 3259a0195ad7042981dde7abd83647ff0f643388 Mon Sep 17 00:00:00 2001
+From: "fan.wu" <fan.wu@zillnk.com>
+Date: Tue, 6 Aug 2024 07:11:04 +0000
+Subject: [PATCH 6/9] fara xilinx_axienet use multi channel mcdma 2023.2
+
+---
+ .../net/ethernet/xilinx/xilinx_axienet_main.c | 20 +++++++++++++------
+ 1 file changed, 14 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/net/ethernet/xilinx/xilinx_axienet_main.c b/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
+index ed310385f00d..b5435684a106 100644
+--- a/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
++++ b/drivers/net/ethernet/xilinx/xilinx_axienet_main.c
+@@ -83,6 +83,8 @@
+ #define MSG_TYPE_PDELAY_RESP_FLAG	((PTP_TYPE_PDELAY_RESP + 1) << \
+ 									 MSG_TYPE_SHIFT)
+ 
++void __iomem *g_mcdma_regs = NULL;
++
+ void __iomem *mrmac_gt_pll;
+ EXPORT_SYMBOL(mrmac_gt_pll);
+ 
+@@ -2862,12 +2864,18 @@ static int __maybe_unused axienet_mcdma_probe(struct platform_device *pdev,
+ 		lp->dma_mask = XAE_DMA_MASK_MIN;
+ 	}
+ 
+-	lp->mcdma_regs = devm_ioremap_resource(&pdev->dev, &dmares);
+-	if (IS_ERR(lp->mcdma_regs)) {
+-		dev_err(&pdev->dev, "iormeap failed for the dma\n");
+-		ret = PTR_ERR(lp->mcdma_regs);
+-		return ret;
+-	}
++	if (g_mcdma_regs) {
++		lp->mcdma_regs = g_mcdma_regs;
++		g_mcdma_regs = NULL;
++	} else {
++		lp->mcdma_regs = devm_ioremap_resource(&pdev->dev, &dmares);
++		if (IS_ERR(lp->mcdma_regs)) {
++			dev_err(&pdev->dev, "iormeap failed for the dma\n");
++			ret = PTR_ERR(lp->mcdma_regs);
++			return ret;
++		}
++		g_mcdma_regs = lp->mcdma_regs;
++ 	}
+ 
+ 	axienet_mcdma_tx_probe(pdev, np, lp);
+ 	axienet_mcdma_rx_probe(pdev, lp, ndev);
+-- 
+2.25.1
+

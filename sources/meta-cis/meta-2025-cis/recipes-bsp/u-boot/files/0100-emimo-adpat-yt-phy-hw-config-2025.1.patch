@@ -1,0 +1,17 @@
+diff --git a/drivers/net/phy/motorcomm.c b/drivers/net/phy/motorcomm.c
+index b5cbc59b677..baed28a5648 100644
+--- a/drivers/net/phy/motorcomm.c
++++ b/drivers/net/phy/motorcomm.c
+@@ -170,6 +170,12 @@ static int yt8521S_config(struct phy_device *phydev)
+ 		}
+ 	}
+ 
++	//delay TXC 2ns
++	printf("%s: Set TXC delay 2ns\n", __func__);
++	ret = yt_write_ext(phydev, 0xa003, 0xfd);
++	if (ret < 0)
++		return ret;
++
+ 	hw_strap_mode = yt_read_ext(phydev, 0xa001) & 0x7;
+ 	printf("hw_strap_mode: 0x%x\n", hw_strap_mode);
+ 
