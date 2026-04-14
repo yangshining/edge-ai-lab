@@ -58,3 +58,6 @@
 *.iws
 
 cmake-build-*/
+
+# Claude Code local state
+.claude/
