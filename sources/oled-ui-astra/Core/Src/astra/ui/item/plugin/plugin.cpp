@@ -1,5 +1,8 @@
-//
-// Created by Fir on 2024/4/15 015.
-//
+/**
+ * @file   plugin.cpp
+ * @brief  Plugin item stub — reserved for future extension points.
+ * @author Fir
+ * @date   2024-04-15
+ */
 
 #include "plugin.h"

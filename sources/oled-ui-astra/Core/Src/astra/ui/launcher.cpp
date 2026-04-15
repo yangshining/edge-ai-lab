@@ -1,6 +1,10 @@
-//
-// Created by Fir on 2024/2/2.
-//
+/**
+ * @file   launcher.cpp
+ * @brief  Frame loop driver: renders the current menu, handles navigation input,
+ *         and manages open/close transitions between pages.
+ * @author Fir
+ * @date   2024-02-02
+ */
 
 #include "launcher.h"
 
@@ -8,7 +12,7 @@ namespace astra {
 
 void Launcher::popInfo(std::string _info, uint16_t _time) {
   static bool init = false;
-  static unsigned long long int beginTime = this->time;;
+  static unsigned long long int beginTime = this->time;
   static bool onRender = false;
 
   if (!init) {
@@ -17,46 +21,46 @@ void Launcher::popInfo(std::string _info, uint16_t _time) {
     onRender = true;
   }
 
-  float wPop = HAL::getFontWidth(_info) + 2 * getUIConfig().popMargin;  //宽度
-  float hPop = HAL::getFontHeight() + 2 * getUIConfig().popMargin;  //高度
-  float yPop = 0 - hPop - 8; //从屏幕上方滑入
-  float yPopTrg = (HAL::getSystemConfig().screenHeight - hPop) / 3;  //目标位置 中间偏上
-  float xPop = (HAL::getSystemConfig().screenWeight - wPop) / 2;  //居中
+  float wPop = HAL::getFontWidth(_info) + 2 * getUIConfig().popMargin;  // popup width
+  float hPop = HAL::getFontHeight() + 2 * getUIConfig().popMargin;      // popup height
+  float yPop = 0 - hPop - 8;  // -8 = off-screen above display (popup fully hidden)
+  float yPopTrg = (HAL::getSystemConfig().screenHeight - hPop) / 3;     // target: upper-center
+  float xPop = (HAL::getSystemConfig().screenWeight - wPop) / 2;        // horizontally centered
 
   while (onRender) {
     time++;
 
     HAL::canvasClear();
-    /*渲染一帧*/
+    // render one frame
     currentMenu->render(camera->getPosition());
     selector->render(camera->getPosition());
     camera->update(currentMenu, selector);
-    /*渲染一帧*/
+    // end frame
 
     HAL::setDrawType(0);
     HAL::drawRBox(xPop - 4, yPop - 4, wPop + 8, hPop + 8, getUIConfig().popRadius + 2);
-    HAL::setDrawType(1);  //反色显示
-    HAL::drawRFrame(xPop - 1, yPop - 1, wPop + 2, hPop + 2, getUIConfig().popRadius);  //绘制一个圆角矩形
+    HAL::setDrawType(1);  // inverted color
+    HAL::drawRFrame(xPop - 1, yPop - 1, wPop + 2, hPop + 2, getUIConfig().popRadius);  // rounded frame
     HAL::drawEnglish(xPop + getUIConfig().popMargin,
                      yPop + getUIConfig().popMargin + HAL::getFontHeight(),
-                     _info);  //绘制文字
+                     _info);  // draw text
 
     HAL::canvasUpdate();
 
-    Animation::move(&yPop, yPopTrg, getUIConfig().popSpeed);  //动画
+    Animation::move(&yPop, yPopTrg, getUIConfig().popSpeed);  // animate
 
-    //这里条件可以加上一个如果按键按下 就滑出
-    if (time - beginTime >= _time) yPopTrg = 0 - hPop - 8;  //滑出
+    // slide out after timeout; a key press also dismisses the popup
+    if (time - beginTime >= _time) yPopTrg = 0 - hPop - 8;  // slide out
 
     HAL::keyScan();
     if (HAL::getAnyKey()) {
       for (unsigned char i = 0; i < key::KEY_NUM; i++)
-        if (HAL::getKeyMap()[i] == key::CLICK) yPopTrg = 0 - hPop - 8;  //滑出
+        if (HAL::getKeyMap()[i] == key::CLICK) yPopTrg = 0 - hPop - 8;  // slide out on key
       std::fill(HAL::getKeyMap(), HAL::getKeyMap() + key::KEY_NUM, key::INVALID);
     }
 
     if (yPop == 0 - hPop - 8) {
-      onRender = false;  //退出条件
+      onRender = false;  // exit condition: popup is fully off-screen
       init = false;
     }
   }
@@ -74,15 +78,10 @@ void Launcher::init(Menu *_rootPage) {
   camera->init(_rootPage->getType());
 }
 
-/**
- * @brief 打开选中的页面
- *
- * @return 是否成功打开
- * @warning 仅可调用一次
- */
+// Navigates into the child menu of the current selection; shows an error popup and returns false if none exists.
 bool Launcher::open() {
 
-  //如果当前页面指向的当前item没有后继 那就返回false
+  // if the selected item has no child menu, bail out
   if (currentMenu->getNextMenu() == nullptr) {
     popInfo("unreferenced page!", 600);
     return false;
@@ -94,24 +93,18 @@ bool Launcher::open() {
 
   currentMenu->rememberCameraPos(camera->getPositionTrg());
 
-  currentMenu->deInit();  //先析构（退场动画）再挪动指针
+  currentMenu->deInit();  // run exit animation before advancing the pointer
 
   currentMenu = currentMenu->getNextMenu();
   currentMenu->forePosInit();
   currentMenu->childPosInit(camera->getPosition());
 
   selector->inject(currentMenu);
-  //selector->go(currentPage->selectIndex);
 
   return true;
 }
 
-/**
- * @brief 关闭选中的页面
- *
- * @return 是否成功关闭
- * @warning 仅可调用一次
- */
+// Closes the current menu and returns to parent; returns false if no parent exists.
 bool Launcher::close() {
   if (currentMenu->getPreview() == nullptr) {
     popInfo("unreferenced page!", 600);
@@ -124,14 +117,13 @@ bool Launcher::close() {
 
   currentMenu->rememberCameraPos(camera->getPositionTrg());
 
-  currentMenu->deInit();  //先析构（退场动画）再挪动指针
+  currentMenu->deInit();  // run exit animation before retreating the pointer
 
   currentMenu = currentMenu->getPreview();
   currentMenu->forePosInit();
   currentMenu->childPosInit(camera->getPosition());
 
   selector->inject(currentMenu);
-  //selector->go(currentPage->selectIndex);
 
   return true;
 }
@@ -144,41 +136,29 @@ void Launcher::update() {
   selector->render(camera->getPosition());
   camera->update(currentMenu, selector);
 
-//  if (time == 500) selector->go(3);  //test
-//  if (time == 800) open();  //test
-//  if (time == 1200) selector->go(0);  //test
-//  if (time == 1500) selector->go(1z);  //test
-//  if (time == 1800) selector->go(6);  //test
-//  if (time == 2100) selector->go(1);  //test
-//  if (time == 2300) selector->go(0);  //test
-//  if (time == 2500) open();  //test
-//  if (time == 2900) close();
-//  if (time == 3200) selector->go(0);  //test
-//  if (time >= 3250) time = 0;  //test
-
-  if (time > 2) {
+  if (time > 2) {  // skip first 2 frames to let animations settle
     HAL::keyScan();
     time = 0;
   }
 
   if (*HAL::getKeyFlag() == key::KEY_PRESSED) {
     *HAL::getKeyFlag() = key::KEY_NOT_PRESSED;
+    // key 0 = Up/Back, key 1 = Down/Confirm
     for (unsigned char i = 0; i < key::KEY_NUM; i++) {
       if (HAL::getKeyMap()[i] == key::CLICK) {
-        if (i == 0) { selector->goPreview(); }//selector去到上一个项目
-        else if (i == 1) { selector->goNext(); }//selector去到下一个项目
+        if (i == 0) { selector->goPreview(); }  // move selector to the previous item
+        else if (i == 1) { selector->goNext(); }  // move selector to the next item
       } else if (HAL::getKeyMap()[i] == key::PRESS) {
-        if (i == 0) { close(); }//退出当前项目
-        else if (i == 1) { open(); }//打开当前项目
+        if (i == 0) { close(); }  // close (go back to parent)
+        else if (i == 1) { open(); }  // open the selected item
       }
     }
     std::fill(HAL::getKeyMap(), HAL::getKeyMap() + key::KEY_NUM, key::INVALID);
-    *HAL::getKeyFlag() = key::KEY_NOT_PRESSED;
+    *HAL::getKeyFlag() = key::KEY_NOT_PRESSED;  // defensive clear: ensure key state is clean on exit
   }
 
   HAL::canvasUpdate();
 
-  //time++;
   time = HAL::millis() / 1000;
 }
 }

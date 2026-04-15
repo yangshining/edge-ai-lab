@@ -1,6 +1,9 @@
-//
-// Created by Fir on 2024/1/25.
-//
+/**
+ * @file   config.h
+ * @brief  Global UI animation speeds and layout constants for the Astra UI system.
+ * @author Fir
+ * @date   2024-01-25
+ */
 
 #pragma once
 #ifndef ASTRA_CORE_SRC_SYSTEM_H_
@@ -9,87 +12,95 @@
 #include "../../hal/hal_dreamCore/components/oled/graph_lib/u8g2/u8g2.h"
 
 namespace astra {
-/**
- * @brief config of astra ui. astra ui的配置结构体
- */
+
+/** @brief All configurable parameters for the Astra UI renderer and layout engine. */
 struct config {
-  float tileAnimationSpeed = 70;
-  float listAnimationSpeed = 70;
-  float selectorYAnimationSpeed = 60;
-  float selectorXAnimationSpeed = 70;
-  float selectorWidthAnimationSpeed = 70;
-  float selectorHeightAnimationSpeed = 55;
-  float windowAnimationSpeed = 25;
-  float sideBarAnimationSpeed = 15;
-  float fadeAnimationSpeed = 100;
-  float cameraAnimationSpeed = 80;
-  float logoAnimationSpeed = 70;
+  // Animation speeds (0–100; higher = faster exponential decay).
+  float tileAnimationSpeed         = 70;  ///< Tile page scroll animation speed.
+  float listAnimationSpeed         = 70;  ///< List page scroll animation speed.
+  float selectorYAnimationSpeed    = 60;  ///< Selector box vertical movement speed.
+  float selectorXAnimationSpeed    = 70;  ///< Selector box horizontal movement speed.
+  float selectorWidthAnimationSpeed  = 70; ///< Selector box width interpolation speed.
+  float selectorHeightAnimationSpeed = 55; ///< Selector box height interpolation speed.
+  float windowAnimationSpeed       = 25;  ///< Sub-menu open/close animation speed.
+  float sideBarAnimationSpeed      = 15;  ///< Sidebar progress bar animation speed.
+  float fadeAnimationSpeed         = 100; ///< Fade-in/out animation speed.
+  float cameraAnimationSpeed       = 80;  ///< Virtual viewport pan animation speed.
+  float logoAnimationSpeed         = 70;  ///< Splash-screen logo animation speed.
 
-  bool tileUnfold = true;
-  bool listUnfold = true;
+  // Behaviour flags.
+  bool tileUnfold     = true; ///< Enable unfold animation for tile menus.
+  bool listUnfold     = true; ///< Enable unfold animation for list menus.
 
-  bool menuLoop = true;
+  bool menuLoop       = true; ///< Wrap around when navigating past the first/last item.
 
-  bool backgroundBlur = true;
-  bool lightMode = false;
+  bool backgroundBlur = true;  ///< Draw blurred background behind overlays.
+  bool lightMode      = false; ///< Use light (inverted) colour scheme.
 
-  float listBarWeight = 5;
-  float listTextHeight = 8;
-  float listTextMargin = 4; //文字边距
-  float listLineHeight = 16;
-  float selectorRadius = 0.5f;
-  float selectorMargin = 4; //选择框与文字左边距
-  float selectorTopMargin = 2; //选择框与文字上边距
+  // List layout constants (pixels).
+  float listBarWeight      = 5;    ///< Width of the sidebar progress bar.
+  float listTextHeight     = 8;    ///< Height of a single text glyph row.
+  float listTextMargin     = 4;    ///< Left/right margin around list item text.
+  float listLineHeight     = 16;   ///< Total height of one list row (text + padding).
+  float selectorRadius     = 0.5f; ///< Corner radius of the selector highlight box.
+  float selectorMargin     = 4;    ///< Left margin between selector box and item text.
+  float selectorTopMargin  = 2;    ///< Top margin between selector box and item text.
 
-  float tilePicWidth = 30;
-  float tilePicHeight = 30;
-  float tilePicMargin = 8;
-  float tilePicTopMargin = 8; //图标上边距
-  float tileArrowWidth = 6;
-  float tileArrowMargin = 4; //箭头边距
+  // Tile layout constants (pixels).
+  float tilePicWidth       = 30; ///< Icon width in the tile grid.
+  float tilePicHeight      = 30; ///< Icon height in the tile grid.
+  float tilePicMargin      = 8;  ///< Horizontal margin between tile icons.
+  float tilePicTopMargin   = 8;  ///< Top margin above tile icons.
+  float tileArrowWidth     = 6;  ///< Width of the navigation arrow glyph.
+  float tileArrowMargin    = 4;  ///< Margin around the navigation arrow.
 
-  float tileDottedLineBottomMargin = 18; //虚线下边距(top: 46)
-  float tileArrowBottomMargin = 8; //箭头下边距(top: 56)
-  float tileTextBottomMargin = 12; //标题下边距(top: 52)
+  float tileDottedLineBottomMargin = 18; ///< Bottom margin of the dotted separator line (top: 46 px).
+  float tileArrowBottomMargin      = 8;  ///< Bottom margin of the navigation arrow (top: 56 px).
+  float tileTextBottomMargin       = 12; ///< Bottom margin of the tile title label (top: 52 px).
 
-  float tileBarHeight = 2; //磁贴进度条高度
+  float tileBarHeight = 2; ///< Height of the tile-view progress bar.
 
-  float tileSelectBoxLineLength = 5;  //磁贴选择框线长
-  float tileSelectBoxMargin = 3; //选择框边距
-  float tileSelectBoxWidth = tileSelectBoxMargin * 2 + tilePicWidth; //选择框宽
-  float tileSelectBoxHeight = tileSelectBoxMargin * 2 + tilePicHeight; //选择框高
-  float tileTitleHeight = 8; //磁贴标题高度
+  float tileSelectBoxLineLength = 5;  ///< Corner tick length of the tile selection box.
+  float tileSelectBoxMargin     = 3;  ///< Margin between the tile icon and its selection box.
+  float tileSelectBoxWidth      = tileSelectBoxMargin * 2 + tilePicWidth;  ///< Computed selection box width.
+  float tileSelectBoxHeight     = tileSelectBoxMargin * 2 + tilePicHeight; ///< Computed selection box height.
+  float tileTitleHeight         = 8;  ///< Height of the tile title text glyph row.
 
-  float tileBtnMargin = 16; //按钮边距
+  float tileBtnMargin = 16; ///< Margin around tile-view navigation buttons.
 
-  float popMargin = 4; //弹窗边距
-  float popRadius = 2; //弹窗圆角半径
-  float popSpeed = 90; //弹窗动画速度
+  // Pop-up overlay layout constants (pixels).
+  float popMargin = 4;  ///< Inner margin inside a pop-up dialog.
+  float popRadius = 2;  ///< Corner radius of a pop-up dialog.
+  float popSpeed  = 90; ///< Pop-up open/close animation speed.
 
-  float logoStarLength = 2; //logo星星长度
-  float logoTextHeight = 14; //logo文字高度
-  float logoCopyRightHeight = 8; //logo文字高度
-  unsigned char logoStarNum = 16; //logo星星数量
+  // Logo / splash-screen constants.
+  float logoStarLength      = 2;  ///< Half-length of each decorative star ray.
+  float logoTextHeight      = 14; ///< Height of the large logo title text.
+  float logoCopyRightHeight = 8;  ///< Height of the copyright line text.
+  unsigned char logoStarNum = 16; ///< Number of decorative stars on the splash screen.
 
-  const unsigned char *logoTitleFont = u8g2_font_Cascadia;
-  const unsigned char *logoCopyRightFont = u8g2_font_myfont;
-  const unsigned char *mainFont = u8g2_font_myfont;
+  // Fonts used by the UI. Change these if not using the u8g2 library.
+  const unsigned char *logoTitleFont    = u8g2_font_Cascadia; ///< Font for the splash-screen title.
+  const unsigned char *logoCopyRightFont = u8g2_font_myfont;  ///< Font for the copyright line.
+  const unsigned char *mainFont          = u8g2_font_myfont;  ///< Font for all other UI text.
 
-  //如果未使用u8g2库 请自行修改这里
-  //const unsigned char *logoTitleFont = u8g2_font_Cascadia;
-  //const unsigned char *logoCopyRightFont = u8g2_font_myfont;
-  //const unsigned char *mainFont = u8g2_font_myfont;
-
-  float checkBoxWidth = 8;
-  float checkBoxHeight = 8;
-  float checkBoxTopMargin = 4; //与选项上边缘的距离
-  float checkBoxRightMargin = 10; //与屏幕右边缘的距离
-  float checkBoxRadius = 1;
+  // CheckBox widget layout constants (pixels).
+  float checkBoxWidth       = 8;  ///< CheckBox widget width.
+  float checkBoxHeight      = 8;  ///< CheckBox widget height.
+  float checkBoxTopMargin   = 4;  ///< Distance from the top edge of the list row to the check box.
+  float checkBoxRightMargin = 10; ///< Distance from the right edge of the screen to the check box.
+  float checkBoxRadius      = 1;  ///< Corner radius of the check box.
 };
 
+/**
+ * @brief  Return a reference to the global UI configuration singleton.
+ * @return Reference to the single shared @ref config instance.
+ */
 static config &getUIConfig() {
   static config astraConfig;
   return astraConfig;
 }
-}
+
+} // namespace astra
+
 #endif //ASTRA_CORE_SRC_SYSTEM_H_

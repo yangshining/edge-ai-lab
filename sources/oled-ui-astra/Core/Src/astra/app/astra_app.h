@@ -1,6 +1,9 @@
-//
-// Created by Fir on 2024/2/1.
-//
+/**
+ * @file   astra_app.h
+ * @brief  Astra application namespace placeholder (reserved for future use).
+ * @author Fir
+ * @date   2024-02-01
+ */
 
 #pragma once
 #ifndef ASTRA_CORE_SRC_ASTRA_APP_H_

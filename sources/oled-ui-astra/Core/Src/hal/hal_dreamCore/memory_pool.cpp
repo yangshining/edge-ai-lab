@@ -1,61 +1,55 @@
-//
-// Created by Fir on 2024/5/4 004.
-//
+/**
+ * @file   memory_pool.cpp
+ * @brief  Fixed-size block memory pool: init, alloc, free, and C++ new/delete overrides.
+ * @author Fir
+ * @date   2024-05-04
+ */
 
 #include <cstddef>
 #include "memory_pool.h"
 
-//内存池(32 字节对齐)
+// memory pool (32-byte aligned)
 __attribute__((aligned(32))) unsigned char memBase[MEM_MAX_SIZE];
-//SRAM 内存池
-//内存管理表
+// allocation map table
 unsigned short memMapBase[MEM_ALLOC_TABLE_SIZE];
-//SRAM 内存池 MAP
-//内存管理参数
-const unsigned long memTblSize = MEM_ALLOC_TABLE_SIZE;//内存表大小
-const unsigned long memBlkSize = MEM_BLOCK_SIZE;
-//内存分块大小
-const unsigned long memSize = MEM_MAX_SIZE;
-//内存总大小
-//内存管理控制器
+
+// pool constants
+const unsigned long memTblSize = MEM_ALLOC_TABLE_SIZE; // number of map entries
+const unsigned long memBlkSize = MEM_BLOCK_SIZE;        // bytes per block
+const unsigned long memSize    = MEM_MAX_SIZE;           // total pool size in bytes
+
+// memory manager controller instance
 struct _m_malloc_dev malloc_dev =
     {
-        memInit,               //内存初始化
-        memPerused,        //内存使用率
-        memBase,                    //内存池
-        memMapBase,       //内存管理状态表
-        0,                 //内存管理未就绪
+        memInit,
+        memPerused,
+        memBase,
+        memMapBase,
+        0,  // not yet initialised
     };
 
-//复制内存
-//*des:目的地址
-//*src:源地址
-//n:需要复制的内存长度(字节为单位)
-void myMemCpy(void *des, void *src, unsigned long n) {
+// Copy n bytes from src to des.
+void *myMemCpy(void *des, const void *src, unsigned long n) {
   unsigned char *xDes = (unsigned char *) des;
-  unsigned char *xSrc = (unsigned char *) src;
-  while (n--)*xDes++ = *xSrc++;
+  const unsigned char *xSrc = (const unsigned char *) src;
+  while (n--) *xDes++ = *xSrc++;
+  return des;
 }
 
-//设置内存
-//*s:内存首地址
-//c :要设置的值
-//count:需要设置的内存大小(字节为单位)
+// Fill count bytes starting at s with value c.
 void myMemset(void *s, unsigned char c, unsigned long count) {
   unsigned char *xS = (unsigned char *) s;
-  while (count--)*xS++ = c;
+  while (count--) *xS++ = c;
 }
 
-//内存管理初始化
+// Initialise the memory pool: zero the map and the pool, then mark ready.
 void memInit(void) {
-  myMemset(malloc_dev.memMap, 0, memTblSize * 2);//内存状态表数据清零
-  myMemset(malloc_dev.memBase, 0, memSize); //内存池所有数据清零
+  myMemset(malloc_dev.memMap, 0, memTblSize * 2); // clear allocation map
+  myMemset(malloc_dev.memBase, 0, memSize);        // clear pool data
   malloc_dev.memRdy = 1;
-//内存管理初始化 OK
 }
 
-//获取内存使用率
-//返回值:使用率(0~100)
+// Return pool utilization as a percentage (0–100).
 unsigned char memPerused(void) {
   unsigned long used = 0;
   unsigned long i;
@@ -65,70 +59,62 @@ unsigned char memPerused(void) {
   return (used * 100) / (memTblSize);
 }
 
-//内存分配(内部调用)
-//memx:所属内存块
-//size:要分配的内存大小(字节)
-//返回值:0XFFFFFFFF,代表错误;其他,内存偏移地址
+// Internal alloc: find a contiguous run of free blocks for the requested size.
+// Returns the byte offset into the pool, or 0xFFFFFFFF on failure.
 unsigned long memMalloc(unsigned long size) {
   signed long offset = 0;
-  unsigned short nmemb; //需要的内存块数
-  unsigned short cmemb = 0;//连续空内存块数
+  unsigned short nmemb;       // number of blocks needed
+  unsigned short cmemb = 0;   // consecutive free block counter
   unsigned long i;
-  if (!malloc_dev.memRdy) malloc_dev.init(); //未初始化,先执行初始化
-  if (size == 0) return 0XFFFFFFFF; //不需要分配
-  nmemb = size / memBlkSize; //获取需要分配的连续内存块数
+  if (!malloc_dev.memRdy) malloc_dev.init(); // auto-init if not ready
+  if (size == 0) return 0XFFFFFFFF;          // zero-size request is invalid
+  nmemb = size / memBlkSize;
   if (size % memBlkSize) nmemb++;
 
-  //搜索整个内存控制区
+  // scan the map from the end to find a contiguous free run
   for (offset = memTblSize - 1; offset >= 0; offset--) {
-    if (!malloc_dev.memMap[offset]) cmemb++; //连续空内存块数增加
-    else cmemb = 0; //连续内存块清零
+    if (!malloc_dev.memMap[offset]) cmemb++; // extend free run
+    else cmemb = 0;                           // break in free run; reset counter
 
-    //找到了连续 nmemb 个空内存块
+    // found nmemb consecutive free blocks
     if (cmemb == nmemb) {
-      //标注内存块非空
+      // mark blocks as allocated
       for (i = 0; i < nmemb; i++) malloc_dev.memMap[offset + i] = nmemb;
-      return (offset * memBlkSize); //返回偏移地址
+      return (offset * memBlkSize); // return byte offset
     }
   }
-  return 0XFFFFFFFF;//未找到符合分配条件的内存块
+  return 0XFFFFFFFF; // no suitable run found
 }
 
-//释放内存(内部调用)
-//offset:内存地址偏移
-//返回值:0,释放成功;1,释放失败;
+// Internal free: release blocks at the given pool byte offset.
+// Returns 0 on success, 1 if not initialised, 2 if offset is out of range.
 unsigned char memFree(unsigned long offset) {
   int i;
 
-  //未初始化,先执行初始化
   if (!malloc_dev.memRdy) {
     malloc_dev.init();
-    return 1;//未初始化
+    return 1; // was not initialised
   }
 
-  //偏移在内存池内.
   if (offset < memSize) {
-    int index = offset / memBlkSize; //偏移所在内存块号码
-    int nMemB = malloc_dev.memMap[index];//内存块数量
+    int index = offset / memBlkSize;          // block index for this offset
+    int nMemB = malloc_dev.memMap[index];     // number of blocks to free
 
-    //内存块清零
+    // clear the allocation map entries
     for (i = 0; i < nMemB; i++) malloc_dev.memMap[index + i] = 0;
     return 0;
-  } else return 2;//偏移超区了.
+  } else return 2; // offset exceeds pool bounds
 }
 
-//释放内存(外部调用)
-//ptr:内存首地址
+// Public free: compute the pool offset from the pointer and release it.
 void myFree(void *ptr) {
   unsigned long offset;
-  if (ptr == NULL)return;//地址为 0.
+  if (ptr == NULL) return; // null pointer — nothing to do
   offset = (unsigned long) ptr - (unsigned long) malloc_dev.memBase;
-  memFree(offset); //释放内存
+  memFree(offset);
 }
 
-//分配内存(外部调用)
-//size:内存大小(字节)
-//返回值:分配到的内存首地址.
+// Public alloc: allocate size bytes and return a pointer into the pool.
 void *myMalloc(unsigned long size) {
   unsigned long offset;
   offset = memMalloc(size);
@@ -136,19 +122,16 @@ void *myMalloc(unsigned long size) {
   else return (void *) ((unsigned long) malloc_dev.memBase + offset);
 }
 
-//重新分配内存(外部调用)
-//*ptr:旧内存首地址
-//size:要分配的内存大小(字节)
-//返回值:新分配到的内存首地址.
+// Public realloc: allocate a new block, copy old data, then free the old block.
 void *myReAlloc(void *ptr, unsigned long size) {
   unsigned long offset;
   offset = memMalloc(size);
   if (offset == 0XFFFFFFFF) return NULL;
   else {
-    //拷贝旧内存内容到新内存
+    // copy old contents to the new block
     myMemCpy((void *) ((unsigned long) malloc_dev.memBase + offset), ptr, size);
-    myFree(ptr); //释放旧内存
-    return (void *) ((unsigned long) malloc_dev.memBase + offset); //返回新内存首地址
+    myFree(ptr); // release old block
+    return (void *) ((unsigned long) malloc_dev.memBase + offset);
   }
 }
 
@@ -157,8 +140,8 @@ void *operator new(std::size_t size) noexcept(false) {
   if (size == 0)
     size = 1;
   res = myMalloc(size);
-  if (res) return res; //到这里的时候 res是null 所以一直卡在循环里
-  //else return nullptr;
+  if (res) return res;
+  else return nullptr; // allocation failed
 }
 
 void operator delete(void *p) { myFree(p); }

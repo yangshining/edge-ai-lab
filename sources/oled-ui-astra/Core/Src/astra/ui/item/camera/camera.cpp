@@ -1,6 +1,9 @@
-//
-// Created by Fir on 2024/4/14 014.
-//
+/**
+ * @file   camera.cpp
+ * @brief  Implements the Camera viewport that offsets all rendered coordinates.
+ * @author Fir
+ * @date   2024-04-14
+ */
 
 #include "camera.h"
 
@@ -18,9 +21,10 @@ Camera::Camera() {
   this->yTrg = 0;
 }
 
-//这里的坐标应该都是负的 因为最终渲染的时候是加上摄像机的坐标
-//所以说比如想显示下一页 应该是item本身的坐标减去摄像机的坐标 这样才会让item向上移动
-//一个办法是用户传进来正的坐标 但是在摄像机内部 所有坐标都取其相反数 负的
+// Camera coordinates are stored as negatives of the world position.
+// At render time each item's position is added to the camera offset,
+// so moving the camera "down" shifts items visually upward.
+// Callers pass positive world coordinates; the constructor negates them.
 
 Camera::Camera(float _x, float _y) {
   this->xInit = 0 - _x;
@@ -33,12 +37,7 @@ Camera::Camera(float _x, float _y) {
   this->yTrg = 0 - _y;
 }
 
-/**
- *
- * @param _x
- * @param _y
- * @return 0: in view, 1: upper, 2: lower
- */
+// Returns true if the point (_x, _y) is outside the current viewport bounds.
 unsigned char Camera::outOfView(float _x, float _y) {
   if (_x < 0 - this->x || _y < 0 - this->y) return 1;
   if (_x > (0 - this->x) + systemConfig.screenWeight - 1 || _y > (0 - this->y) + systemConfig.screenHeight - 1) return 2;
@@ -56,22 +55,13 @@ std::vector<float> Camera::getPositionTrg() {
 void Camera::init(const std::string &_type) {
   if (_type == "List") {
     this->goDirect(0, static_cast<float>((0 - sys::getSystemConfig().screenHeight) * 10));
-    //this->render();
   }
   else if (_type == "Tile") {
     this->goDirect(static_cast<float>((0 - sys::getSystemConfig().screenWeight) * 10), 0);
-    //this->render();
   }
 }
 
-/**
- * @brief
- * @param _pos
- * @param _posTrg
- * @param _speed
- *
- * @note only support in loop. 仅支持在循环内执行
- */
+// Moves the camera toward (_x, _y) using exponential-decay animation.
 void Camera::go(float _x, float _y) {
   this->xTrg = 0 - _x;
   this->yTrg = 0 - _y;
@@ -104,14 +94,14 @@ void Camera::moveDirect(float _x, float _y) {
 void Camera::goToListItemRolling(List *_menu) {
   static const unsigned char maxItemPerPage = systemConfig.screenHeight / astraConfig.listLineHeight;
 
-  //第一次进入的时候初始化 退出页面记住坐标 再次进入就OK了
+  // Initialise camera position on first entry only; subsequent entries skip re-centring.
   if (!_menu->initFlag) {
     go(0,0);
     _menu->initFlag = true;
   }
 
   if (_menu->selectIndex < _menu->getBoundary()[0]) {
-    //注意这里是go不是move
+    // Use move (relative) rather than go (absolute) here.
     move(0, (_menu->selectIndex - _menu->getBoundary()[0]) * astraConfig.listLineHeight);
     _menu->refreshBoundary(_menu->selectIndex, _menu->selectIndex + maxItemPerPage - 1);
     return;
@@ -148,7 +138,6 @@ void Camera::update(Menu *_menu, Selector *_selector) {
     _menu->cameraPosMemoryFlag = false;
     _menu->resetCameraMemoryPos();
   }
-    //if (this->isReached(_menu->getCameraMemoryPos())) _menu->cameraPosMemoryFlag = false;
   if (_menu->getType() == "List") goToListItemRolling(static_cast<List*>(_menu));
   else if (_menu->getType() == "Tile") goToTileItem(_menu->selectIndex);
 

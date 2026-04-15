@@ -1,6 +1,9 @@
-//
-// Created by Fir on 2024/2/8.
-//
+/**
+ * @file   hal.cpp
+ * @brief  HAL singleton lifecycle and default key/display helper implementations.
+ * @author Fir
+ * @date   2024-02-08
+ */
 
 #include <cstring>
 #include "hal.h"
@@ -32,12 +35,7 @@ void HAL::destroy() {
   hal = nullptr;
 }
 
-/**
- * @brief log printer. 自动换行的日志输出
- *
- * @param _msg message want to print. 要输出的信息
- * @note cannot execute within a loop. 不能在循环内执行
- */
+// Prints a log message to the display with auto-wrapping; do not call in a tight loop.
 void HAL::_printInfo(std::string _msg) {
   static std::vector<std::string> _infoCache = {};
   static const unsigned char _max = getSystemConfig().screenHeight / getFontHeight();
@@ -47,12 +45,12 @@ void HAL::_printInfo(std::string _msg) {
   _infoCache.push_back(_msg);
 
   canvasClear();
-  setDrawType(2); //反色显示
+  setDrawType(2); // inverted color rendering
   for (unsigned char i = 0; i < _infoCache.size(); i++) {
     drawEnglish(0, _fontHeight + i * (1 + _fontHeight), _infoCache[i]);
   }
   canvasUpdate();
-  setDrawType(1); //回归实色显示
+  setDrawType(1); // normal color rendering
 }
 
 bool HAL::_getAnyKey() {
@@ -62,14 +60,10 @@ bool HAL::_getAnyKey() {
   return false;
 }
 
-/**
- * @brief key scanner default. 默认按键扫描函数
- *
- * @note run per 5 ms.
- * @return key::keyValue
- */
+// Default key scanner; call every 10 ms to detect clicks and long-presses.
 void HAL::_keyScan() {
   static unsigned char _timeCnt = 0;
+  // _lock: true once a key has been held long enough; suppresses the release from registering as a click.
   static bool _lock = false;
   static key::KEY_FILTER _keyFilter = key::CHECKING;
   switch (_keyFilter) {
@@ -84,15 +78,14 @@ void HAL::_keyScan() {
 
     case key::KEY_0_CONFIRM:
     case key::KEY_1_CONFIRM:
-      //filter
+      // hold-time accumulator: count ticks while held to distinguish click from long-press
       if (getAnyKey()) {
         if (!_lock) _lock = true;
         _timeCnt++;
 
-        //timer
         if (_timeCnt > 100) {
           keyFlag = key::KEY_PRESSED;
-          //long press 1s
+          // long-press threshold: >100 ticks @ 10 ms/tick = ~1 s
           if (getKey(key::KEY_0)) {
             key[key::KEY_0] = key::PRESS;
             key[key::KEY_1] = key::INVALID;
@@ -133,18 +126,14 @@ void HAL::_keyScan() {
   }
 }
 
-/**
- * @brief default key tester. 默认按键测试函数
- */
+// Default key test handler stub; unconditionally clears key state when any key is active.
 void HAL::_keyTest() {
   if (getAnyKey()) {
     for (unsigned char i = 0; i < key::KEY_NUM; i++) {
       if (key[i] == key::CLICK) {
-        //do something when key clicked
         if (i == 0) break;
         if (i == 1) break;
       } else if (key[i] == key::PRESS) {
-        //do something when key pressed
         if (i == 0) break;
         if (i == 1) break;
       }

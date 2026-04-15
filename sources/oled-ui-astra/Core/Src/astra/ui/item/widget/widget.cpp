@@ -1,3 +1,11 @@
+/**
+ * @file   widget.cpp
+ * @brief  Implements the CheckBox, PopUp, and Slider interactive widgets,
+ *         including state management, indicator rendering, and animation.
+ * @author Fir
+ * @date   2024-01-21
+ */
+
 #include "widget.h"
 
 namespace astra {
@@ -38,14 +46,14 @@ void CheckBox::deInit() {
 
 void CheckBox::renderIndicator(float _x, float _y, const std::vector<float> &_camera) {
   Item::updateConfig();
-  //绘制外框
+  // draw the outer frame
   HAL::setDrawType(1);
   HAL::drawRFrame(_x + _camera[0],
                   _y + _camera[1],
                   astraConfig.checkBoxWidth,
                   astraConfig.checkBoxHeight,
                   astraConfig.checkBoxRadius);
-  if (isCheck) //绘制复选框内的点
+  if (isCheck)  // draw the filled dot inside the checkbox
     HAL::drawBox(_x + _camera[0] + astraConfig.checkBoxWidth / 4,
                  _y + _camera[1] + astraConfig.checkBoxHeight / 4,
                  astraConfig.checkBoxWidth / 2,
@@ -53,7 +61,6 @@ void CheckBox::renderIndicator(float _x, float _y, const std::vector<float> &_ca
 }
 
 void CheckBox::render(const std::vector<float> &_camera) {
-  //todo 选中复选框后弹出消息提醒 这玩意现在我倒觉得没啥必要 可以暂时不做
 }
 
 PopUp::PopUp(unsigned char _direction,
@@ -69,23 +76,24 @@ PopUp::PopUp(unsigned char _direction,
 }
 
 void PopUp::selectNext() {
-  if (value == boundary - 1) value = 0;
+  if (value == boundary - 1) value = 0;  // wrap around
   else value++;
 }
 
 void PopUp::selectPreview() {
-  if (value == 0) value = boundary - 1;
+  if (value == 0) value = boundary - 1;  // wrap around
   else value--;
 }
 
 bool PopUp::select(unsigned char _index) {
   if (_index > boundary - 1) return false;
-  if (_index < 0) return false;
   value = _index;
   return true;
 }
 
-void PopUp::init() { }
+void PopUp::init() {
+  // no-op: popup state is fully managed by the constructor and inject().
+}
 
 void PopUp::deInit() {
   delete this;
@@ -94,12 +102,12 @@ void PopUp::deInit() {
 void PopUp::renderIndicator(float _x, float _y, const std::vector<float> &_camera) {
   Item::updateConfig();
   HAL::setDrawType(1);
-  //把左下角转换为左上角 居中
+  // convert bottom-left origin to top-left and center vertically
   HAL::drawEnglish(_x + _camera[0] + 1, _y + _camera[1] + astraConfig.listTextHeight, std::to_string(value));
 }
 
 void PopUp::render(const std::vector<float> &_camera) {
-  //Widget::render(_camera);
+  // no-op: the full panel is rendered by the Launcher, not by the widget itself.
 }
 
 Slider::Slider(const std::string &_title,
@@ -132,11 +140,12 @@ unsigned char Slider::sub() {
 
 void Slider::init() {
   maxLength = std::floor(HAL::getSystemConfig().screenWeight * 0.6);
-  position.lTrg = std::floor(((float)(value - min) / (max - min)) * maxLength); //计算目标长度
-  lengthIndicator = std::round(((float)(value - min) / (max - min)) * 6);  //映射在0-6个像素之间
+  position.lTrg = std::floor(((float)(value - min) / (max - min)) * maxLength);  // compute target length
+  // maps value range to 0–6 pixels; 6px is the inner drawable width of the indicator box.
+  lengthIndicator = std::round(((float)(value - min) / (max - min)) * 6);
   if (valueOverflow) {
     position.lTrg = maxLength;
-    lengthIndicator = 6;
+    lengthIndicator = 6;  // clamp to max drawable width
   }
 }
 
@@ -147,12 +156,11 @@ void Slider::deInit() {
 void Slider::renderIndicator(float _x, float _y, const std::vector<float> &_camera) {
   Item::updateConfig();
   HAL::setDrawType(1);
-  HAL::drawRFrame(_x + _camera[0] - 1, _y + _camera[1] - 1, 10, 8, 1);
-  HAL::drawBox(_x + _camera[0] + 1, _y + _camera[1] + 1, lengthIndicator, 4);
+  HAL::drawRFrame(_x + _camera[0] - 1, _y + _camera[1] - 1, 10, 8, 1);  // 10x8 outer frame, 1px corner radius
+  HAL::drawBox(_x + _camera[0] + 1, _y + _camera[1] + 1, lengthIndicator, 4);  // fill bar: 4px tall
 }
 
 void Slider::render(const std::vector<float> &_camera) {
   Widget::render(_camera);
 }
 }
-

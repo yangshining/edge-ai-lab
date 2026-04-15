@@ -1,6 +1,9 @@
-//
-// Created by Fir on 2024/2/12.
-//
+/**
+ * @file   hal_stm32.cpp
+ * @brief  STM32 HAL peripheral initialization and system utility implementations.
+ * @author Fir
+ * @date   2024-02-12
+ */
 #include "../hal_dreamCore.h"
 #include "main.h"
 #include "dma.h"
@@ -16,9 +19,8 @@ void HALDreamCore::_sys_clock_init() { //NOLINT
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-  /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
+  // Initialize RCC oscillators according to the specified parameters
+  // in the RCC_OscInitTypeDef structure.
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
@@ -29,8 +31,7 @@ void HALDreamCore::_sys_clock_init() { //NOLINT
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
     Error_Handler();
   }
-  /** Initializes the CPU, AHB and APB buses clocks
-  */
+  // Initialize the CPU, AHB and APB bus clocks.
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                                 |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
@@ -77,14 +78,11 @@ unsigned long HALDreamCore::_getTick() {
 
 unsigned long HALDreamCore::_getRandomSeed() {
   static uint32_t seed = 0;
-  HAL_ADC_Start(&hadc1);//开启ADC1
-  HAL_ADC_PollForConversion(&hadc1, 50);//表示等待转换完成
+  HAL_ADC_Start(&hadc1); // start ADC1
+  HAL_ADC_PollForConversion(&hadc1, 50); // wait for conversion to complete
   if(HAL_IS_BIT_SET(HAL_ADC_GetState(&hadc1), HAL_ADC_STATE_REG_EOC)) {
-    seed = HAL_ADC_GetValue(&hadc1);//读取ADC转换数据
+    seed = HAL_ADC_GetValue(&hadc1); // read ADC conversion result
   }
 
   return seed;
 }
-
-
-

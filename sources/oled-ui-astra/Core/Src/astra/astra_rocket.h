@@ -1,8 +1,9 @@
-//
-// Created by Fir on 2024/3/7 007.
-// 此文件的作用是引导STM32进入astra UI 基于C++
-// this file is used to guide STM32 into astra UI based on C++
-//
+/**
+ * @file   astra_rocket.h
+ * @brief  C entry points that bootstrap the Astra UI on STM32 from C code.
+ * @author Fir
+ * @date   2024-03-07
+ */
 
 #ifndef ASTRA_CORE_SRC_ASTRA_ASTRA_ROCKET_H_
 #define ASTRA_CORE_SRC_ASTRA_ASTRA_ROCKET_H_
@@ -11,22 +12,29 @@
 extern "C" {
 #endif
 
-/*---- C ----*/
+// C interface
 
+/**
+ * @brief  Initialise the Astra UI subsystem (HAL inject, menu tree construction).
+ */
 void astraCoreInit(void);
-void astraCoreStart(void);
-void astraCoreDestroy(void);
 
-/*---- C ----*/
+/**
+ * @brief  Enter the Astra UI main loop (blocking; does not return under normal operation).
+ */
+void astraCoreStart(void);
+
+/**
+ * @brief  Tear down the Astra UI subsystem and free resources.
+ */
+void astraCoreDestroy(void);
 
 #ifdef __cplusplus
 }
 
-/*---- Cpp ----*/
+// C++ interface
 #include "../astra/ui/launcher.h"
 #include "../hal/hal_dreamCore/hal_dreamCore.h"
-
-/*---- Cpp ----*/
 
 #endif
 #endif //ASTRA_CORE_SRC_ASTRA_ASTRA_ROCKET_H_

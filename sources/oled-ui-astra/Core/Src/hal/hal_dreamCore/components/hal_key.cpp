@@ -1,6 +1,9 @@
-//
-// Created by Fir on 2024/2/11.
-//
+/**
+ * @file   hal_key.cpp
+ * @brief  GPIO-based key input implementations for the DreamCore HAL.
+ * @author Fir
+ * @date   2024-02-11
+ */
 #include "../hal_dreamCore.h"
 #include "main.h"
 

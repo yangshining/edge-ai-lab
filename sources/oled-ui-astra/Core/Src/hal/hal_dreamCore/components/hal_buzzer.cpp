@@ -1,6 +1,9 @@
-//
-// Created by Fir on 2024/2/11.
-//
+/**
+ * @file   hal_buzzer.cpp
+ * @brief  Buzzer driver stub implementations for the DreamCore HAL.
+ * @author Fir
+ * @date   2024-02-11
+ */
 #include "../hal_dreamCore.h"
 
 void HALDreamCore::_buzzer_init() {
