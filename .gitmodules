@@ -1,3 +1,0 @@
-[submodule "esp/esp-idf"]
-	path = esp/esp-idf
-	url = https://github.com/yangshining/esp-idf.git
