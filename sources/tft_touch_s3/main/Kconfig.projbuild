@@ -1,0 +1,90 @@
+menu "TFT Touch S3 Example Configuration"
+
+    config EXAMPLE_LCD_PIXEL_CLOCK_HZ
+        int "LCD SPI pixel clock (Hz)"
+        default 20000000
+        help
+            SPI clock frequency for ST7789. 20 MHz is safe for most modules.
+
+    config EXAMPLE_PIN_NUM_SCLK
+        int "SPI SCLK GPIO"
+        default 18
+
+    config EXAMPLE_PIN_NUM_MOSI
+        int "SPI MOSI GPIO"
+        default 17
+
+    config EXAMPLE_PIN_NUM_MISO
+        int "SPI MISO GPIO"
+        default 21
+        help
+            Required by XPT2046 to return touch coordinates.
+
+    config EXAMPLE_PIN_NUM_LCD_DC
+        int "LCD DC GPIO"
+        default 5
+
+    config EXAMPLE_PIN_NUM_LCD_RST
+        int "LCD RST GPIO"
+        default 3
+
+    config EXAMPLE_PIN_NUM_LCD_CS
+        int "LCD CS GPIO"
+        default 4
+
+    config EXAMPLE_PIN_NUM_BK_LIGHT
+        int "LCD Backlight GPIO"
+        default 2
+        help
+            Backlight control pin connected to the TFT module LED pin.
+
+    config EXAMPLE_BK_LIGHT_ON_LEVEL
+        int "LCD backlight on level"
+        range 0 1
+        default 1
+        help
+            GPIO level that turns the TFT backlight on. Most 2.4-inch SPI TFT modules use active-high LED backlight.
+            Set this to 0 if your module uses active-low backlight.
+
+    config EXAMPLE_PIN_NUM_TOUCH_CS
+        int "Touch CS GPIO"
+        default 15
+
+    config EXAMPLE_TOUCH_SWAP_XY
+        bool "Swap touch X/Y coordinates"
+        default n
+
+    config EXAMPLE_TOUCH_MIRROR_X
+        bool "Mirror touch X coordinate"
+        default y
+
+    config EXAMPLE_TOUCH_MIRROR_Y
+        bool "Mirror touch Y coordinate"
+        default n
+
+    config EXAMPLE_TOUCH_LOG
+        bool "Log touch coordinates"
+        default n
+        help
+            Print touch coordinates to the serial monitor. Enable this only while calibrating touch input.
+
+    config EXAMPLE_PROV_SERVICE_NAME
+        string "BLE provisioning service name prefix"
+        default "edge-ai-lab"
+        help
+            BLE device name prefix used during WiFi provisioning. The last 3 bytes of the STA MAC are appended.
+
+    config EXAMPLE_PROV_POP
+        string "BLE provisioning proof-of-possession"
+        default "abcd1234"
+        help
+            Proof-of-possession used by the Espressif provisioning app for the security 1 handshake.
+
+    config EXAMPLE_WIFI_MAX_RETRY
+        int "WiFi connection retry count"
+        range 1 20
+        default 5
+        help
+            Number of WiFi reconnect attempts before the UI reports a connection failure.
+
+endmenu
