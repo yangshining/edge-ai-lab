@@ -47,7 +47,6 @@ void Selector::go(unsigned char _index) {
 //  }
 
   if (_index > menu->childMenu.size() - 1) return;
-  if (_index < 0) return;
   menu->selectIndex = _index;
 
   setPosition();
@@ -85,6 +84,7 @@ bool Selector::destroy() {
 
   delete this->menu;
   this->menu = nullptr;
+  return true;
 }
 
 void Selector::render(std::vector<float> _camera) {

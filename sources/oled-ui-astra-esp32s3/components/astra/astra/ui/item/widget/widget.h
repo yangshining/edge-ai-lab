@@ -16,6 +16,7 @@ public:
 
 public:
   Widget() = default;
+  virtual ~Widget() = default;
 
 public:
   virtual void init() {}

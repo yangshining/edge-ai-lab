@@ -66,7 +66,7 @@ public:
 
 public:
   Menu() = default;
-  ~Menu() = default;
+  virtual ~Menu() = default;
 
 public:
   void init(const std::vector<float>& _camera); //每次打开页面都要调用一次

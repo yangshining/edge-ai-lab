@@ -7,10 +7,13 @@
 #include <cmath>
 #include "hal_esp32s3.h"
 
+#include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
+
+static HALEspCore *activeHal = nullptr;
 
 // ---------------------------------------------------------------------------
 // u8g2 SPI byte callback
@@ -20,17 +23,15 @@ uint8_t HALEspCore::u8x8_byte_spi_cb(u8x8_t *u8x8,
                                       uint8_t msg,
                                       uint8_t argInt,
                                       void   *argPtr) {
-    // Retrieve the instance set in _u8g2_init() via user_ptr.
-    // HAL::hal is not yet assigned when this fires during u8g2_InitDisplay(),
-    // so we cannot use HAL::get() here.
-    HALEspCore *self = static_cast<HALEspCore *>(u8x8->user_ptr);
+    HALEspCore *self = activeHal;
+    if (self == nullptr) return 0;
 
     switch (msg) {
         case U8X8_MSG_BYTE_SEND: {
             spi_transaction_t t = {};
             t.length    = (size_t)argInt * 8;  // bits
             t.tx_buffer = argPtr;
-            spi_device_polling_transmit(self->spiDev, &t);
+            ESP_ERROR_CHECK(spi_device_polling_transmit(self->spiDev, &t));
             break;
         }
         case U8X8_MSG_BYTE_SET_DC:
@@ -102,9 +103,7 @@ void HALEspCore::_u8g2_init() {
     gpio_set_level(PIN_OLED_RST, 1);
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    // Set user_ptr BEFORE u8g2_Setup so the SPI callback can retrieve 'this'
-    // when u8g2_InitDisplay() fires callbacks during _u8g2_init().
-    canvasBuffer.u8x8.user_ptr = this;
+    activeHal = this;
 
     u8g2_Setup_ssd1306_128x64_noname_f(&canvasBuffer,
                                        U8G2_R0,

@@ -46,6 +46,7 @@ void astraCoreInit(void) {
 void astraCoreStart(void) {
   for (;;) {  //NOLINT
     astraLauncher->update();
+    HAL::delay(1);
 //    astraCoreTest();
   }
 }

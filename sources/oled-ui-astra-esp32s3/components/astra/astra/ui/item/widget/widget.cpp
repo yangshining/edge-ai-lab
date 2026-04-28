@@ -80,7 +80,6 @@ void PopUp::selectPreview() {
 
 bool PopUp::select(unsigned char _index) {
   if (_index > boundary - 1) return false;
-  if (_index < 0) return false;
   value = _index;
   return true;
 }

@@ -1,4 +1,4 @@
-#include "../../../../../hal_dreamCore/components/oled/graph_lib/u8g2/u8g2.h"
+#include "u8g2.h"
 /*
   Fontname: -wenquanyi-wenquanyi bitmap song-medium-r-normal--12-120-75-75-P-119-ISO10646-1
   Copyright: (null)

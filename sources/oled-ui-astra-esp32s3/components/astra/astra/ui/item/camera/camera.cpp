@@ -40,8 +40,8 @@ Camera::Camera(float _x, float _y) {
  * @return 0: in view, 1: upper, 2: lower
  */
 unsigned char Camera::outOfView(float _x, float _y) {
-  if (_x < 0 - this->x | _y < 0 - this->y) return 1;
-  if (_x > (0 - this->x) + systemConfig.screenWeight - 1 | _y > (0 - this->y) + systemConfig.screenHeight - 1) return 2;
+  if (_x < 0 - this->x || _y < 0 - this->y) return 1;
+  if (_x > (0 - this->x) + systemConfig.screenWeight - 1 || _y > (0 - this->y) + systemConfig.screenHeight - 1) return 2;
   return 0;
 }
 
@@ -103,7 +103,6 @@ void Camera::moveDirect(float _x, float _y) {
 
 void Camera::goToListItemRolling(List *_menu) {
   static const unsigned char maxItemPerPage = systemConfig.screenHeight / astraConfig.listLineHeight;
-  static bool init = false;
 
   //第一次进入的时候初始化 退出页面记住坐标 再次进入就OK了
   if (!_menu->initFlag) {
@@ -150,7 +149,7 @@ void Camera::update(Menu *_menu, Selector *_selector) {
     _menu->resetCameraMemoryPos();
   }
     //if (this->isReached(_menu->getCameraMemoryPos())) _menu->cameraPosMemoryFlag = false;
-  if (_menu->getType() == "List") goToListItemRolling(dynamic_cast<List*>(_menu));
+  if (_menu->getType() == "List") goToListItemRolling(static_cast<List*>(_menu));
   else if (_menu->getType() == "Tile") goToTileItem(_menu->selectIndex);
 
   this->render();

@@ -8,7 +8,7 @@ idf_component_register(
         "hal/hal.cpp"
         ${U8G2_SRCS}
     INCLUDE_DIRS "."
-    REQUIRES driver esp_timer freertos
+    REQUIRES driver esp_driver_gpio esp_driver_spi esp_timer freertos
 )
 
 # u8g2 is plain C — suppress warnings in those translation units
