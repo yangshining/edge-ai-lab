@@ -6,59 +6,117 @@
 
 namespace astra {
 
+void Launcher::renderFrame() {
+  currentMenu->render(camera->getPosition());
+  if (currentWidget != nullptr) currentWidget->render(camera->getPosition());
+  selector->render(camera->getPosition());
+  camera->update(currentMenu, selector);
+}
+
+bool Launcher::scanKeys(uint64_t nowMs) {
+  if (nowMs - lastKeyScanMs < KEY_SCAN_INTERVAL_MS) return false;
+  lastKeyScanMs = nowMs;
+  HAL::keyScan();
+  return true;
+}
+
+bool Launcher::openWidget(Menu* selectedMenu) {
+  if (selectedMenu == nullptr || selectedMenu->childWidget.empty()) return false;
+
+  currentWidget = selectedMenu->childWidget.front();
+  if (currentWidget->getType() == "CheckBox") {
+    static_cast<CheckBox *>(currentWidget)->toggle();
+    currentWidget = nullptr;
+  } else {
+    currentWidget->init();
+  }
+
+  return true;
+}
+
+void Launcher::handleWidgetKey(unsigned char keyIndex, key::KEY_ACTION action) {
+  if (currentWidget == nullptr) return;
+
+  if (action == key::PRESS) {
+    currentWidget = nullptr;
+    return;
+  }
+
+  if (action != key::CLICK) return;
+
+  if (currentWidget->getType() == "CheckBox") {
+    static_cast<CheckBox *>(currentWidget)->toggle();
+    currentWidget = nullptr;
+  } else if (currentWidget->getType() == "PopUp") {
+    if (keyIndex == key::KEY_0) static_cast<PopUp *>(currentWidget)->selectPreview();
+    else if (keyIndex == key::KEY_1) static_cast<PopUp *>(currentWidget)->selectNext();
+  } else if (currentWidget->getType() == "Slider") {
+    if (keyIndex == key::KEY_0) static_cast<Slider *>(currentWidget)->sub();
+    else if (keyIndex == key::KEY_1) static_cast<Slider *>(currentWidget)->add();
+  }
+}
+
+void Launcher::handleMenuKey(unsigned char keyIndex, key::KEY_ACTION action) {
+  if (action == key::CLICK) {
+    if (keyIndex == key::KEY_0) selector->goPreview();
+    else if (keyIndex == key::KEY_1) selector->goNext();
+  } else if (action == key::PRESS) {
+    if (keyIndex == key::KEY_0) close();
+    else if (keyIndex == key::KEY_1) open();
+  }
+}
+
 void Launcher::popInfo(std::string _info, uint16_t _time) {
   static bool init = false;
-  static unsigned long long int beginTime = this->time;;
+  static uint64_t beginTime = HAL::millis();
   static bool onRender = false;
 
   if (!init) {
     init = true;
-    beginTime = this->time;
+    beginTime = HAL::millis();
     onRender = true;
   }
 
-  float wPop = HAL::getFontWidth(_info) + 2 * getUIConfig().popMargin;  //宽度
-  float hPop = HAL::getFontHeight() + 2 * getUIConfig().popMargin;  //高度
-  float yPop = 0 - hPop - 8; //从屏幕上方滑入
-  float yPopTrg = (HAL::getSystemConfig().screenHeight - hPop) / 3;  //目标位置 中间偏上
-  float xPop = (HAL::getSystemConfig().screenWeight - wPop) / 2;  //居中
+  float wPop = HAL::getFontWidth(_info) + 2 * getUIConfig().popMargin;
+  float hPop = HAL::getFontHeight() + 2 * getUIConfig().popMargin;
+  float yPop = 0 - hPop - 8;
+  float yPopTrg = (HAL::getSystemConfig().screenHeight - hPop) / 3;
+  float xPop = (HAL::getSystemConfig().screenWeight - wPop) / 2;
 
   while (onRender) {
-    time++;
+    uint64_t nowMs = HAL::millis();
 
     HAL::canvasClear();
-    /*渲染一帧*/
-    currentMenu->render(camera->getPosition());
-    selector->render(camera->getPosition());
-    camera->update(currentMenu, selector);
-    /*渲染一帧*/
+    renderFrame();
 
     HAL::setDrawType(0);
     HAL::drawRBox(xPop - 4, yPop - 4, wPop + 8, hPop + 8, getUIConfig().popRadius + 2);
-    HAL::setDrawType(1);  //反色显示
-    HAL::drawRFrame(xPop - 1, yPop - 1, wPop + 2, hPop + 2, getUIConfig().popRadius);  //绘制一个圆角矩形
+    HAL::setDrawType(1);
+    HAL::drawRFrame(xPop - 1, yPop - 1, wPop + 2, hPop + 2, getUIConfig().popRadius);
     HAL::drawEnglish(xPop + getUIConfig().popMargin,
                      yPop + getUIConfig().popMargin + HAL::getFontHeight(),
-                     _info);  //绘制文字
+                     _info);
 
     HAL::canvasUpdate();
 
-    Animation::move(&yPop, yPopTrg, getUIConfig().popSpeed);  //动画
+    Animation::move(&yPop, yPopTrg, getUIConfig().popSpeed);
 
-    //这里条件可以加上一个如果按键按下 就滑出
-    if (time - beginTime >= _time) yPopTrg = 0 - hPop - 8;  //滑出
+    if (nowMs - beginTime >= _time) yPopTrg = 0 - hPop - 8;
 
-    HAL::keyScan();
-    if (HAL::getAnyKey()) {
-      for (unsigned char i = 0; i < key::KEY_NUM; i++)
-        if (HAL::getKeyMap()[i] == key::CLICK) yPopTrg = 0 - hPop - 8;  //滑出
+    if (scanKeys(nowMs) && *HAL::getKeyFlag() == key::KEY_PRESSED) {
+      for (unsigned char i = 0; i < key::KEY_NUM; i++) {
+        if (HAL::getKeyMap()[i] == key::CLICK) yPopTrg = 0 - hPop - 8;
+      }
       std::fill(HAL::getKeyMap(), HAL::getKeyMap() + key::KEY_NUM, key::INVALID);
+      *HAL::getKeyFlag() = key::KEY_NOT_PRESSED;
     }
 
     if (yPop == 0 - hPop - 8) {
-      onRender = false;  //退出条件
+      onRender = false;
       init = false;
     }
+
+    HAL::delay(1);
   }
 }
 
@@ -74,45 +132,39 @@ void Launcher::init(Menu *_rootPage) {
   camera->init(_rootPage->getType());
 }
 
-/**
- * @brief 打开选中的页面
- *
- * @return 是否成功打开
- * @warning 仅可调用一次
- */
 bool Launcher::open() {
-
-  //如果当前页面指向的当前item没有后继 那就返回false
-  if (currentMenu->getNextMenu() == nullptr) {
+  Menu* selectedMenu = currentMenu->getNextMenu();
+  if (selectedMenu == nullptr) {
     popInfo("unreferenced page!", 600);
     return false;
   }
-  if (currentMenu->getNextMenu()->getItemNum() == 0) {
+
+  if (openWidget(selectedMenu)) return true;
+
+  if (selectedMenu->getItemNum() == 0) {
     popInfo("empty page!", 600);
     return false;
   }
 
   currentMenu->rememberCameraPos(camera->getPositionTrg());
 
-  currentMenu->deInit();  //先析构（退场动画）再挪动指针
+  currentMenu->deInit();
 
-  currentMenu = currentMenu->getNextMenu();
+  currentMenu = selectedMenu;
   currentMenu->forePosInit();
   currentMenu->childPosInit(camera->getPosition());
 
   selector->inject(currentMenu);
-  //selector->go(currentPage->selectIndex);
 
   return true;
 }
 
-/**
- * @brief 关闭选中的页面
- *
- * @return 是否成功关闭
- * @warning 仅可调用一次
- */
 bool Launcher::close() {
+  if (currentWidget != nullptr) {
+    currentWidget = nullptr;
+    return true;
+  }
+
   if (currentMenu->getPreview() == nullptr) {
     popInfo("unreferenced page!", 600);
     return false;
@@ -124,14 +176,13 @@ bool Launcher::close() {
 
   currentMenu->rememberCameraPos(camera->getPositionTrg());
 
-  currentMenu->deInit();  //先析构（退场动画）再挪动指针
+  currentMenu->deInit();
 
   currentMenu = currentMenu->getPreview();
   currentMenu->forePosInit();
   currentMenu->childPosInit(camera->getPosition());
 
   selector->inject(currentMenu);
-  //selector->go(currentPage->selectIndex);
 
   return true;
 }
@@ -139,38 +190,19 @@ bool Launcher::close() {
 void Launcher::update() {
   HAL::canvasClear();
 
-  currentMenu->render(camera->getPosition());
-  if (currentWidget != nullptr) currentWidget->render(camera->getPosition());
-  selector->render(camera->getPosition());
-  camera->update(currentMenu, selector);
+  renderFrame();
 
-//  if (time == 500) selector->go(3);  //test
-//  if (time == 800) open();  //test
-//  if (time == 1200) selector->go(0);  //test
-//  if (time == 1500) selector->go(1z);  //test
-//  if (time == 1800) selector->go(6);  //test
-//  if (time == 2100) selector->go(1);  //test
-//  if (time == 2300) selector->go(0);  //test
-//  if (time == 2500) open();  //test
-//  if (time == 2900) close();
-//  if (time == 3200) selector->go(0);  //test
-//  if (time >= 3250) time = 0;  //test
-
-  if (time > 2) {
-    HAL::keyScan();
-    time = 0;
-  }
+  uint64_t nowMs = HAL::millis();
+  scanKeys(nowMs);
 
   if (*HAL::getKeyFlag() == key::KEY_PRESSED) {
     *HAL::getKeyFlag() = key::KEY_NOT_PRESSED;
     for (unsigned char i = 0; i < key::KEY_NUM; i++) {
-      if (HAL::getKeyMap()[i] == key::CLICK) {
-        if (i == 0) { selector->goPreview(); }//selector去到上一个项目
-        else if (i == 1) { selector->goNext(); }//selector去到下一个项目
-      } else if (HAL::getKeyMap()[i] == key::PRESS) {
-        if (i == 0) { close(); }//退出当前项目
-        else if (i == 1) { open(); }//打开当前项目
-      }
+      key::KEY_ACTION action = HAL::getKeyMap()[i];
+      if (action == key::INVALID) continue;
+
+      if (currentWidget != nullptr) handleWidgetKey(i, action);
+      else handleMenuKey(i, action);
     }
     std::fill(HAL::getKeyMap(), HAL::getKeyMap() + key::KEY_NUM, key::INVALID);
     *HAL::getKeyFlag() = key::KEY_NOT_PRESSED;
@@ -178,7 +210,6 @@ void Launcher::update() {
 
   HAL::canvasUpdate();
 
-  //time++;
-  time = HAL::millis() / 1000;
+  time++;
 }
 }

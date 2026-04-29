@@ -28,6 +28,15 @@ Expected target is `esp32s3`. Successful builds generate:
 
 `build\oled-ui-astra-esp32s3.bin`
 
+If `build` was generated from another project path, run:
+
+```powershell
+idf.py fullclean
+idf.py build
+```
+
+The current `build` directory was refreshed for this project path on 2026-04-29.
+
 For board testing:
 
 ```powershell
@@ -44,6 +53,8 @@ Replace `COMx` with the actual serial port.
 - The OLED is SSD1306 128x64 over SPI. Current pin definitions are in `components/hal_esp32s3/hal_esp32s3.h`.
 - `HALEspCore` uses ESP-IDF GPIO/SPI drivers and u8g2 callbacks; preserve explicit `ESP_ERROR_CHECK` calls for hardware initialization and SPI transfers.
 - The UI loop should yield to FreeRTOS to avoid watchdog problems.
+- The launcher throttles `HAL::keyScan()` to a 10 ms cadence; keep this aligned with the HAL long-press counter.
+- Widget rows are activated by long-pressing KEY1. CheckBox toggles immediately; PopUp and Slider enter edit mode and exit on long-press KEY0.
 
 ## Git
 

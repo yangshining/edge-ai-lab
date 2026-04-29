@@ -65,7 +65,7 @@ bool HAL::_getAnyKey() {
 /**
  * @brief key scanner default. 默认按键扫描函数
  *
- * @note run per 5 ms.
+ * @note run per 10 ms.
  * @return key::keyValue
  */
 void HAL::_keyScan() {

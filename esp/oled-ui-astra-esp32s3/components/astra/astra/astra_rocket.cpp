@@ -7,7 +7,7 @@
 #include <vector>
 #include "astra_rocket.h"
 #include "astra_logo.h"
-#include "hal_esp32s3.h"  // concrete HAL — only this translation unit needs it
+#include "hal_esp32s3.h"  // concrete HAL, only this translation unit needs it
 
 auto *astraLauncher = new astra::Launcher();
 auto *rootPage = new astra::Tile("root");

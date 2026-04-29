@@ -123,6 +123,8 @@ private:
 
   unsigned char lengthIndicator;
 
+  void refreshLayout();
+
 public:
   Slider(const std::string &_title,
          unsigned char _min,
