@@ -4,6 +4,12 @@ ESP32-S3 ESP-IDF port of the `oled-ui-astra` SSD1306 OLED UI demo.
 
 The original implementation targets an STM32F103 DreamCore board. This port keeps the Astra UI code mostly platform-neutral and replaces the board layer with an ESP32-S3 HAL built on ESP-IDF GPIO, SPI, FreeRTOS, and u8g2.
 
+Project path:
+
+```text
+D:\code\proj\edge-ai-lab\esp\oled-ui-astra-esp32s3
+```
+
 ## Features
 
 - SSD1306 128x64 OLED rendering through u8g2.
@@ -78,6 +84,7 @@ Replace `COMx` with the board serial port.
 |   |-- astra/                    # Astra UI and demo menu tree
 |   `-- hal_esp32s3/              # ESP32-S3 HAL and u8g2 sources
 |-- CMakeLists.txt
+|-- AGENTS.md
 |-- sdkconfig.defaults
 `-- README.md
 ```

@@ -2,7 +2,7 @@
 
 ## Project
 
-This directory is the ESP32-S3 ESP-IDF port of the STM32 `oled-ui-astra` OLED UI demo.
+This directory (`D:\code\proj\edge-ai-lab\esp\oled-ui-astra-esp32s3`) is the ESP32-S3 ESP-IDF port of the STM32 `oled-ui-astra` OLED UI demo.
 
 - `main/`: ESP-IDF entry point. `app_main()` starts the Astra UI task.
 - `components/astra/`: platform-neutral Astra UI/application code copied from the STM32 reference.
@@ -60,4 +60,4 @@ Examples:
 [oled-ui-astra-esp32s3] update HAL pin configuration
 ```
 
-Do not include unrelated changes from sibling projects, such as `../oled-ui-astra`, unless the task explicitly asks for them.
+Do not include unrelated changes from other projects, such as `D:\code\proj\edge-ai-lab\sources\oled-ui-astra`, unless the task explicitly asks for them.
