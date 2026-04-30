@@ -39,13 +39,13 @@ main/
 
 ```
 INMP441
-  └─ I2S_NUM_0 RX → audio_input_task(P8) → encode_queue(2)
-                                               └→ opus_codec_task(P2) → send_queue(40)
+  └─ I2S_NUM_0 RX → audio_input_task(P5) → encode_queue(2)
+                                               └→ opus_codec_task(P3) → send_queue(40)
                                                                            └→ assistant_task(P5) → WebSocket → xiaozhi.me
 
 xiaozhi.me → WebSocket → assistant_task → decode_queue(40)
-                                              └→ opus_codec_task → playback_queue(2)
-                                                                       └→ audio_output_task(P4) → I2S_NUM_1 TX → MAX98357A
+                                              └→ opus_codec_task(P3) → playback_queue(2)
+                                                                           └→ audio_output_task(P4) → I2S_NUM_1 TX → MAX98357A
 ```
 
 UI `ui_page_ai.c` LVGL timer polls `assistant_state` and drives the existing avatar animation — no mock state machine.
@@ -100,7 +100,11 @@ gpio: BCLK=CONFIG_ASSISTANT_MIC_BCLK, WS=CONFIG_ASSISTANT_MIC_WS,
       DIN=CONFIG_ASSISTANT_MIC_DIN, MCLK=UNUSED
 ```
 
-Driver reads stereo frames; left channel used for mono Opus encode.
+Driver reads stereo frames (2×int16 per sample). `audio_io_read(buf, n)` fills `n` **stereo pairs** = `2n` int16 values. `audio_input_task` always calls `audio_io_read(stereo_buf, 960)` (1920 int16 = 3840 bytes), then extracts the left channel into a 960-sample mono `audio_pcm_frame_t` before enqueuing:
+
+```c
+for (int i = 0; i < 960; i++) frame->samples[i] = stereo_buf[i * 2]; // left channel
+```
 
 ### MAX98357A — I2S_NUM_1 TX
 
@@ -116,9 +120,13 @@ SD_MODE: CONFIG_ASSISTANT_SPK_SD_MODE — high=enable, low=mute
 
 ```c
 esp_err_t audio_io_init(void);
-int       audio_io_read(int16_t *buf, int samples);
+// Reads `stereo_pairs` stereo pairs; buf must hold stereo_pairs*2 int16 values.
+int       audio_io_read(int16_t *buf, int stereo_pairs);
 void      audio_io_write(const int16_t *buf, int samples);
-void      audio_io_set_output_sample_rate(uint32_t hz);
+// Disables TX channel, reconfigures clock, re-enables TX channel. Must not be
+// called while audio_output_task is writing — caller must quiesce output first.
+esp_err_t audio_io_set_output_sample_rate(uint32_t hz);
+// Controls MAX98357A SD_MODE pin (high=enable, low=mute).
 void      audio_io_enable_output(bool en);
 ```
 
@@ -130,18 +138,32 @@ void      audio_io_enable_output(bool en);
 
 | Task | Priority | Stack | Role |
 |------|----------|-------|------|
-| `audio_input_task` | 8 | 6 KB | Read 960 samples/frame from mic → encode_queue |
-| `opus_codec_task` | 2 | 24 KB | Encode (encode_queue→send_queue) + Decode (decode_queue→playback_queue) |
+| `audio_input_task` | 5 | 6 KB | Read 960 mono samples/frame from mic → encode_queue |
+| `opus_codec_task` | 3 | 24 KB | Encode (encode_queue→send_queue) + Decode (decode_queue→playback_queue) |
 | `audio_output_task` | 4 | 4 KB | Pop playback_queue → audio_io_write |
+
+**Priority rationale:** LVGL task runs at P2. Codec at P3 ensures audio processing is not starved by display repaints. `audio_input_task` at P5 matches `assistant_task` — the I2S DMA interrupt wakes it; it does not spin. Both stay well below ESP-IDF WiFi/system tasks (P20+).
 
 ### Queues (FreeRTOS QueueHandle_t)
 
-| Queue | Slots | Contents |
-|-------|-------|----------|
-| encode_queue | 2 | Raw PCM frames (960×int16) |
-| send_queue | 40 | Opus packets + timestamp |
-| decode_queue | 40 | Opus packets + timestamp |
-| playback_queue | 2 | Decoded PCM frames |
+All queues pass **pointers** to heap-allocated buffers, not values. The producer allocates with `heap_caps_malloc`, the consumer frees after use. This avoids copying large PCM frames inside the queue and keeps queue item size to `sizeof(void*)`.
+
+| Queue | Slots | Item type | Contents |
+|-------|-------|-----------|----------|
+| encode_queue | 2 | `audio_pcm_frame_t *` | 960 mono int16 samples + timestamp; producer: `audio_input_task`; consumer frees |
+| send_queue | 40 | `audio_opus_pkt_t *` | Opus payload bytes + byte count + timestamp; producer: `opus_codec_task`; consumer frees |
+| decode_queue | 40 | `audio_opus_pkt_t *` | Same struct; producer: `assistant_task`; consumer frees |
+| playback_queue | 2 | `audio_pcm_frame_t *` | Decoded PCM + sample count; producer: `opus_codec_task`; consumer frees |
+
+```c
+// n_samples is 960 for encoder input; for decoder output it equals
+// (server_sample_rate * frame_duration_ms / 1000), e.g. 1440 for 24kHz/60ms.
+typedef struct { uint32_t timestamp_ms; size_t n_samples; int16_t samples[]; } audio_pcm_frame_t;
+// Allocated as: heap_caps_malloc(sizeof(audio_pcm_frame_t) + n_samples * sizeof(int16_t), MALLOC_CAP_DEFAULT)
+
+typedef struct { uint32_t timestamp_ms; size_t len; uint8_t data[]; } audio_opus_pkt_t;
+// Allocated as: heap_caps_malloc(sizeof(audio_opus_pkt_t) + len, MALLOC_CAP_DEFAULT)
+```
 
 ### Opus Parameters (identical to xiaozhi)
 
@@ -158,8 +180,27 @@ void      audio_service_start_input(void);
 void      audio_service_stop_input(void);
 void      audio_service_push_decode(const uint8_t *opus, size_t len, uint32_t timestamp_ms);
 bool      audio_service_pop_send(uint8_t *buf, size_t *len, uint32_t *timestamp_ms);
+
+// Pause/resume the output path (used around sample-rate reconfiguration).
+void      audio_service_pause_output(void);   // blocks until audio_output_task is idle
+void      audio_service_resume_output(void);
+
+// Set decoder params. Must be called while output is paused (between pause/resume).
+// Closes the existing Opus decoder and opens a new one for the new rate/duration.
 void      audio_service_set_decode_params(uint32_t sample_rate, int frame_ms);
 ```
+
+**Decode-params reconfiguration protocol** (called from `assistant_task` upon receiving server hello):
+
+```
+1. audio_service_pause_output()          // drain playback_queue, block output task
+2. audio_io_set_output_sample_rate(hz)  // teardown + reconfigure I2S TX
+3. audio_service_set_decode_params(hz, frame_ms)  // close old decoder, open new one
+4. audio_service_resume_output()         // unblock output task
+5. audio_io_enable_output(true)         // unmute SD_MODE
+```
+
+This sequence is only needed when the server-provided sample rate differs from the 24 kHz default. If the server hello confirms 24 kHz / 60 ms, steps 1–4 are skipped.
 
 ---
 
@@ -189,11 +230,12 @@ void assistant_state_set_status(assistant_status_t s);
 
 ### `assistant_proto.c/.h`
 
-Stateless helpers for Binary Protocol 2 (network byte order, 14-byte header) and JSON control messages.
+Stateless helpers for Binary Protocol 2 (network byte order, **16-byte header**) and JSON control messages.
 
 ```c
-// Binary Protocol 2 header
-// [uint16 version=2][uint16 type=0(audio)/1(json)][uint32 reserved][uint32 timestamp][uint32 payload_size][payload...]
+// Binary Protocol 2 header (16 bytes total, all fields network byte order / big-endian):
+// [uint16 version=2][uint16 type=0(audio)/1(json)][uint32 reserved=0][uint32 timestamp_ms][uint32 payload_size][payload...]
+//   2                  2                             4                   4                   4                  = 16 bytes header
 
 size_t            proto_pack_audio(uint8_t *out, size_t out_size,
                                    const uint8_t *opus, size_t opus_len, uint32_t ts_ms);
@@ -206,6 +248,23 @@ server_msg_type_t proto_parse_server_msg(const char *json,
 ```
 
 ### `assistant.c/.h` — State Machine Task (P5, 8 KB)
+
+`assistant_init()` initializes state and queues but does **not** start the state-machine task. The task is created on the first `assistant_start_listening()` call (or re-created after ERROR reset). This ensures the task cannot fire before `ui_main_init()` has completed and the LVGL page is live.
+
+Init order in `main.c`:
+```c
+assistant_state_init();   // mutex + state struct only
+audio_io_init();
+audio_service_init();
+btn_init(...);
+btn_set_click_cb(assistant_start_listening);
+led_status_init(...);
+assistant_init();         // queues only, no task yet
+// --- LVGL + UI init ---
+lcd_touch_init();
+ui_main_init();           // LVGL task starts, ui_page_ai_init() runs
+// assistant_task created lazily on first button press
+```
 
 ```
 IDLE
@@ -279,10 +338,12 @@ endmenu
 ## 9. New Component Dependencies (`main/idf_component.yml`)
 
 ```yaml
-espressif/esp_audio_codec: "~2.4.1"   # Opus encoder + decoder
+espressif/esp_audio_codec: "~2.4.1"   # Opus encoder + decoder (provides esp_opus_enc / esp_opus_dec API)
 espressif/button: "~4.1.5"            # Button debounce
 espressif/led_strip: "~3.0.2"         # WS2812 via RMT
 ```
+
+`esp_audio_codec` is the correct component — it is the IDF component registry package that provides `esp_opus_enc_open`, `esp_opus_enc_process`, `esp_opus_dec_open`, `esp_opus_dec_decode` via the `esp_audio_enc.h` / `esp_audio_dec.h` headers, as used in xiaozhi-esp32 `audio_service.cc`. It is distinct from the older `esp-idf-lib` Opus port.
 
 `esp_websocket_client` is part of ESP-IDF — no additional declaration needed.
 
@@ -290,16 +351,19 @@ espressif/led_strip: "~3.0.2"         # WS2812 via RMT
 
 ## 10. `main.c` Additions
 
-Add after `app_prov_init()`, before `lcd_touch_init()`:
+See init order in Section 6 (`assistant.c/.h`). Summary of additions:
 
 ```c
+// After app_prov_init(), before lcd_touch_init():
 assistant_state_init();
 audio_io_init();
 audio_service_init();
 btn_init(CONFIG_ASSISTANT_BTN_GPIO);
 btn_set_click_cb(assistant_start_listening);
 led_status_init(CONFIG_ASSISTANT_LED_GPIO);
-assistant_init();
+assistant_init();   // queues only — task created lazily
+
+// Existing lcd_touch_init() and ui_main_init() remain in place after the above.
 ```
 
 ---
@@ -317,6 +381,42 @@ assistant_init();
 | `main/assistant/assistant.c/.h` | New |
 | `main/ui/ui_page_ai.c` | Replace mock state machine with assistant_state polling |
 | `main/main.c` | Add 7 init calls |
-| `main/CMakeLists.txt` | Add new source files |
+| `main/CMakeLists.txt` | Add new source files (see below) |
 | `main/idf_component.yml` | Add 3 dependencies |
 | `Kconfig.projbuild` | Add Assistant Hardware menu |
+
+### `main/CMakeLists.txt` additions
+
+Add to the existing `idf_component_register` call:
+
+```cmake
+# New source files
+set(ASSISTANT_SRCS
+    "hal/btn.c"
+    "hal/led_status.c"
+    "audio/audio_io.c"
+    "audio/audio_service.c"
+    "assistant/assistant_state.c"
+    "assistant/assistant_proto.c"
+    "assistant/assistant.c"
+)
+
+idf_component_register(
+    SRCS
+        # ... existing sources ...
+        ${ASSISTANT_SRCS}
+    INCLUDE_DIRS
+        "."
+        "ui"
+        "connectivity"
+        "hal"           # new
+        "audio"         # new
+        "assistant"     # new
+    PRIV_REQUIRES
+        # ... existing ...
+        esp_driver_i2s
+        esp_websocket_client
+        led_strip
+        button
+        esp_audio_codec
+)
