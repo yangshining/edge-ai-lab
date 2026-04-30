@@ -1,6 +1,7 @@
 #include "audio_io.h"
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "sdkconfig.h"
@@ -10,6 +11,7 @@ static const char *TAG = "audio_io";
 static i2s_chan_handle_t s_rx;
 static i2s_chan_handle_t s_tx;
 static uint32_t s_tx_sample_rate = 24000;
+static bool s_tx_enabled;
 
 esp_err_t audio_io_init(void)
 {
@@ -73,7 +75,7 @@ int audio_io_read(int16_t *buf, int stereo_pairs)
     size_t bytes_read = 0;
     esp_err_t err = i2s_channel_read(s_rx, buf,
                                      (size_t)stereo_pairs * 2 * sizeof(int16_t),
-                                     &bytes_read, portMAX_DELAY);
+                                     &bytes_read, pdMS_TO_TICKS(100));
     if (err != ESP_OK) return -1;
     return (int)(bytes_read / (2 * sizeof(int16_t)));
 }
@@ -81,13 +83,16 @@ int audio_io_read(int16_t *buf, int stereo_pairs)
 void audio_io_write(const int16_t *buf, int samples)
 {
     size_t written;
-    i2s_channel_write(s_tx, buf, (size_t)samples * sizeof(int16_t), &written, portMAX_DELAY);
+    i2s_channel_write(s_tx, buf, (size_t)samples * sizeof(int16_t), &written, pdMS_TO_TICKS(200));
 }
 
 esp_err_t audio_io_set_output_sample_rate(uint32_t hz)
 {
     if (hz == s_tx_sample_rate) return ESP_OK;
-    ESP_RETURN_ON_ERROR(i2s_channel_disable(s_tx), TAG, "tx disable for rate change");
+    if (s_tx_enabled) {
+        ESP_RETURN_ON_ERROR(i2s_channel_disable(s_tx), TAG, "tx disable for rate change");
+        s_tx_enabled = false;
+    }
     i2s_std_clk_config_t clk = I2S_STD_CLK_DEFAULT_CONFIG(hz);
     ESP_RETURN_ON_ERROR(i2s_channel_reconfig_std_clock(s_tx, &clk), TAG, "tx reconfig clock");
     s_tx_sample_rate = hz;
@@ -97,11 +102,16 @@ esp_err_t audio_io_set_output_sample_rate(uint32_t hz)
 
 void audio_io_enable_output(bool en)
 {
+    if (en == s_tx_enabled) {
+        gpio_set_level(CONFIG_ASSISTANT_SPK_SD_MODE, en ? 1 : 0);
+        return;
+    }
     esp_err_t ret = en ? i2s_channel_enable(s_tx) : i2s_channel_disable(s_tx);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "i2s_channel_%s failed: %s",
                  en ? "enable" : "disable", esp_err_to_name(ret));
         return;
     }
+    s_tx_enabled = en;
     gpio_set_level(CONFIG_ASSISTANT_SPK_SD_MODE, en ? 1 : 0);
 }

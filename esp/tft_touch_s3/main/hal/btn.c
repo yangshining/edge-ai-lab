@@ -1,5 +1,6 @@
 #include "btn.h"
 #include "iot_button.h"
+#include "button_gpio.h"
 #include "esp_log.h"
 
 static const char *TAG = "btn";

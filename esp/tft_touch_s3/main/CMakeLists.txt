@@ -38,6 +38,7 @@ idf_component_register(
         protocomm
         network_provisioning
         esp_websocket_client
+        espressif__cjson
         led_strip
         button
         esp_audio_codec

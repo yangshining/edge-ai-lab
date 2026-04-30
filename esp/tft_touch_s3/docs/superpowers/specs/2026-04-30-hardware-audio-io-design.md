@@ -17,6 +17,37 @@
 
 ---
 
+### Default GPIO Allocation
+
+The assistant hardware defaults must not reuse the TFT/touch pins already defined in `Kconfig.projbuild`.
+The table below is the default wiring target for this design. Board-specific overrides are allowed through
+Kconfig, but the defaults must remain conflict-free.
+
+| Function | GPIO | Existing / New | Notes |
+|----------|------|----------------|-------|
+| TFT SCLK | 18 | Existing | SPI2 shared bus |
+| TFT MOSI | 17 | Existing | SPI2 shared bus |
+| Touch MISO | 21 | Existing | XPT2046 data out |
+| LCD DC | 5 | Existing | Reserved for ST7789 |
+| LCD RST | 3 | Existing | Reserved for ST7789 |
+| LCD CS | 4 | Existing | Reserved for ST7789 |
+| LCD backlight | 2 | Existing | LEDC PWM |
+| Touch CS | 15 | Existing | XPT2046 chip select |
+| Assistant button | 38 | New | Active-low, internal pull-up |
+| RGB LED | 48 | New | WS2812 via RMT; board-specific if onboard RGB differs |
+| INMP441 BCLK | 8 | New | I2S RX |
+| INMP441 WS | 9 | New | I2S RX |
+| INMP441 DIN | 10 | New | I2S RX data input |
+| MAX98357A BCLK | 11 | New | I2S TX |
+| MAX98357A LRCLK | 12 | New | I2S TX |
+| MAX98357A DOUT | 13 | New | I2S TX data output |
+| MAX98357A SD_MODE | 14 | New | High=enable, low=mute |
+
+Avoid GPIO0 and other boot strapping pins for new defaults. Avoid GPIO19/20 if USB-JTAG/USB-CDC is used
+for flashing or logs on the target board.
+
+---
+
 ## 2. Overall Architecture
 
 Three new directories under `main/`:
@@ -25,10 +56,10 @@ Three new directories under `main/`:
 main/
 ├── audio/
 │   ├── audio_io.c/.h        I2S mic + speaker init and blocking read/write
-│   └── audio_service.c/.h   Four FreeRTOS tasks: input, codec, output, (send handled by assistant)
+│   └── audio_service.c/.h   Three audio FreeRTOS tasks: input, codec, output
 ├── assistant/
 │   ├── assistant_state.c/.h  Mutex-protected shared state (mirrors app_net_state pattern)
-│   ├── assistant_proto.c/.h  Binary Protocol 2 framing + JSON message helpers
+│   ├── assistant_proto.c/.h  WebSocket v1 JSON message helpers
 │   └── assistant.c/.h        WebSocket connection + main state machine task
 └── hal/
     ├── btn.c/.h              esp-iot-button wrapper, single-click callback
@@ -120,7 +151,9 @@ SD_MODE: CONFIG_ASSISTANT_SPK_SD_MODE — high=enable, low=mute
 
 ```c
 esp_err_t audio_io_init(void);
-// Reads `stereo_pairs` stereo pairs; buf must hold stereo_pairs*2 int16 values.
+// Reads `stereo_pairs` stereo pairs with a bounded timeout; buf must hold
+// stereo_pairs*2 int16 values. Returns <=0 on timeout/error so stop_input can
+// quiesce the input task without waiting on an indefinite I2S read.
 int       audio_io_read(int16_t *buf, int stereo_pairs);
 void      audio_io_write(const int16_t *buf, int samples);
 // Disables TX channel, reconfigures clock, re-enables TX channel. Must not be
@@ -155,6 +188,24 @@ All queues pass **pointers** to heap-allocated buffers, not values. The producer
 | decode_queue | 40 | `audio_opus_pkt_t *` | Same struct; producer: `assistant_task`; consumer frees |
 | playback_queue | 2 | `audio_pcm_frame_t *` | Decoded PCM + sample count; producer: `opus_codec_task`; consumer frees |
 
+### Queue Ownership And Backpressure
+
+Every queue item is heap-owned by the queue after a successful `xQueueSend`.
+The consumer must free it after processing. If `xQueueSend` fails, the producer
+still owns the item and must free or retry it before returning.
+
+| Queue | Send timeout | Full-queue policy | Free responsibility |
+|-------|--------------|-------------------|---------------------|
+| encode_queue | 0 ms | Drop newest PCM frame; never block I2S input | `audio_input_task` frees dropped frame |
+| send_queue | 20 ms | Drop oldest queued Opus packet, then enqueue newest once | Helper frees evicted packet; codec frees newest if retry fails |
+| decode_queue | 20 ms | Drop oldest queued Opus packet, then enqueue newest once | Helper frees evicted packet; assistant frees newest if retry fails |
+| playback_queue | 50 ms | Drop oldest decoded PCM frame, then enqueue newest once | Helper frees evicted frame; codec frees newest if retry fails |
+
+Log each drop path with a rate-limited warning and increment per-queue drop
+counters for later diagnostics. Do not block indefinitely in any audio queue
+operation; bounded latency is more important than perfect retention for this
+phase.
+
 ```c
 // n_samples is 960 for encoder input; for decoder output it equals
 // (server_sample_rate * frame_duration_ms / 1000), e.g. 1440 for 24kHz/60ms.
@@ -178,6 +229,10 @@ Decoder: sample_rate and frame_duration set from server hello response
 esp_err_t audio_service_init(void);
 void      audio_service_start_input(void);
 void      audio_service_stop_input(void);
+// Copies `opus` immediately into a newly allocated audio_opus_pkt_t before
+// enqueueing. The caller may pass a transient WebSocket callback buffer.
+// If allocation or enqueue fails, push_decode frees any owned buffer before
+// returning; it never enqueues the caller's pointer directly.
 void      audio_service_push_decode(const uint8_t *opus, size_t len, uint32_t timestamp_ms);
 // Blocking dequeue with 100 ms timeout. Returns true and fills buf/len/timestamp_ms
 // on success; returns false on timeout (no frame available). Max Opus packet size
@@ -196,6 +251,12 @@ void      audio_service_resume_output(void);
 // Set decoder params. Must be called while output is paused (between pause/resume).
 // Closes the existing Opus decoder and opens a new one for the new rate/duration.
 void      audio_service_set_decode_params(uint32_t sample_rate, int frame_ms);
+
+// Free all pending items from the named queues. Used on session boundaries so
+// old audio cannot leak into the next conversation.
+void      audio_service_flush_input_path(void);   // encode_queue + send_queue
+void      audio_service_flush_output_path(void);  // decode_queue + playback_queue
+void      audio_service_flush_all(void);
 ```
 
 **Decode-params reconfiguration protocol** (called from `assistant_task` upon receiving server hello):
@@ -209,6 +270,26 @@ void      audio_service_set_decode_params(uint32_t sample_rate, int frame_ms);
 ```
 
 This sequence is only needed when the server-provided sample rate differs from the 24 kHz default. If the server hello confirms 24 kHz / 60 ms, steps 1–4 are skipped.
+
+### Session Cleanup Protocol
+
+All terminal paths must explicitly stop producers, unblock consumers, and free
+queued buffers.
+
+- On `TTS start`: call `audio_service_stop_input()`, then
+  `audio_service_flush_input_path()` before entering `ASSISTANT_SPEAKING`.
+  This prevents microphone packets captured before speech playback from being
+  sent after the server has moved to TTS.
+- On `TTS stop`: wait up to 500 ms for `playback_queue` to drain, then mute
+  `SD_MODE` if closing the WebSocket. If the wait times out, call
+  `audio_service_flush_output_path()` and continue cleanup.
+- On local abort, server disconnect, network error, or `ASSISTANT_ERROR`: call
+  `audio_service_stop_input()`, `audio_service_pause_output()`,
+  `audio_service_flush_all()`, `audio_io_enable_output(false)`, close the
+  WebSocket, then set the final assistant state.
+- `audio_service_stop_input()` sets an input-enabled flag to false and relies
+  on bounded `audio_io_read()` timeouts to let `audio_input_task` leave the read
+  loop. It must not delete the task while it may be inside the I2S driver.
 
 ---
 
@@ -238,15 +319,16 @@ void assistant_state_set_status(assistant_status_t s);
 
 ### `assistant_proto.c/.h`
 
-Stateless helpers for Binary Protocol 2 (network byte order, **16-byte header**) and JSON control messages.
+Target protocol for this design: XiaoZhi WebSocket protocol version 1 against
+`CONFIG_ASSISTANT_WS_URL` (`wss://api.xiaozhi.me/xiaozhi/v1/` by default).
+Control messages are JSON text frames. Audio messages are raw Opus WebSocket
+binary frames. Do not prepend a Binary Protocol 2 header on this v1 path.
+
+Binary Protocol 2 is intentionally out of scope for this phase. If a future
+server endpoint requires `Protocol-Version: 2`, add a separate config option
+and update the hello message, request headers, and audio framing together.
 
 ```c
-// Binary Protocol 2 header (16 bytes total, all fields network byte order / big-endian):
-// [uint16 version=2][uint16 type=0(audio)/1(json)][uint32 reserved=0][uint32 timestamp_ms][uint32 payload_size][payload...]
-//   2                  2                             4                   4                   4                  = 16 bytes header
-
-size_t            proto_pack_audio(uint8_t *out, size_t out_size,
-                                   const uint8_t *opus, size_t opus_len, uint32_t ts_ms);
 void              proto_make_hello(char *buf, size_t size);
 void              proto_make_listen_start(char *buf, size_t size, const char *session_id);
 void              proto_make_listen_stop(char *buf, size_t size, const char *session_id);
@@ -282,7 +364,7 @@ CONNECTING
   └─ server hello received → save session_id, update decode params
        → audio_service_start_input(), send listen_start JSON
 LISTENING
-  ├─ loop: audio_service_pop_send() → proto_pack_audio() → ws send binary
+  ├─ loop: audio_service_pop_send() → ws send raw Opus binary frame
   └─ server STT stop event → audio_service_stop_input(), send listen_stop JSON
 THINKING
   └─ server TTS start event → SPEAKING
@@ -303,6 +385,20 @@ WebSocket URL and token via Kconfig:
 CONFIG_ASSISTANT_WS_URL  = "wss://api.xiaozhi.me/xiaozhi/v1/"
 CONFIG_ASSISTANT_WS_TOKEN = ""
 ```
+
+WebSocket request headers:
+
+| Header | Value source | Notes |
+|--------|--------------|-------|
+| `Authorization` | `Bearer ${CONFIG_ASSISTANT_WS_TOKEN}` | Required when token is configured; fail fast with `ESP_ERR_INVALID_STATE` if empty and auth is required |
+| `Protocol-Version` | Literal `"1"` | Matches the v1 raw-Opus WebSocket path used by this design |
+| `Device-Id` | STA MAC from `esp_read_mac(..., ESP_MAC_WIFI_STA)` | Format as lowercase colon-separated MAC |
+| `Client-Id` | UUID stored in NVS namespace `assistant`, key `client_id` | Generate once on first boot, persist across OTA and normal restarts |
+
+Use `esp_websocket_client_config_t.headers` (or the ESP-IDF version's
+equivalent header setter) to pass these during the HTTP upgrade. The hello JSON
+still carries `version: 1`, `transport: "websocket"`, and 16 kHz mono Opus
+audio parameters.
 
 ---
 
@@ -331,16 +427,16 @@ static const ai_demo_state_t kStateMap[] = {
 ```
 menu "Assistant Hardware"
     # WARNING: GPIO0 is the ESP32-S3 boot-mode strapping pin — do NOT use it.
-    # Set this to an unused non-strapping GPIO on your board (e.g. 38, 21, 47).
+    # Defaults must match the allocation table above and avoid TFT/touch pins.
     config ASSISTANT_BTN_GPIO       int  default 38
     config ASSISTANT_LED_GPIO       int  default 48
-    config ASSISTANT_MIC_BCLK       int  default 1
-    config ASSISTANT_MIC_WS         int  default 2
-    config ASSISTANT_MIC_DIN        int  default 3
-    config ASSISTANT_SPK_BCLK       int  default 4
-    config ASSISTANT_SPK_LRCLK      int  default 5
-    config ASSISTANT_SPK_DOUT       int  default 6
-    config ASSISTANT_SPK_SD_MODE    int  default 7
+    config ASSISTANT_MIC_BCLK       int  default 8
+    config ASSISTANT_MIC_WS         int  default 9
+    config ASSISTANT_MIC_DIN        int  default 10
+    config ASSISTANT_SPK_BCLK       int  default 11
+    config ASSISTANT_SPK_LRCLK      int  default 12
+    config ASSISTANT_SPK_DOUT       int  default 13
+    config ASSISTANT_SPK_SD_MODE    int  default 14
     config ASSISTANT_WS_URL         string default "wss://api.xiaozhi.me/xiaozhi/v1/"
     config ASSISTANT_WS_TOKEN       string default ""
 endmenu
@@ -354,11 +450,12 @@ endmenu
 espressif/esp_audio_codec: "~2.4.1"   # Opus encoder + decoder (provides esp_opus_enc / esp_opus_dec API)
 espressif/button: "~4.1.5"            # Button debounce
 espressif/led_strip: "~3.0.2"         # WS2812 via RMT
+espressif/esp_websocket_client: "~1.1.0"
 ```
 
 `esp_audio_codec` is the correct component — it is the IDF component registry package that provides `esp_opus_enc_open`, `esp_opus_enc_process`, `esp_opus_dec_open`, `esp_opus_dec_decode` via the `esp_audio_enc.h` / `esp_audio_dec.h` headers, as used in xiaozhi-esp32 `audio_service.cc`. It is distinct from the older `esp-idf-lib` Opus port.
 
-`esp_websocket_client` is part of ESP-IDF — no additional declaration needed.
+The implementation declares `espressif/esp_websocket_client` in `main/idf_component.yml` and requires `esp_websocket_client` from `main/CMakeLists.txt`.
 
 ---
 
@@ -395,7 +492,7 @@ assistant_init();   // queues only — task created lazily
 | `main/ui/ui_page_ai.c` | Replace mock state machine with assistant_state polling |
 | `main/main.c` | Add 7 init calls |
 | `main/CMakeLists.txt` | Add new source files (see below) |
-| `main/idf_component.yml` | Add 3 dependencies |
+| `main/idf_component.yml` | Add audio, button, LED, and WebSocket dependencies |
 | `Kconfig.projbuild` | Add Assistant Hardware menu |
 
 ### `main/CMakeLists.txt` additions
@@ -429,6 +526,7 @@ idf_component_register(
         # ... existing ...
         esp_driver_i2s
         esp_websocket_client
+        espressif__cjson
         led_strip
         button
         esp_audio_codec

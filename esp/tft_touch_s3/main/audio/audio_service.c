@@ -42,6 +42,48 @@ static int      s_dec_frame_ms    = 60;
 #define ENC_FRAME_SAMPLES 960
 #define ENC_SAMPLE_RATE   16000
 
+static void free_queued_pcm(QueueHandle_t q)
+{
+    audio_pcm_frame_t *frame = NULL;
+    while (xQueueReceive(q, &frame, 0) == pdTRUE) {
+        heap_caps_free(frame);
+    }
+}
+
+static void free_queued_opus(QueueHandle_t q)
+{
+    audio_opus_pkt_t *pkt = NULL;
+    while (xQueueReceive(q, &pkt, 0) == pdTRUE) {
+        heap_caps_free(pkt);
+    }
+}
+
+static bool queue_send_drop_oldest_opus(QueueHandle_t q, audio_opus_pkt_t **pkt, TickType_t timeout)
+{
+    if (xQueueSend(q, pkt, timeout) == pdTRUE) {
+        return true;
+    }
+    audio_opus_pkt_t *old = NULL;
+    if (xQueueReceive(q, &old, 0) == pdTRUE) {
+        heap_caps_free(old);
+        ESP_LOGW(TAG, "opus queue full, dropped oldest packet");
+    }
+    return xQueueSend(q, pkt, 0) == pdTRUE;
+}
+
+static bool queue_send_drop_oldest_pcm(QueueHandle_t q, audio_pcm_frame_t **frame, TickType_t timeout)
+{
+    if (xQueueSend(q, frame, timeout) == pdTRUE) {
+        return true;
+    }
+    audio_pcm_frame_t *old = NULL;
+    if (xQueueReceive(q, &old, 0) == pdTRUE) {
+        heap_caps_free(old);
+        ESP_LOGW(TAG, "pcm queue full, dropped oldest frame");
+    }
+    return xQueueSend(q, frame, 0) == pdTRUE;
+}
+
 static void open_encoder(void)
 {
     esp_opus_enc_config_t cfg = {
@@ -142,7 +184,7 @@ static void opus_codec_task(void *arg)
                         pkt->timestamp_ms = in_frame->timestamp_ms;
                         pkt->len          = out.encoded_bytes;
                         memcpy(pkt->data, enc_out, out.encoded_bytes);
-                        if (xQueueSend(s_send_q, &pkt, 0) != pdTRUE) {
+                        if (!queue_send_drop_oldest_opus(s_send_q, &pkt, pdMS_TO_TICKS(20))) {
                             heap_caps_free(pkt);
                         }
                     }
@@ -175,7 +217,7 @@ static void opus_codec_task(void *arg)
                     if (esp_opus_dec_decode(s_dec_handle, &raw, &of, &info) == ESP_AUDIO_ERR_OK) {
                         out_frame->timestamp_ms = pkt->timestamp_ms;
                         out_frame->n_samples    = of.decoded_size / sizeof(int16_t);
-                        if (xQueueSend(s_playback_q, &out_frame, 0) != pdTRUE) {
+                        if (!queue_send_drop_oldest_pcm(s_playback_q, &out_frame, pdMS_TO_TICKS(50))) {
                             heap_caps_free(out_frame);
                         }
                     } else {
@@ -247,7 +289,9 @@ void audio_service_push_decode(const uint8_t *opus, size_t len, uint32_t ts_ms)
     pkt->timestamp_ms = ts_ms;
     pkt->len = len;
     memcpy(pkt->data, opus, len);
-    if (xQueueSend(s_decode_q, &pkt, 0) != pdTRUE) heap_caps_free(pkt);
+    if (!queue_send_drop_oldest_opus(s_decode_q, &pkt, pdMS_TO_TICKS(20))) {
+        heap_caps_free(pkt);
+    }
 }
 
 bool audio_service_pop_send(uint8_t *buf, size_t *len, uint32_t *ts_ms)
@@ -287,4 +331,34 @@ void audio_service_set_decode_params(uint32_t sample_rate, int frame_ms)
     s_dec_frame_ms    = frame_ms;
     open_decoder(sample_rate, frame_ms);
     ESP_LOGI(TAG, "decoder params: %lu Hz / %d ms", (unsigned long)sample_rate, frame_ms);
+}
+
+void audio_service_flush_input_path(void)
+{
+    free_queued_pcm(s_encode_q);
+    free_queued_opus(s_send_q);
+}
+
+void audio_service_flush_output_path(void)
+{
+    free_queued_opus(s_decode_q);
+    free_queued_pcm(s_playback_q);
+}
+
+void audio_service_flush_all(void)
+{
+    audio_service_flush_input_path();
+    audio_service_flush_output_path();
+}
+
+bool audio_service_wait_output_drain(uint32_t timeout_ms)
+{
+    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
+    while (uxQueueMessagesWaiting(s_decode_q) > 0 || uxQueueMessagesWaiting(s_playback_q) > 0) {
+        if ((int32_t)(xTaskGetTickCount() - deadline) >= 0) {
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    return true;
 }

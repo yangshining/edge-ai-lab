@@ -9,7 +9,7 @@ The default configuration has been verified on an ESP32-S3 N16R8 development boa
 
 The demo renders a compact two-tab LVGL v9 UI for the small 240x320 touch screen:
 
-- **AI:** Phase 1 voice-assistant avatar prototype with local simulated listening, uploading, thinking, speaking, and error states; later phases connect audio hardware and a backend proxy.
+- **AI:** voice-assistant avatar wired to the local assistant state, physical wake button, I2S microphone/speaker path, RGB status LED, and XiaoZhi-compatible WebSocket v1 control/audio flow.
 - **Setup:** screen rotation, backlight brightness slider, WiFi STA status, and **Clear WiFi** credential reset. Rotation and brightness are persisted to NVS and restored on reboot.
 
 ## Hardware
@@ -17,6 +17,10 @@ The demo renders a compact two-tab LVGL v9 UI for the small 240x320 touch screen
 - ESP32-S3 development board, such as the XinluCity ESP32-S3 N16R8 board
 - 2.4-inch SPI TFT 240x320 module
 - XPT2046-compatible resistive touch controller
+- INMP441 I2S microphone
+- MAX98357A I2S amplifier and speaker
+- Active-low wake button
+- WS2812-compatible RGB LED
 - USB cable for flashing
 
 The photographed TFT module has these pins:
@@ -38,6 +42,8 @@ The `SD_*` pins are for the TF card slot. This example does not use the TF card,
 - Touch calibration defaults are `swap_xy = n`, `mirror_x = y`, and `mirror_y = n`.
 - Brightness and rotation settings are saved to NVS partition `"tft_settings"` and restored on every boot.
 - The Setup page uses BLE provisioning for first-time WiFi setup, then shows WiFi STA connection state from a small shared state model.
+- The AI page polls `assistant_state`; the physical button or on-screen button starts the assistant session.
+- The assistant WebSocket uses Protocol-Version `1`: JSON text control frames plus raw Opus binary audio frames. It does not prepend a Binary Protocol 2 header.
 
 ## Software Structure
 
@@ -48,10 +54,16 @@ The demo keeps display, UI, and connectivity separated:
 - `main/connectivity/app_net_state.c` stores the current provisioning/WiFi state behind a FreeRTOS mutex.
 - `main/connectivity/app_wifi.c` initializes `esp_netif`/WiFi STA and translates WiFi/IP events into `app_net_state` updates.
 - `main/connectivity/app_prov.c` starts BLE provisioning through the `network_provisioning` managed component and handles provisioning events.
+- `main/hal/btn.c` wraps `espressif/button` for the active-low assistant wake button.
+- `main/hal/led_status.c` drives a single WS2812 status LED through RMT.
+- `main/audio/audio_io.c` owns I2S RX/TX setup for INMP441 and MAX98357A.
+- `main/audio/audio_service.c` owns the audio FreeRTOS tasks, Opus encode/decode, queue ownership, flushing, and backpressure behavior.
+- `main/assistant/assistant_state.c` stores cross-task assistant status behind a FreeRTOS mutex.
+- `main/assistant/assistant_proto.c` builds/parses XiaoZhi WebSocket v1 JSON messages; audio packets are raw Opus binary frames.
+- `main/assistant/assistant.c` owns the lazy-start WebSocket task, request headers, session lifecycle, and audio queue handoff.
 - `main/ui/ui_main.c` creates the LVGL tabview and wires the AI and Setup pages.
-- `main/ui/ui_page_ai.c` renders the Phase 1 voice-assistant avatar prototype and local mock state transitions.
+- `main/ui/ui_page_ai.c` renders the voice-assistant avatar by polling `assistant_state`.
 - `main/ui/ui_page_settings.c` renders rotation/backlight controls and refreshes WiFi labels from `app_net_state`; WiFi/BLE event handlers do not call LVGL directly.
-- `main/ui/ui_page_home.c` and `main/ui/ui_page_network.c` are legacy standalone pages retained in source but not mounted by the current two-tab UI.
 
 ## Recommended Wiring
 
@@ -74,7 +86,21 @@ Use the UART/CH340 USB port on the ESP32-S3 board for flashing. Avoid GPIO19/GPI
 | `T_DO` | `GPIO21` | Touch SPI MISO; required for coordinates |
 | `T_IRQ` | unconnected | Current code polls touch data and does not use interrupt |
 
-Default Kconfig values match this table. To change pins, run:
+Assistant hardware defaults avoid the TFT/touch pins and the common ESP32-S3 native USB pins:
+
+| Assistant signal | ESP32-S3 pin | Notes |
+| ---------------- | ------------ | ----- |
+| Wake button | `GPIO38` | Active-low, internal pull-up |
+| WS2812 RGB LED data | `GPIO48` | Board-specific if an onboard RGB LED uses another pin |
+| INMP441 BCLK | `GPIO8` | I2S RX |
+| INMP441 WS | `GPIO9` | I2S RX word select |
+| INMP441 DIN | `GPIO10` | I2S RX data input |
+| MAX98357A BCLK | `GPIO11` | I2S TX |
+| MAX98357A LRCLK | `GPIO12` | I2S TX word select |
+| MAX98357A DIN | `GPIO13` | I2S TX data output from ESP32-S3 |
+| MAX98357A SD_MODE | `GPIO14` | High enables output; low mutes |
+
+Default Kconfig values match these tables. To change pins, run:
 
 ```bash
 idf.py menuconfig
@@ -113,6 +139,7 @@ idf.py -p COMx app-flash monitor
 
 Use `idf.py fullclean` only after target changes, major Kconfig changes, managed component problems, or a corrupted build directory.
 After pulling the BLE provisioning changes, run `idf.py set-target esp32s3` or `idf.py reconfigure` once so the Bluetooth and custom partition defaults are applied to the local `sdkconfig`.
+After pulling GPIO default changes, note that a local `sdkconfig` keeps its old values. Run `idf.py menuconfig` to update pins, or regenerate local config if you want to adopt the new Kconfig defaults.
 If the build fails with a missing file under `components/esp_wifi/lib/esp32s3`, initialize the ESP-IDF submodules:
 
 ```powershell
@@ -176,6 +203,17 @@ The current defaults are:
 | `EXAMPLE_LCD_PIXEL_CLOCK_HZ` | `20000000` |
 | `XPT2046_Z_THRESHOLD` | `50` |
 | `ESP_LCD_TOUCH_MAX_POINTS` | `1` |
+| `ASSISTANT_BTN_GPIO` | `38` |
+| `ASSISTANT_LED_GPIO` | `48` |
+| `ASSISTANT_MIC_BCLK` | `8` |
+| `ASSISTANT_MIC_WS` | `9` |
+| `ASSISTANT_MIC_DIN` | `10` |
+| `ASSISTANT_SPK_BCLK` | `11` |
+| `ASSISTANT_SPK_LRCLK` | `12` |
+| `ASSISTANT_SPK_DOUT` | `13` |
+| `ASSISTANT_SPK_SD_MODE` | `14` |
+| `ASSISTANT_WS_URL` | `wss://api.xiaozhi.me/xiaozhi/v1/` |
+| `ASSISTANT_WS_TOKEN` | empty |
 
 `sdkconfig.defaults.esp32s3` enables octal PSRAM at 80 MHz and FreeRTOS runtime stats:
 
@@ -207,7 +245,14 @@ The provisioning and WiFi event handlers only update `app_net_state`. LVGL label
 
 ## Integrating AI Results
 
-The AI page is currently a Phase 1 mock voice-assistant UI. Its controls simulate local listening, uploading, thinking, speaking, and error states only; there is no audio hardware path, backend proxy, or assistant-state module yet.
+The AI page is driven by `assistant_state`. A press on the on-screen wake button or the physical wake button calls `assistant_start_listening()`, which lazily creates the WebSocket assistant task. The assistant task sends XiaoZhi WebSocket v1 JSON control frames, sends microphone Opus packets as raw binary frames, and pushes raw Opus response frames into the decode queue.
+
+The WebSocket handshake sets these headers:
+
+- `Protocol-Version: 1`
+- `Device-Id`: lowercase STA MAC address
+- `Client-Id`: generated once and persisted in NVS namespace `"assistant"`, key `"client_id"`
+- `Authorization: Bearer <token>` when `ASSISTANT_WS_TOKEN` is configured
 
 `ui_ai_update_result(const char *label, float confidence)` remains as a compatibility hook. The label updates the avatar caption and speaking state, while confidence is ignored. If it is invoked from outside the LVGL task context, call it while holding `lvgl_api_lock`:
 
@@ -220,7 +265,7 @@ ui_ai_update_result("Here is a reply", 0.0f);
 _lock_release(&lvgl_api_lock);
 ```
 
-Future audio/backend work should add an `assistant_state` module for cross-task state and keep audio or network work out of LVGL callbacks. LVGL-side timers/pages should render assistant state from LVGL task context.
+Keep audio and network work out of LVGL callbacks. LVGL-side timers/pages should render assistant state from LVGL task context.
 
 ## Troubleshooting
 
@@ -232,5 +277,8 @@ Future audio/backend work should add an `assistant_state` module for cross-task 
 - Touch is sluggish: keep `EXAMPLE_TOUCH_LOG` disabled, keep `ESP_LCD_TOUCH_MAX_POINTS=1`, and lower `XPT2046_Z_THRESHOLD` carefully if light touches are missed.
 - Build fails because PSRAM is not found: adjust `sdkconfig.defaults.esp32s3` for your board.
 - Build fails with `components/esp_wifi/lib/esp32s3/libcore.a` missing: initialize the `components/esp_wifi/lib` submodule.
+- Build still shows old assistant GPIO defaults such as `35`-`42`: those values are coming from local `sdkconfig`, not `Kconfig.projbuild`. Update them in `idf.py menuconfig` or regenerate local config.
+- Build fails with `cJSON.h` missing: confirm `main/CMakeLists.txt` has `espressif__cjson` in `PRIV_REQUIRES` and includes use `#include "cJSON.h"`.
+- Assistant connects but audio is garbled: confirm the server endpoint expects Protocol-Version `1` with raw Opus binary frames. Do not use a 16-byte Binary Protocol 2 header on this path.
 - The Setup page still waits for provisioning after entering credentials: verify the POP (`abcd1234` by default), confirm the AP is 2.4 GHz, and check serial logs for `NETWORK_PROV_WIFI_CRED_FAIL`.
 - Do not connect the TF card `SD_*` pins unless SD card support is added to the example.

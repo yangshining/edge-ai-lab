@@ -1,41 +1,12 @@
 #include "assistant_proto.h"
 #include <string.h>
-#include <arpa/inet.h>   /* htons / htonl */
+#include <stdio.h>
 #include "cJSON.h"
-#include "esp_log.h"
-
-static const char *TAG = "proto";
-
-/* Binary Protocol 2 header (network byte order, 16 bytes):
- * uint16 version | uint16 type | uint32 reserved | uint32 timestamp | uint32 payload_size */
-typedef struct __attribute__((packed)) {
-    uint16_t version;
-    uint16_t type;
-    uint32_t reserved;
-    uint32_t timestamp_ms;
-    uint32_t payload_size;
-} bp2_header_t;
-
-size_t proto_pack_audio(uint8_t *out, size_t out_size,
-                        const uint8_t *opus, size_t opus_len,
-                        uint32_t timestamp_ms)
-{
-    size_t total = sizeof(bp2_header_t) + opus_len;
-    if (out_size < total) return 0;
-    bp2_header_t *h = (bp2_header_t *)out;
-    h->version      = htons(2);
-    h->type         = htons(0);   /* 0 = audio */
-    h->reserved     = 0;
-    h->timestamp_ms = htonl(timestamp_ms);
-    h->payload_size = htonl((uint32_t)opus_len);
-    memcpy(out + sizeof(bp2_header_t), opus, opus_len);
-    return total;
-}
 
 void proto_make_hello(char *buf, size_t size)
 {
     snprintf(buf, size,
-        "{\"type\":\"hello\",\"version\":2,"
+        "{\"type\":\"hello\",\"version\":1,"
         "\"transport\":\"websocket\","
         "\"audio_params\":{\"format\":\"opus\","
         "\"sample_rate\":16000,\"channels\":1,\"frame_duration\":60}}");

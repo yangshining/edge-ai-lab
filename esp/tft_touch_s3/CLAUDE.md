@@ -8,7 +8,7 @@ This is the `tft_touch_s3` ESP32-S3 example inside the ESP-IDF repository. It dr
 
 The current demo is an Edge AI Lab screen with a two-tab AI assistant UI:
 
-- **AI** - Phase 1 voice-assistant avatar prototype with local mock states
+- **AI** - voice-assistant avatar driven by `assistant_state`, with physical wake button, I2S audio, RGB LED status, and XiaoZhi WebSocket v1 session flow
 - **Setup** - rotation, backlight brightness, WiFi STA status, and WiFi credential clearing controls
 
 External component dependencies are declared in `main/idf_component.yml`:
@@ -16,6 +16,10 @@ External component dependencies are declared in `main/idf_component.yml`:
 - `lvgl/lvgl: "9.3.0"`
 - `atanisoft/esp_lcd_touch_xpt2046: "1.0.6"`
 - `espressif/network_provisioning: "^1.2.4"`
+- `espressif/esp_audio_codec: "~2.4.1"`
+- `espressif/button: "~4.1.5"`
+- `espressif/led_strip: "~3.0.2"`
+- `espressif/esp_websocket_client: "~1.1.0"`
 
 ## Build Commands
 
@@ -48,6 +52,12 @@ app_main (main.c)
   |-- app_net_state_init()        -> connectivity/app_net_state.c
   |-- app_wifi_init()             -> connectivity/app_wifi.c
   |-- app_prov_init()             -> connectivity/app_prov.c
+  |-- assistant_state_init()      -> assistant/assistant_state.c
+  |-- audio_io_init()             -> audio/audio_io.c
+  |-- audio_service_init()        -> audio/audio_service.c
+  |-- btn_init()                  -> hal/btn.c
+  |-- led_status_init()           -> hal/led_status.c
+  |-- assistant_init()            -> assistant/assistant.c
   |-- lcd_touch_init()            -> lcd_touch.c / lcd_touch.h
   |-- LVGL display/input/task     -> main.c
   `-- ui_main_init()              -> ui/ui_main.c
@@ -87,19 +97,34 @@ _lock_release(&lvgl_api_lock);
 
 `lvgl_api_lock` is defined in `lcd_touch.c` and initialized by `lcd_touch_init()`.
 
-## AI Integration Point
+## AI Assistant
 
-The AI tab is currently a Phase 1 voice-assistant avatar prototype. It simulates listening, uploading, thinking, speaking, and error states locally via a demo state machine; it does not yet use audio hardware, a backend proxy, or shared assistant state.
+The AI tab polls `assistant_state` from LVGL task context and maps assistant states to avatar states. The on-screen wake button and physical active-low button both call `assistant_start_listening()`, which lazily creates the WebSocket assistant task.
 
 `ui_ai_update_result(const char *label, float confidence)` remains as a compatibility hook. The label updates the avatar caption/speaking state, while confidence is ignored. Call it under `lvgl_api_lock` when invoked from outside LVGL task context.
 
-Future audio/backend work should add an `assistant_state` module for cross-task state. Keep network and audio work out of LVGL callbacks; UI files should only render state on the LVGL task side.
+Keep network and audio work out of LVGL callbacks; UI files should only render state on the LVGL task side.
+
+Assistant protocol rules:
+
+- Target XiaoZhi WebSocket Protocol-Version `1`.
+- Control messages are JSON text frames.
+- Audio messages are raw Opus WebSocket binary frames; do not prepend a Binary Protocol 2 header on this path.
+- `assistant.c` sets `Protocol-Version`, `Device-Id`, persisted `Client-Id`, and optional `Authorization` headers.
+- `assistant_proto.c` should stay limited to JSON builders/parsers unless a separate v2 transport is added.
+
+Audio ownership rules:
+
+- `audio_service.c` queues pass heap-owned `audio_pcm_frame_t *` or `audio_opus_pkt_t *`.
+- `audio_service_push_decode()` copies WebSocket payloads before enqueueing; never queue a transient callback buffer pointer.
+- On full queues, follow the local drop/free policy in `audio_service.c` and keep audio latency bounded.
 
 ## Settings And Stats
 
 - `settings_store.c/.h` persists brightness and rotation in NVS namespace `"tft_settings"`.
 - `sys_stats.c/.h` samples heap and CPU load using `esp_timer` and `uxTaskGetSystemState()`.
 - Backlight is controlled by LEDC PWM through `lcd_touch_set_brightness(uint8_t pct)`.
+- Assistant hardware defaults: button `38`, LED `48`, mic BCLK/WS/DIN `8/9/10`, speaker BCLK/LRCLK/DOUT/SD_MODE `11/12/13/14`.
 
 ## Configuration
 
@@ -111,4 +136,4 @@ Important defaults:
 
 UI layout constants (timer periods, widget sizes, animation parameters) belong in `main/ui/ui_config.h`. Do not use inline magic numbers in UI page files.
 
-Keep `README.md`, `AGENTS.md`, `CLAUDE.md`, `Kconfig.projbuild`, and GPIO defaults consistent when changing behavior.
+Keep `README.md`, `AGENTS.md`, `CLAUDE.md`, `Kconfig.projbuild`, and GPIO defaults consistent when changing behavior. A local `sdkconfig` can preserve old GPIO values after Kconfig defaults change; update it locally through `idf.py menuconfig` but do not commit it unless explicitly requested.

@@ -14,12 +14,6 @@ typedef enum {
     SERVER_MSG_UNKNOWN,
 } server_msg_type_t;
 
-/* Pack Opus audio into Binary Protocol 2 frame (16-byte header + payload).
- * Returns total bytes written, or 0 on error. */
-size_t proto_pack_audio(uint8_t *out, size_t out_size,
-                        const uint8_t *opus, size_t opus_len,
-                        uint32_t timestamp_ms);
-
 void proto_make_hello(char *buf, size_t size);
 void proto_make_listen_start(char *buf, size_t size, const char *session_id);
 void proto_make_listen_stop(char *buf, size_t size, const char *session_id);

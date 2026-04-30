@@ -45,6 +45,11 @@ void      audio_service_resume_output(void);
 /* Must be called while output is paused. Closes old Opus decoder, opens new one. */
 void audio_service_set_decode_params(uint32_t sample_rate, int frame_ms);
 
+void audio_service_flush_input_path(void);
+void audio_service_flush_output_path(void);
+void audio_service_flush_all(void);
+bool audio_service_wait_output_drain(uint32_t timeout_ms);
+
 #ifdef __cplusplus
 }
 #endif

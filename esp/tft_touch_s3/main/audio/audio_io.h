@@ -9,9 +9,9 @@ extern "C" {
 
 esp_err_t audio_io_init(void);
 
-/* Reads stereo_pairs stereo pairs from I2S_NUM_0 (INMP441).
+/* Reads stereo_pairs stereo pairs from I2S_NUM_0 (INMP441) with a bounded timeout.
  * buf must hold stereo_pairs * 2 int16 values.
- * Returns number of stereo pairs actually read, or -1 on error. */
+ * Returns number of stereo pairs actually read, or -1 on timeout/error. */
 int audio_io_read(int16_t *buf, int stereo_pairs);
 
 /* Writes samples mono int16 values to I2S_NUM_1 (MAX98357A). */
