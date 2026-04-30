@@ -6,12 +6,10 @@ This file provides guidance to Claude Code when working in this ESP-IDF example 
 
 This is the `tft_touch_s3` ESP32-S3 example inside the ESP-IDF repository. It drives an ST7789 SPI TFT display with an XPT2046 resistive touch controller using LVGL 9.3.
 
-The current demo is an Edge AI Lab screen with a four-page tabview UI:
+The current demo is an Edge AI Lab screen with a two-tab AI assistant UI:
 
-- **Home** - heap free, CPU load, and uptime
-- **AI** - simulated inference result and confidence bar
-- **Network** - BLE WiFi provisioning and WiFi STA status
-- **Setup** - rotation and backlight brightness controls
+- **AI** - Phase 1 voice-assistant avatar prototype with local mock states
+- **Setup** - rotation, backlight brightness, WiFi STA status, and WiFi credential clearing controls
 
 External component dependencies are declared in `main/idf_component.yml`:
 
@@ -53,9 +51,7 @@ app_main (main.c)
   |-- lcd_touch_init()            -> lcd_touch.c / lcd_touch.h
   |-- LVGL display/input/task     -> main.c
   `-- ui_main_init()              -> ui/ui_main.c
-        |-- ui_page_home_init()
         |-- ui_page_ai_init()
-        |-- ui_page_network_init()
         `-- ui_page_settings_init()
 ```
 
@@ -76,7 +72,7 @@ Rules:
 - `nvs_flash_init()` must happen before WiFi/provisioning initialization.
 - WiFi/BLE event handlers update `app_net_state`.
 - Event handlers must not call LVGL directly.
-- The Network page uses an LVGL timer to read `app_net_state` and refresh labels.
+- The Setup page uses an LVGL timer to read `app_net_state` and refresh labels.
 - Clearing WiFi credentials restarts the board so provisioning begins again.
 
 ## LVGL Threading
@@ -93,11 +89,11 @@ _lock_release(&lvgl_api_lock);
 
 ## AI Integration Point
 
-`ui_ai_update_result(const char *label, float confidence)` updates the AI tab. Call it under `lvgl_api_lock` when invoked from a worker task.
+The AI tab is currently a Phase 1 voice-assistant avatar prototype. It simulates listening, uploading, thinking, speaking, and error states locally via a demo state machine; it does not yet use audio hardware, a backend proxy, or shared assistant state.
 
-The confidence bar uses a first-order IIR low-pass interpolation (exponential-decay step) driven by a paused LVGL timer. The timer is resumed by `ui_ai_update_result()` and pauses itself when converged. Do not call `lv_bar_set_value()` on the confidence bar directly from outside this module.
+`ui_ai_update_result(const char *label, float confidence)` remains as a compatibility hook. The label updates the avatar caption/speaking state, while confidence is ignored. Call it under `lvgl_api_lock` when invoked from outside LVGL task context.
 
-Inference logic should live outside UI files, usually in its own FreeRTOS task or module. The UI API should remain thin.
+Future audio/backend work should add an `assistant_state` module for cross-task state. Keep network and audio work out of LVGL callbacks; UI files should only render state on the LVGL task side.
 
 ## Settings And Stats
 
