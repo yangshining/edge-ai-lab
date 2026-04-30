@@ -14,6 +14,7 @@ typedef enum {
     ASSISTANT_THINKING,
     ASSISTANT_SPEAKING,
     ASSISTANT_ERROR,
+    ASSISTANT_STATE_COUNT,
 } assistant_status_t;
 
 typedef struct {

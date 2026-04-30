@@ -17,7 +17,8 @@ int audio_io_read(int16_t *buf, int stereo_pairs);
 /* Writes samples mono int16 values to I2S_NUM_1 (MAX98357A). */
 void audio_io_write(const int16_t *buf, int samples);
 
-/* Disable TX, reconfigure I2S clock, re-enable TX.
+/* Disable TX, reconfigure I2S clock. Leaves TX disabled — caller must
+ * call audio_io_enable_output(true) afterwards.
  * Caller must call audio_service_pause_output() first. */
 esp_err_t audio_io_set_output_sample_rate(uint32_t hz);
 

@@ -147,6 +147,8 @@ static const ai_demo_state_t kStateMap[] = {
     [ASSISTANT_SPEAKING]   = AI_DEMO_STATE_SPEAKING,
     [ASSISTANT_ERROR]      = AI_DEMO_STATE_ERROR,
 };
+_Static_assert(sizeof(kStateMap) / sizeof(kStateMap[0]) == ASSISTANT_STATE_COUNT,
+               "kStateMap out of sync with assistant_status_t");
 
 static void state_poll_timer_cb(lv_timer_t *t)
 {

@@ -40,7 +40,7 @@ esp_err_t audio_io_init(void)
 
     i2s_std_config_t tx_std_cfg = {
         .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(24000),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
             .bclk = CONFIG_ASSISTANT_SPK_BCLK,
@@ -90,7 +90,6 @@ esp_err_t audio_io_set_output_sample_rate(uint32_t hz)
     ESP_RETURN_ON_ERROR(i2s_channel_disable(s_tx), TAG, "tx disable for rate change");
     i2s_std_clk_config_t clk = I2S_STD_CLK_DEFAULT_CONFIG(hz);
     ESP_RETURN_ON_ERROR(i2s_channel_reconfig_std_clock(s_tx, &clk), TAG, "tx reconfig clock");
-    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx), TAG, "tx re-enable after rate change");
     s_tx_sample_rate = hz;
     ESP_LOGI(TAG, "TX sample rate -> %lu Hz", (unsigned long)hz);
     return ESP_OK;
