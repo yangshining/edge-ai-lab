@@ -19,6 +19,12 @@
 #include "app_net_state.h"
 #include "app_wifi.h"
 #include "app_prov.h"
+#include "assistant_state.h"
+#include "audio_io.h"
+#include "audio_service.h"
+#include "btn.h"
+#include "led_status.h"
+#include "assistant.h"
 
 static const char *TAG = "main";
 #ifdef CONFIG_EXAMPLE_TOUCH_LOG
@@ -106,6 +112,14 @@ void app_main(void)
     app_net_state_init();
     ESP_ERROR_CHECK(app_wifi_init());
     ESP_ERROR_CHECK(app_prov_init());
+
+    assistant_state_init();
+    ESP_ERROR_CHECK(audio_io_init());
+    ESP_ERROR_CHECK(audio_service_init());
+    btn_init(CONFIG_ASSISTANT_BTN_GPIO);
+    btn_set_click_cb(assistant_start_listening);
+    led_status_init(CONFIG_ASSISTANT_LED_GPIO);
+    ESP_ERROR_CHECK(assistant_init());
 
     lcd_touch_handles_t hw = {};
     lcd_touch_init(&hw);

@@ -8,6 +8,8 @@
 #include "lvgl.h"
 #include "ui_config.h"
 #include "ui_page_ai.h"
+#include "assistant_state.h"
+#include "assistant.h"
 
 typedef enum {
     AI_DEMO_STATE_IDLE,
@@ -136,47 +138,31 @@ static void anim_timer_cb(lv_timer_t *t)
     ai_page_render();
 }
 
-static void demo_timer_cb(lv_timer_t *t)
+static const ai_demo_state_t kStateMap[] = {
+    [ASSISTANT_IDLE]       = AI_DEMO_STATE_IDLE,
+    [ASSISTANT_CONNECTING] = AI_DEMO_STATE_IDLE,
+    [ASSISTANT_LISTENING]  = AI_DEMO_STATE_LISTENING,
+    [ASSISTANT_UPLOADING]  = AI_DEMO_STATE_UPLOADING,
+    [ASSISTANT_THINKING]   = AI_DEMO_STATE_THINKING,
+    [ASSISTANT_SPEAKING]   = AI_DEMO_STATE_SPEAKING,
+    [ASSISTANT_ERROR]      = AI_DEMO_STATE_ERROR,
+};
+
+static void state_poll_timer_cb(lv_timer_t *t)
 {
-    switch (s_demo_state) {
-    case AI_DEMO_STATE_LISTENING:
-        lv_timer_set_period(t, UI_AI_DEMO_STEP_UPLOAD_MS);
-        ai_state_set(AI_DEMO_STATE_UPLOADING, NULL);
-        break;
-    case AI_DEMO_STATE_UPLOADING:
-        lv_timer_set_period(t, UI_AI_DEMO_STEP_THINK_MS);
-        ai_state_set(AI_DEMO_STATE_THINKING, NULL);
-        break;
-    case AI_DEMO_STATE_THINKING:
-        lv_timer_set_period(t, UI_AI_DEMO_STEP_SPEAK_MS);
-        ai_state_set(AI_DEMO_STATE_SPEAKING, NULL);
-        break;
-    case AI_DEMO_STATE_SPEAKING:
-        lv_timer_set_period(t, UI_AI_DEMO_STEP_ERROR_MS);
-        ai_state_set(AI_DEMO_STATE_ERROR, NULL);
-        break;
-    case AI_DEMO_STATE_ERROR:
-        ai_state_set(AI_DEMO_STATE_IDLE, NULL);
-        lv_timer_pause(t);
-        break;
-    case AI_DEMO_STATE_IDLE:
-    default:
-        ai_state_set(AI_DEMO_STATE_IDLE, NULL);
-        lv_timer_pause(t);
-        break;
+    (void)t;
+    assistant_state_t state;
+    assistant_state_get(&state);
+    ai_demo_state_t mapped = kStateMap[state.status];
+    if (mapped != s_demo_state) {
+        ai_state_set(mapped, state.last_reply[0] ? state.last_reply : NULL);
     }
 }
 
 static void wake_btn_cb(lv_event_t *e)
 {
     (void)e;
-
-    /* Restarting is simpler and keeps repeated taps deterministic. */
-    ai_state_set(AI_DEMO_STATE_LISTENING, NULL);
-    s_anim_tick = 0;
-    lv_timer_set_period(s_demo_timer, UI_AI_DEMO_STEP_LISTEN_MS);
-    lv_timer_reset(s_demo_timer);
-    lv_timer_resume(s_demo_timer);
+    assistant_start_listening();
     lv_timer_resume(s_anim_timer);
 }
 
@@ -224,8 +210,7 @@ void ui_page_ai_init(lv_obj_t *parent)
     lv_obj_center(s_wake_btn_label);
 
     s_anim_timer = lv_timer_create(anim_timer_cb, UI_AI_ANIM_PERIOD_MS, NULL);
-    s_demo_timer = lv_timer_create(demo_timer_cb, UI_AI_DEMO_STEP_LISTEN_MS, NULL);
-    lv_timer_pause(s_demo_timer);
+    s_demo_timer = lv_timer_create(state_poll_timer_cb, 200, NULL);
 
     ai_state_set(AI_DEMO_STATE_IDLE, NULL);
     ai_page_render();
