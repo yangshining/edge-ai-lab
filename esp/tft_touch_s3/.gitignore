@@ -1,0 +1,10 @@
+# ESP-IDF build output
+build/
+sdkconfig
+sdkconfig.old
+
+# Component manager downloads (re-fetched by idf.py build)
+managed_components/
+
+# Superpowers tool artifacts
+.superpowers/
