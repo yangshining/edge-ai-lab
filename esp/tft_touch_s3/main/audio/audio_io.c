@@ -98,10 +98,11 @@ esp_err_t audio_io_set_output_sample_rate(uint32_t hz)
 
 void audio_io_enable_output(bool en)
 {
-    if (en) {
-        i2s_channel_enable(s_tx);
-    } else {
-        i2s_channel_disable(s_tx);
+    esp_err_t ret = en ? i2s_channel_enable(s_tx) : i2s_channel_disable(s_tx);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "i2s_channel_%s failed: %s",
+                 en ? "enable" : "disable", esp_err_to_name(ret));
+        return;
     }
     gpio_set_level(CONFIG_ASSISTANT_SPK_SD_MODE, en ? 1 : 0);
 }
