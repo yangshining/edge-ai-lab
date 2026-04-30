@@ -104,31 +104,31 @@ menu "Assistant Hardware"
 
     config ASSISTANT_MIC_BCLK
         int "Microphone I2S BCLK GPIO"
-        default 1
+        default 35
 
     config ASSISTANT_MIC_WS
         int "Microphone I2S WS GPIO"
-        default 2
+        default 36
 
     config ASSISTANT_MIC_DIN
         int "Microphone I2S DIN GPIO"
-        default 3
+        default 37
 
     config ASSISTANT_SPK_BCLK
         int "Speaker I2S BCLK GPIO"
-        default 4
+        default 39
 
     config ASSISTANT_SPK_LRCLK
         int "Speaker I2S LRCLK GPIO"
-        default 5
+        default 40
 
     config ASSISTANT_SPK_DOUT
         int "Speaker I2S DOUT GPIO"
-        default 6
+        default 41
 
     config ASSISTANT_SPK_SD_MODE
         int "Speaker SD_MODE (mute) GPIO"
-        default 7
+        default 42
 
     config ASSISTANT_WS_URL
         string "xiaozhi WebSocket URL"
