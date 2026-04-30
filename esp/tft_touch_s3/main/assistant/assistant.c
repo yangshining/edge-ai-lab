@@ -16,11 +16,9 @@
 
 static const char *TAG = "assistant";
 
-#define EVT_START      BIT0
 #define WS_BUF_SIZE    (1275 + 16 + 32)  /* max audio frame + header + slack */
 #define JSON_BUF_SIZE  512
 
-static EventGroupHandle_t s_evts;
 static TaskHandle_t s_task_handle;
 static int64_t s_last_attempt_us;
 
@@ -64,6 +62,10 @@ static void assistant_task(void *arg)
         .task_prio = 5,
     };
     esp_websocket_client_handle_t ws = esp_websocket_client_init(&ws_cfg);
+    if (!ws) {
+        ESP_LOGE(TAG, "WS init failed");
+        goto error;
+    }
     esp_websocket_register_events(ws, WEBSOCKET_EVENT_ANY, on_ws_event,
                                   xTaskGetCurrentTaskHandle());
 
@@ -94,7 +96,7 @@ static void assistant_task(void *arg)
     wait_ms = 0;
     bool got_hello = false;
     while (!got_hello && wait_ms < 5000) {
-        int len = esp_websocket_client_recv(ws, (char *)frame_buf, sizeof(frame_buf),
+        int len = esp_websocket_client_recv(ws, (char *)frame_buf, sizeof(frame_buf) - 1,
                                             pdMS_TO_TICKS(200));
         wait_ms += 200;
         if (len > 0) {
@@ -159,7 +161,7 @@ static void assistant_task(void *arg)
         }
 
         /* Receive from server (non-blocking) */
-        int rlen = esp_websocket_client_recv(ws, (char *)frame_buf, sizeof(frame_buf),
+        int rlen = esp_websocket_client_recv(ws, (char *)frame_buf, sizeof(frame_buf) - 1,
                                              pdMS_TO_TICKS(10));
         if (rlen <= 0) continue;
 
@@ -222,7 +224,6 @@ error:
 
 esp_err_t assistant_init(void)
 {
-    s_evts = xEventGroupCreate();
     return ESP_OK;
 }
 
