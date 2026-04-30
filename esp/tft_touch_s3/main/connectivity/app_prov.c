@@ -20,7 +20,6 @@
 static const char *TAG = "app_prov";
 
 static bool s_prov_initialized;
-static bool s_provisioned;
 
 static void get_service_name(char *service_name, size_t max_len)
 {
@@ -56,7 +55,6 @@ static void prov_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         }
         case NETWORK_PROV_WIFI_CRED_SUCCESS:
             ESP_LOGI(TAG, "Provisioning credentials accepted");
-            s_provisioned = true;
             app_net_state_set_provisioned(true);
             app_net_state_set_status(APP_NET_STATUS_PROV_DONE);
             break;
@@ -120,11 +118,12 @@ esp_err_t app_prov_start(void)
         s_prov_initialized = true;
     }
 
-    ESP_RETURN_ON_ERROR(network_prov_mgr_is_wifi_provisioned(&s_provisioned), TAG,
+    bool provisioned = false;
+    ESP_RETURN_ON_ERROR(network_prov_mgr_is_wifi_provisioned(&provisioned), TAG,
                         "read provisioning state failed");
-    app_net_state_set_provisioned(s_provisioned);
+    app_net_state_set_provisioned(provisioned);
 
-    if (s_provisioned) {
+    if (provisioned) {
         ESP_LOGI(TAG, "Already provisioned, starting WiFi STA");
         network_prov_mgr_deinit();
         s_prov_initialized = false;
@@ -161,5 +160,7 @@ esp_err_t app_prov_reset(void)
 
 bool app_prov_is_provisioned(void)
 {
-    return s_provisioned;
+    app_net_state_t state = {};
+    app_net_state_get(&state);
+    return state.provisioned;
 }

@@ -179,10 +179,18 @@ esp_err_t audio_service_init(void);
 void      audio_service_start_input(void);
 void      audio_service_stop_input(void);
 void      audio_service_push_decode(const uint8_t *opus, size_t len, uint32_t timestamp_ms);
+// Blocking dequeue with 100 ms timeout. Returns true and fills buf/len/timestamp_ms
+// on success; returns false on timeout (no frame available). Max Opus packet size
+// is 1275 bytes (RFC 6716 §3.4); buf must be at least AUDIO_OPUS_PKT_MAX_BYTES.
+// The LISTENING loop in assistant_task calls this with a short timeout so it can
+// also check for incoming WebSocket events between send attempts.
+#define AUDIO_OPUS_PKT_MAX_BYTES 1275
 bool      audio_service_pop_send(uint8_t *buf, size_t *len, uint32_t *timestamp_ms);
 
 // Pause/resume the output path (used around sample-rate reconfiguration).
-void      audio_service_pause_output(void);   // blocks until audio_output_task is idle
+// pause_output drains playback_queue and blocks the output task; times out after
+// 200 ms and returns ESP_ERR_TIMEOUT if the task is stuck (caller should abort).
+esp_err_t audio_service_pause_output(void);
 void      audio_service_resume_output(void);
 
 // Set decoder params. Must be called while output is paused (between pause/resume).
@@ -283,6 +291,9 @@ SPEAKING
   └─ server TTS end event → IDLE, close WebSocket
 ERROR (any stage)
   └─ set ASSISTANT_ERROR, led_status_set(LED_ERROR)
+  └─ task exits; next assistant_start_listening() recreates it
+     Minimum retry interval: 3 s enforced in assistant_start_listening()
+     (reject call if last attempt was < 3 s ago — prevents server hammering)
 ```
 
 On every state transition: `assistant_state_set_status()` + `led_status_set()`.
@@ -319,7 +330,9 @@ static const ai_demo_state_t kStateMap[] = {
 
 ```
 menu "Assistant Hardware"
-    config ASSISTANT_BTN_GPIO       int  default 0
+    # WARNING: GPIO0 is the ESP32-S3 boot-mode strapping pin — do NOT use it.
+    # Set this to an unused non-strapping GPIO on your board (e.g. 38, 21, 47).
+    config ASSISTANT_BTN_GPIO       int  default 38
     config ASSISTANT_LED_GPIO       int  default 48
     config ASSISTANT_MIC_BCLK       int  default 1
     config ASSISTANT_MIC_WS         int  default 2
