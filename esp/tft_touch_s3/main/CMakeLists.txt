@@ -10,6 +10,35 @@ idf_component_register(
         "ui/ui_main.c"
         "ui/ui_page_ai.c"
         "ui/ui_page_settings.c"
-    INCLUDE_DIRS "." "ui" "connectivity"
-    PRIV_REQUIRES nvs_flash esp_driver_ledc esp_driver_spi esp_driver_gpio esp_lcd esp_wifi esp_netif esp_event bt protocomm network_provisioning
+        "hal/btn.c"
+        "hal/led_status.c"
+        "audio/audio_io.c"
+        "audio/audio_service.c"
+        "assistant/assistant_state.c"
+        "assistant/assistant_proto.c"
+        "assistant/assistant.c"
+    INCLUDE_DIRS
+        "."
+        "ui"
+        "connectivity"
+        "hal"
+        "audio"
+        "assistant"
+    PRIV_REQUIRES
+        nvs_flash
+        esp_driver_ledc
+        esp_driver_spi
+        esp_driver_gpio
+        esp_driver_i2s
+        esp_lcd
+        esp_wifi
+        esp_netif
+        esp_event
+        bt
+        protocomm
+        network_provisioning
+        esp_websocket_client
+        led_strip
+        button
+        esp_audio_codec
 )

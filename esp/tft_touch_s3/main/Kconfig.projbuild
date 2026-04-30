@@ -88,3 +88,56 @@ menu "TFT Touch S3 Example Configuration"
             Number of WiFi reconnect attempts before the UI reports a connection failure.
 
 endmenu
+
+menu "Assistant Hardware"
+
+    config ASSISTANT_BTN_GPIO
+        int "Wake button GPIO"
+        default 38
+        help
+            Single-click triggers voice assistant. WARNING: GPIO0 is the ESP32-S3
+            boot-mode strapping pin — do NOT use it.
+
+    config ASSISTANT_LED_GPIO
+        int "RGB LED (WS2812) GPIO"
+        default 48
+
+    config ASSISTANT_MIC_BCLK
+        int "Microphone I2S BCLK GPIO"
+        default 1
+
+    config ASSISTANT_MIC_WS
+        int "Microphone I2S WS GPIO"
+        default 2
+
+    config ASSISTANT_MIC_DIN
+        int "Microphone I2S DIN GPIO"
+        default 3
+
+    config ASSISTANT_SPK_BCLK
+        int "Speaker I2S BCLK GPIO"
+        default 4
+
+    config ASSISTANT_SPK_LRCLK
+        int "Speaker I2S LRCLK GPIO"
+        default 5
+
+    config ASSISTANT_SPK_DOUT
+        int "Speaker I2S DOUT GPIO"
+        default 6
+
+    config ASSISTANT_SPK_SD_MODE
+        int "Speaker SD_MODE (mute) GPIO"
+        default 7
+
+    config ASSISTANT_WS_URL
+        string "xiaozhi WebSocket URL"
+        default "wss://api.xiaozhi.me/xiaozhi/v1/"
+
+    config ASSISTANT_WS_TOKEN
+        string "xiaozhi API token"
+        default ""
+        help
+            Token from xiaozhi.me device console. Leave empty during development.
+
+endmenu
