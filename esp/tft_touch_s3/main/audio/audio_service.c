@@ -217,12 +217,21 @@ esp_err_t audio_service_init(void)
     s_output_pause_ack = xSemaphoreCreateBinary();
     s_output_resume    = xSemaphoreCreateBinary();
 
+    if (!s_encode_q || !s_send_q || !s_decode_q || !s_playback_q ||
+        !s_output_pause_ack || !s_output_resume) {
+        ESP_LOGE(TAG, "resource allocation failed");
+        return ESP_ERR_NO_MEM;
+    }
+
     open_encoder();
     open_decoder(s_dec_sample_rate, s_dec_frame_ms);
 
-    xTaskCreate(audio_input_task, "a_in",  6 * 1024, NULL, 5, &s_input_task_handle);
-    xTaskCreate(opus_codec_task,  "a_cod", 24 * 1024, NULL, 3, &s_codec_task_handle);
-    xTaskCreate(audio_output_task,"a_out", 4 * 1024, NULL, 4, &s_output_task_handle);
+    if (xTaskCreate(audio_input_task, "a_in",  6 * 1024, NULL, 5, &s_input_task_handle) != pdPASS ||
+        xTaskCreate(opus_codec_task,  "a_cod", 24 * 1024, NULL, 3, &s_codec_task_handle) != pdPASS ||
+        xTaskCreate(audio_output_task,"a_out", 4 * 1024, NULL, 4, &s_output_task_handle) != pdPASS) {
+        ESP_LOGE(TAG, "task creation failed");
+        return ESP_ERR_NO_MEM;
+    }
 
     ESP_LOGI(TAG, "audio service init OK");
     return ESP_OK;
