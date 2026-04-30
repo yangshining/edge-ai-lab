@@ -9,7 +9,6 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/event_groups.h"
 #include "cJSON.h"
 #include "sdkconfig.h"
 #include <string.h>
